@@ -53,7 +53,8 @@ This document specifies the complete requirements, architecture, design decision
 | `term.c` | Terminal I/O: ANSI escape output, raw input, size query |
 | `screen.c` | Viewport rendering: line drawing, cursor placement, status bar |
 | `emove.c` | Cursor movement, operator application (`apply_op`), search |
-| `edit.c` | VI normal mode, insert mode, ex command-line mode, dot-repeat |
+| `edit.c` | VI normal mode, insert mode, ex command-line mode |
+| `erepeat.c` | Dot-repeat: `dot_ins_position`, `dot_replay_c`, `dot_replay` |
 | `ex.c` | Ex command execution (`:q`, `:w`, `:r`, `:N`, etc.) |
 
 ---
@@ -68,8 +69,9 @@ C -C TERM.C
 C -C SCREEN.C
 C -C EMOVE.C
 C -C EDIT.C
+C -C EREPEAT.C
 C -C EX.C
-LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EDIT.OBJ EX.OBJ LIBC.LIB
+LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EDIT.OBJ EREPEAT.OBJ EX.OBJ LIBC.LIB
 ```
 
 ### 4.2 Debug Build
@@ -77,8 +79,8 @@ Add `-H` to each compile step to enable debug symbol output. The `-d` runtime fl
 
 ### 4.3 Cross-Compilation (Linux/macOS)
 ```
-c -c hvi.c gap.c term.c screen.c emove.c edit.c ex.c
-linq -Z -N -C100H -ohvi.com crtcpm.obj hvi.obj gap.obj term.obj screen.obj emove.obj edit.obj ex.obj libc.lib
+c -c hvi.c gap.c term.c screen.c emove.c edit.c erepeat.c ex.c
+linq -Z -N -C100H -ohvi.com crtcpm.obj hvi.obj gap.obj term.obj screen.obj emove.obj edit.obj erepeat.obj ex.obj libc.lib
 ```
 
 ### 4.4 Load Address
@@ -96,7 +98,7 @@ HVI -d [filename]
 - If `filename` is given and exists, it is loaded into the gap buffer.
 - If `filename` is given but does not exist, the editor starts with an empty buffer and the status shows `[New File]`.
 - If no filename is given, the editor starts with an empty unnamed buffer.
-- `-d` enables debug output to `stderr` (the CP/M console). Useful when `stderr` is redirected: `HVI -D MYFILE.TXT 2>DEBUG.TXT`. Note: CP/M does not natively support stderr redirection in all environments.
+- `-d` enables debug output to `stderr`. On CP/M, `stderr` maps to CON: and cannot be redirected; debug messages appear on screen interleaved with the editor display. Debug mode is most useful for diagnosing startup or initialization problems (before full-screen editing begins), or when running under a Unix cross-compile environment where stderr can be redirected: `hvi -d myfile.txt 2>debug.txt`.
 
 ---
 
@@ -221,7 +223,9 @@ After `gb_load_fp()` closes the file with `fclose()`, the I/O buffer is returned
 
 **Probe strategy (abandoned):** An earlier attempt used a probe allocation to find the largest available heap block, then freed it and re-allocated a smaller block to leave headroom. This failed because on CP/M, `free()` may not reliably return memory to the free list, causing the probe to permanently consume heap in addition to the actual allocation.
 
-### 7.3 Optimizer Memory Limit: "optim: Out of memory"
+### 7.3 HI-TECH C Compiler Limits
+
+#### 7.3.1 Optimizer Memory Limit: "optim: Out of memory"
 **Problem:** HI-TECH C's optimizer has a fixed memory budget for processing a single function. Functions beyond a certain complexity cause the compiler to abort with `optim: Out of memory`.
 
 **Solution:** Keep all functions small. When a function grows too large (typically beyond ~80–120 lines with many local variables and branches), split it into multiple smaller static helper functions.
@@ -230,8 +234,17 @@ After `gb_load_fp()` closes the file with `fclose()`, the I/O buffer is returned
 - `gap.c::gb_save()` — split into `gb_write_head()`, `gb_write_buf()`, `gb_write_tail()`
 - `gap.c::gb_load()` — split out `gb_record_tail()`
 - `gap.c::gb_load_more()` — split out `gb_discard_head()`
-- `edit.c::dot_replay()` — split into `dot_ins_position()`, `dot_replay_c()`, `dot_replay()`
-- `edit.c::normal_cmd()` — split into `normal_edit_cmd()`, `normal_delchg_cmd()`, `normal_misc_cmd()`, `normal_find_cmd()`
+- `edit.c::normal_cmd()` — split into `normal_edit_cmd()`, `normal_delchg_cmd()`, `normal_misc_cmd()`, `normal_find_cmd()`, `normal_page_cmd()`
+
+#### 7.3.2 Per-File Label Limit: "Too many temporary labels"
+**Problem:** HI-TECH C generates an assembly label for every `if`, `while`, `for`, `&&`, `||`, `switch` case, and ternary expression. There is a hard per-file limit on the total number of these temporary labels. When a `.C` file generates too many labels across all its functions combined, the assembler phase aborts with `Too many temporary labels`.
+
+This is distinct from the optimizer memory limit: splitting a large function into smaller functions within the **same** `.C` file does not help, because the label count is per-file, not per-function.
+
+**Solution:** Move code to a **new source file**. Choose a logically cohesive cluster of functions and extract them into a separate `.C` file that is compiled and linked independently.
+
+**Affected in this codebase:**
+- `erepeat.c` was created to hold `dot_ins_position()`, `dot_replay_c()`, and `dot_replay()`, which were extracted from `edit.c` to reduce `edit.c`'s total label count.
 
 ### 7.4 Variable Declaration Rules (K&R C)
 All variable declarations must appear at the **top** of their enclosing block, before any statements. Declaring a variable after a statement in the same block is illegal in K&R C and will cause a compile error.
@@ -273,10 +286,7 @@ All debug output from the size query is deferred until after Phase 2 completes, 
 
 If the terminal does not respond, `DEF_ROWS = 24` and `DEF_COLS = 80` are used.
 
-### 7.9 `memmove()` not available
-HI-TECH C V3.09 does not include `memmove()`. A private implementation `gb_memmove()` handles overlapping copies correctly for gap movement.
-
-### 7.10 File I/O Buffer Count
+### 7.9 File I/O Buffer Count
 `gb_save()` opens at most **two** files simultaneously: the output file and the source file (for head/tail reads). The pre-open strategy ensures the initial file's I/O buffer is allocated before the gap buffer consumes the heap. If `free()` works (returns memory to the heap on `fclose()`), the pattern of open-read/write-close ensures only one or two file handles are live at any moment.
 
 ---
@@ -500,7 +510,7 @@ Lines wider than `scr_cols` wrap to additional screen rows. There is no horizont
 ### 11.3 Status Bar
 The bottom row (`scr_rows - 1`) shows either:
 - A transient message stored in `ed.status` (search results, errors, mode indicators), displayed in reverse video; or
-- The default status: `"filename[+] LN"` (filename, optional `[+]` if modified, current line number), also in reverse video.
+- The default status: `"filename" [+] L<current>/<total>` (filename in quotes, optional `[+]` if modified, current line number and total line count), also in reverse video. When the file has unloaded tail content (`ed.tail_offset > 0`), a `+` is appended to the total: `"filename" [+] L42/300+`.
 
 Transient messages are cleared on the next keypress in normal mode, or replaced with `-- INSERT --` in insert mode.
 
@@ -563,6 +573,7 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | Open file before `gb_init()` | Prevents heap exhaustion from leaving no room for `fopen()`'s I/O buffer |
 | Single-level undo | Memory constraint: a full undo stack would require significant heap |
 | Functions split for optimizer | HI-TECH C's optimizer has a per-function memory limit; large functions must be split |
+| `erepeat.c` extracted from `edit.c` | HI-TECH C has a per-file total label limit; moving dot-repeat functions to a new file reduced `edit.c` below the limit |
 | `long` variables at function top | Inner-block `long` declarations have been observed to cause optimizer failures |
 | `gb_memmove()` in gap.c | HI-TECH C V3.09 does not include `memmove()` |
 | BIOS CONIN for size query reads | BDOS console output between reads can consume buffered terminal response bytes |
