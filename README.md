@@ -2,7 +2,8 @@
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
-for terminal control.
+for terminal control. Implements most of the basic movement and editing command
+including the . operator for repeat. Also has a single level undo.
 
 **Author:** Juan Orlandini  
 **License:** MIT
