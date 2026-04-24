@@ -1,0 +1,537 @@
+.\" hvi.1 - Manual page for HVI
+.\" Author: Juan Orlandini
+.\" License: MIT
+.\"
+.\" View with: man ./hvi.1
+.\"
+.TH HVI 1 "2026" "HVI 1.0" "CP/M User Commands"
+.\"
+.\" ----------------------------------------------------------------
+.SH NAME
+.\"
+hvi \- VI-compatible text editor for CP/M
+.\"
+.\" ----------------------------------------------------------------
+.SH SYNOPSIS
+.\"
+.B HVI
+.RI [ \-d ]
+.RI [ filename ]
+.\"
+.\" ----------------------------------------------------------------
+.SH DESCRIPTION
+.\"
+.B HVI
+is a lightweight VI-compatible text editor for CP/M 2.2 and CP/M 3.0.
+It uses a gap buffer for efficient editing and ANSI/VT100 escape sequences
+for terminal control.
+.PP
+If
+.I filename
+is given and the file exists, it is loaded for editing.
+If the file does not exist, an empty buffer is opened and the file is created
+on the first write.
+If no filename is given, HVI starts with an unnamed empty buffer.
+.PP
+HVI supports three editing modes: normal mode (the default), insert mode,
+and command-line (ex) mode.
+.\"
+.\" ----------------------------------------------------------------
+.SH OPTIONS
+.\"
+.TP
+.B \-d
+Enable debug output.
+Diagnostic messages (key codes, mode changes, buffer operations) are written
+to standard error.
+Redirect stderr to a file to capture them:
+.PP
+.RS
+.B HVI \-d MYFILE.TXT 2>DEBUG.TXT
+.RE
+.\"
+.\" ----------------------------------------------------------------
+.SH MODES
+.\"
+.SS Normal Mode
+.PP
+The default mode on startup.
+Keystrokes are interpreted as cursor-movement or editing commands.
+.SS Insert Mode
+.PP
+Entered from normal mode via
+.BR i ,
+.BR a ,
+.BR I ,
+.BR A ,
+.BR o ,
+.BR O ,
+.BR s ,
+or
+.BR S .
+All printable characters are inserted into the buffer.
+Press
+.B ESC
+to return to normal mode.
+.SS Command-Line (Ex) Mode
+.PP
+Entered from normal mode by pressing
+.BR : .
+A command prompt appears on the status line.
+Press
+.B Enter
+to execute or
+.B ESC
+to cancel.
+.\"
+.\" ----------------------------------------------------------------
+.SH COMMANDS
+.\"
+.SS Count Prefix
+Most normal-mode commands accept a numeric count prefix that repeats the
+command.
+For example,
+.B 5j
+moves down five lines and
+.B 3dd
+deletes three lines.
+.\"
+.SS Cursor Movement
+.TP
+.B h
+Move left one character.
+.TP
+.B l
+Move right one character.
+.TP
+.B j
+Move down one line.
+.TP
+.B k
+Move up one line.
+.TP
+.B w
+Move forward to the start of the next word.
+.TP
+.B b
+Move backward to the start of the previous word.
+.TP
+.B e
+Move forward to the end of the current or next word.
+.TP
+.B 0
+Move to the beginning of the line.
+.TP
+.B ^
+Move to the first non-blank character of the line.
+.TP
+.B $
+Move to the end of the line.
+.TP
+.BI G
+Go to the last line of the file.
+With a count prefix
+.RI ( nG ),
+go to line
+.IR n .
+.TP
+.B gg
+Go to the first line of the file.
+With a count prefix
+.RI ( ngg ),
+go to line
+.IR n .
+.TP
+.B Ctrl-F
+Scroll forward one page.
+.TP
+.B Ctrl-B
+Scroll backward one page.
+.TP
+.B Ctrl-D
+Scroll forward half a page.
+.TP
+.B Ctrl-U
+Scroll backward half a page.
+.\"
+.SS Character Search (Current Line)
+.TP
+.BI f c
+Move forward to the next occurrence of character
+.I c
+on the current line.
+.TP
+.BI F c
+Move backward to the previous occurrence of character
+.I c
+on the current line.
+.TP
+.B ;
+Repeat the last
+.B f
+or
+.B F
+in the same direction.
+.TP
+.B ,
+Repeat the last
+.B f
+or
+.B F
+in the opposite direction.
+.\"
+.SS Inserting Text
+.TP
+.B i
+Insert before the cursor.
+.TP
+.B a
+Append after the cursor.
+.TP
+.B I
+Insert at the first non-blank character of the line.
+.TP
+.B A
+Append at the end of the line.
+.TP
+.B o
+Open a new line below the current line and enter insert mode.
+.TP
+.B O
+Open a new line above the current line and enter insert mode.
+.TP
+.B s
+Delete
+.I n
+characters and enter insert mode (substitute).
+.TP
+.B S
+Delete the content of the current line and enter insert mode.
+.\"
+.SS Deleting Text
+.TP
+.B x
+Delete the character under the cursor.
+.TP
+.B X
+Delete the character before the cursor.
+.TP
+.B D
+Delete from the cursor to the end of the line.
+.TP
+.B dd
+Delete the current line.
+.TP
+.B dw
+Delete from the cursor to the start of the next word.
+.TP
+.B db
+Delete from the cursor to the start of the previous word.
+.TP
+.B d$
+Delete from the cursor to the end of the line.
+.TP
+.B d0
+Delete from the cursor to the beginning of the line.
+.TP
+.B dG
+Delete from the current line to the end of the file.
+.\"
+.SS Changing Text
+.TP
+.B r
+Replace the character under the cursor with the next key typed.
+.TP
+.B ~
+Toggle the case of the character under the cursor and advance.
+.TP
+.B C
+Change from the cursor to the end of the line (delete then enter insert mode).
+.TP
+.B cc
+Change the current line.
+.TP
+.B cw
+Change from the cursor to the start of the next word.
+.TP
+.B c$
+Change from the cursor to the end of the line.
+.TP
+.B J
+Join the line below to the current line, separated by a space.
+.\"
+.SS Yank and Put
+.TP
+.B yy
+Yank (copy) the current line into the yank buffer.
+.TP
+.B Y
+Yank the current line (same as
+.BR yy ).
+.TP
+.B yw
+Yank from the cursor to the start of the next word.
+.TP
+.B y$
+Yank from the cursor to the end of the line.
+.TP
+.B p
+Put (paste) the yank buffer after the cursor.
+For linewise yanks, the text is inserted below the current line.
+.TP
+.B P
+Put the yank buffer before the cursor.
+For linewise yanks, the text is inserted above the current line.
+.\"
+.SS Search
+.TP
+.BI / pattern
+Search forward for
+.IR pattern .
+.TP
+.BI ? pattern
+Search backward for
+.IR pattern .
+.TP
+.B n
+Repeat the last search in the same direction.
+.TP
+.B N
+Repeat the last search in the opposite direction.
+.PP
+Patterns are plain-text strings (no regular expressions).
+.\"
+.SS Miscellaneous Normal-Mode Commands
+.TP
+.B .
+Repeat the last change command, optionally with a new count prefix.
+.TP
+.B u
+Undo the last change.
+Only one level of undo is maintained.
+.TP
+.B :
+Enter ex command-line mode.
+.TP
+.B Ctrl-L
+Redraw the screen.
+.\"
+.SS Insert Mode Keys
+.TP
+.I character
+Insert the character at the cursor.
+.TP
+.B Enter
+Insert a newline.
+.TP
+.BR Backspace " / " Ctrl-H
+Delete the previous character.
+.TP
+.B Ctrl-W
+Delete the previous word.
+.TP
+.B Ctrl-U
+Delete to the start of the current line.
+.TP
+.B ESC
+Return to normal mode.
+.\"
+.SS Ex Commands
+.TP
+.B :w
+Write (save) the current buffer to its file.
+.TP
+.BI :w " filename"
+Write the buffer to
+.IR filename .
+.TP
+.B :q
+Quit.
+Fails if the buffer has unsaved changes; use
+.B :q!
+to override.
+.TP
+.B :q!
+Quit without saving.
+.TP
+.B :wq
+Write the buffer and quit.
+.TP
+.B :wq!
+Write the buffer and quit, even if the file is read-only.
+.TP
+.B :x
+Write the buffer if it has been modified, then quit.
+.TP
+.B :x!
+Write the buffer and quit (force).
+.TP
+.BI :r " filename"
+Read
+.I filename
+and insert its contents after the current line.
+.TP
+.BI : n
+Go to line number
+.IR n .
+.TP
+.B :$
+Go to the last line.
+.\"
+.\" ----------------------------------------------------------------
+.SH STATUS LINE
+.\"
+The bottom row of the screen is the status line.
+During normal editing it displays:
+.PP
+.RS
+.RI \(dq filename \(dq\ [+]\ L current / total
+.RE
+.PP
+.I filename
+is the name of the file being edited, or
+.B [No Name]
+if no file has been specified.
+The
+.B [+]
+flag appears when the buffer contains unsaved changes.
+.I current
+is the current line number (1-based) and
+.I total
+is the total number of lines in the loaded buffer.
+.PP
+When a file is too large to fit entirely in memory, a
+.B +
+is appended to the total:
+.PP
+.RS
+.RI \(dq filename \(dq\ L42/300+
+.RE
+.PP
+The
+.B +
+indicates that additional content exists in the file beyond what is
+currently loaded.
+.PP
+While in insert mode the status line shows
+.BR "-- INSERT --" .
+Error and informational messages (such as search results and undo confirmations)
+are displayed on the status line and cleared on the next keypress.
+.\"
+.\" ----------------------------------------------------------------
+.SH LARGE FILE SUPPORT
+.\"
+HVI can open and edit files larger than available RAM.
+At startup it allocates the largest single contiguous block the system can
+provide (typically up to about 28 KB on a CP/M system with 64 KB RAM) and
+loads as much of the file as fits.
+.PP
+As you scroll forward, HVI automatically loads the next chunk of the file
+into the buffer.
+When the buffer is full, an equal number of bytes are discarded from the
+beginning of the buffer to make room.
+The in-memory content is therefore a
+.I sliding window
+over the file.
+The status line indicates when unloaded content remains with a
+.B +
+after the line count.
+.PP
+On every
+.B :w
+save the complete file is reconstructed:
+any bytes before the current window are copied from the original file,
+the in-memory content is written (with
+.B CR+LF
+line endings), and the unloaded tail is appended.
+When saving back to the same file, an intermediate temporary file
+.RB ( HVITMP.TMP )
+is used to avoid reading and writing the same file simultaneously.
+.PP
+Edits are restricted to the portion of the file currently in the buffer.
+Content that has scrolled off the front or not yet been loaded from the
+tail is preserved unchanged on save.
+.\"
+.\" ----------------------------------------------------------------
+.SH TERMINAL REQUIREMENTS
+.\"
+HVI requires an ANSI/VT100-compatible terminal.
+It defaults to 80 columns \(mu 24 rows on startup.
+.PP
+Compatible terminals include VT100, VT220, xterm, ANSI.SYS, and most
+modern terminal emulators connected via a serial port.
+.PP
+The ANSI cursor-position report (DSR/CPR) sequence used for terminal-size
+detection is disabled by default, as many CP/M terminals do not respond to it.
+HVI uses the compile-time defaults
+.RB ( DEF_COLS =80,
+.BR DEF_ROWS =24)
+unless rebuilt with
+.BR \-DTERM_QUERY .
+.\"
+.\" ----------------------------------------------------------------
+.SH FILE FORMAT
+.\"
+HVI reads files in binary mode, stripping bare
+.B CR
+(0x0D) characters on load so that both Unix (LF) and CP/M (CR+LF) files
+are handled transparently.
+.PP
+On save, each
+.B LF
+is written as
+.B CR+LF
+per CP/M convention, and the file is terminated with
+.B Ctrl-Z
+(0x1A) per CP/M file format rules.
+.\"
+.\" ----------------------------------------------------------------
+.SH LIMITATIONS
+.\"
+.IP \(bu 2
+Single-level undo only.
+The
+.B u
+command undoes the most recent change; there is no redo.
+.IP \(bu 2
+Edits to large files are restricted to the in-memory window.
+See
+.B LARGE FILE SUPPORT
+above.
+.IP \(bu 2
+Pattern matching for
+.B /
+and
+.B ?
+is plain text only; regular expressions are not supported.
+.IP \(bu 2
+No visual or block selection mode.
+.IP \(bu 2
+No macro recording or playback.
+.IP \(bu 2
+No window splitting or multiple buffers.
+.\"
+.\" ----------------------------------------------------------------
+.SH FILES
+.\"
+.TP
+.B HVITMP.TMP
+Temporary file created in the current directory during a save when the
+source and destination file are the same and a tail exists.
+Removed automatically after a successful save.
+.\"
+.\" ----------------------------------------------------------------
+.SH AUTHOR
+.\"
+Juan Orlandini
+.\"
+.\" ----------------------------------------------------------------
+.SH LICENSE
+.\"
+MIT License.
+.\"
+.\" ----------------------------------------------------------------
+.SH SEE ALSO
+.\"
+.BR vi (1),
+.BR ex (1)
