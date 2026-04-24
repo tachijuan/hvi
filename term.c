@@ -3,9 +3,25 @@
  * Author: Juan Orlandini
  * License: MIT
  *
- * Provides cursor movement, attribute control, and input
- * using ANSI/VT100 escape sequences. Input via getch() so
- * no echo and no line buffering.
+ * Provides cursor movement, attribute control, and input using ANSI/VT100
+ * escape sequences.  Input via getch() (no echo, no line buffering).
+ *
+ * Performance optimisations for slow serial links (9600 baud, 4 MHz Z80):
+ *
+ *   Output buffer  — all output is accumulated in a 256-byte buffer and
+ *     flushed as a single write just before blocking on input.  This turns
+ *     many individual BDOS/BIOS calls into one, dramatically cutting CPU
+ *     overhead when the terminal is baud-rate limited.
+ *
+ *   Cursor tracking  — s_trow / s_tcol shadow the terminal cursor so that
+ *     term_goto() can emit cheap sequences (\r, \r\n) instead of the full
+ *     ESC[R;CH sequence (7-10 bytes) when moving to column 0 within the
+ *     text area.  A full refresh of 24 rows saves ~150 bytes this way.
+ *
+ *   Scroll region  — set once in term_init() to cover rows 1..(scr_rows-1)
+ *     (the text area, in 1-based terminal coordinates).  term_scroll_up()
+ *     and term_scroll_dn() exploit this to scroll by 1 visual row using 2-3
+ *     bytes instead of repainting the entire screen.
  */
 
 #include <stdio.h>
@@ -19,97 +35,288 @@ extern Editor ed;
 /* getch() is in the HI-TECH C runtime; bdos() and bios() come from <cpm.h> */
 extern int getch();
 
-/* Flush stdout (CP/M stdio may buffer output). */
-static void term_flush()
+/* ------------------------------------------------------------------ */
+/*  Output buffer                                                       */
+/* ------------------------------------------------------------------ */
+
+#define OUT_BUF_SZ  256
+static char s_outbuf[OUT_BUF_SZ];
+static int  s_outpos = 0;
+
+/* Tracked terminal cursor position (-1 = unknown). */
+static int  s_trow = -1;
+static int  s_tcol = -1;
+
+/*
+ * Write one byte to the output buffer.
+ * Auto-flushes when the buffer fills; the caller is responsible for
+ * a final flush before blocking on input.
+ */
+static void raw_byte(c)
+int c;
 {
-    fflush(stdout);
+    if (s_outpos >= OUT_BUF_SZ) {
+        fwrite(s_outbuf, 1, s_outpos, stdout);
+        s_outpos = 0;
+    }
+    s_outbuf[s_outpos++] = (char)c;
 }
 
-/* Output a single character to the console. */
+/*
+ * Write a C-string to the output buffer without updating cursor tracking.
+ * Use this for escape sequences whose content is fully controlled by the
+ * caller (which then sets s_trow/s_tcol explicitly).
+ */
+static void raw_str(s)
+char *s;
+{
+    while (*s) raw_byte((unsigned char)*s++);
+}
+
+/*
+ * Flush the output buffer to stdout.
+ * Called by term_getch() before blocking; also exported so callers can
+ * flush at logical checkpoints.
+ */
+void term_flush()
+{
+    if (s_outpos > 0) {
+        fwrite(s_outbuf, 1, s_outpos, stdout);
+        fflush(stdout);
+        s_outpos = 0;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public output primitives                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Output a single character and update cursor tracking.
+ * Visible chars (0x20-0x7E) advance the column by 1.
+ * \r resets the column to 0.
+ * \n increments the row and resets the column.
+ * Any other byte (ESC etc.) invalidates tracking because its effect on
+ * cursor position depends on the full escape sequence.
+ */
 void term_putch(c)
 int c;
 {
-    putchar(c);
+    raw_byte(c);
+    if (c >= 0x20 && c != 0x7F) {
+        if (s_tcol >= 0) s_tcol++;
+    } else if (c == '\r') {
+        s_tcol = 0;
+    } else if (c == '\n') {
+        if (s_trow >= 0) s_trow++;
+        s_tcol = 0;
+    } else {
+        /* Control char other than CR/LF — lose tracking */
+        s_trow = -1;
+        s_tcol = -1;
+    }
 }
 
-/* Output a null-terminated string to the console. */
+/* Output a null-terminated string, updating cursor tracking per char. */
 void term_puts(s)
 char *s;
 {
     while (*s)
-        putchar((unsigned char)*s++);
+        term_putch((unsigned char)*s++);
 }
 
 /*
- * Initialise terminal.
- * On CP/M there is no termios; we rely on the terminal
- * already being in raw mode via getch().
- * Send a clear-screen and home-cursor to start fresh.
+ * Clear from cursor to end of current line (ESC[K).
+ * The terminal cursor does NOT move; do not invalidate tracking.
  */
-void term_init()
-{
-    ed.scr_rows = DEF_ROWS;
-    ed.scr_cols = DEF_COLS;
-    term_getsize(&ed.scr_rows, &ed.scr_cols);
-    term_clear();
-}
-
-/* Restore terminal (no-op on CP/M, but output a newline). */
-void term_restore()
-{
-    term_normal();
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
-    term_flush();
-}
-
-/* Clear the entire screen. */
-void term_clear()
-{
-    term_puts("\033[2J");
-    term_goto(0, 0);
-    term_flush();
-}
-
-/* Clear from cursor to end of current line. */
 void term_clreol()
 {
-    term_puts("\033[K");
+    raw_byte(0x1B); raw_byte('['); raw_byte('K');
 }
 
+/* Set bold video attribute (cursor doesn't move). */
+void term_bold()
+{
+    raw_str("\033[1m");
+}
+
+/* Set reverse video attribute (cursor doesn't move). */
+void term_reverse()
+{
+    raw_str("\033[7m");
+}
+
+/* Reset all video attributes (cursor doesn't move). */
+void term_normal()
+{
+    raw_str("\033[0m");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Cursor positioning                                                  */
+/* ------------------------------------------------------------------ */
+
 /*
- * Move cursor to row, col (both 0-based).
- * ANSI sequences are 1-based, so we add 1.
+ * Move the terminal cursor to (row, col), both 0-based.
+ *
+ * Optimisations (only when cursor position is known):
+ *
+ *   Same position        — no-op.
+ *   Same row, col == 0   — emit \r (1 byte).
+ *   col == 0, row N down — emit \r + N newlines (2+N bytes) when the
+ *     destination is within the text area (row <= scr_rows-2).  Within the
+ *     scroll region a newline at any row except the bottom margin simply
+ *     moves the cursor down; it does NOT scroll the screen.
+ *
+ * All other cases fall back to the full ANSI CSI sequence.
  */
 void term_goto(row, col)
 int row, col;
 {
     char buf[16];
+    int  dr, i;
+
+    /* No-op when already there. */
+    if (row == s_trow && col == s_tcol) return;
+
+    if (s_trow >= 0 && s_tcol >= 0) {
+        dr = row - s_trow;
+
+        /* Same row, move to column 0. */
+        if (dr == 0 && col == 0) {
+            raw_byte('\r');
+            s_tcol = 0;
+            return;
+        }
+
+        /*
+         * Move to column 0 on a lower row within the text area.
+         * Emitting N newlines starting from s_trow is safe as long as we
+         * never land on the bottom margin (scr_rows-2) mid-sequence:
+         * that is guaranteed by requiring row <= scr_rows-2.
+         * Limit to dr<=5 (6 bytes vs 7+ for full CSI — break-even favours
+         * this path).
+         */
+        if (col == 0 && dr > 0 && dr <= 5 && row <= ed.scr_rows - 2) {
+            if (s_tcol != 0) raw_byte('\r');
+            for (i = 0; i < dr; i++) raw_byte('\n');
+            s_trow = row;
+            s_tcol = 0;
+            return;
+        }
+    }
+
+    /* Full ANSI cursor-address sequence. */
     sprintf(buf, "\033[%d;%dH", row + 1, col + 1);
-    term_puts(buf);
+    raw_str(buf);
+    s_trow = row;
+    s_tcol = col;
 }
 
-/* Set bold attribute. */
-void term_bold()
-{
-    term_puts("\033[1m");
-}
+/* ------------------------------------------------------------------ */
+/*  Terminal scrolling                                                  */
+/* ------------------------------------------------------------------ */
 
-/* Set reverse-video attribute. */
-void term_reverse()
+/*
+ * Scroll the text area up by 1 visual row (content moves up, blank line
+ * appears at the bottom of the text area).
+ *
+ * Technique: position at the last text row (which is the bottom margin of
+ * the scroll region set in term_init) and emit a newline.  Within the
+ * scroll region this scrolls the region up without touching the status
+ * line.  3-10 bytes depending on current cursor position vs ~1200 bytes
+ * for a full screen repaint.
+ */
+void term_scroll_up()
 {
-    term_puts("\033[7m");
-}
-
-/* Reset all attributes to normal. */
-void term_normal()
-{
-    term_puts("\033[0m");
+    term_goto(ed.scr_rows - 2, 0);
+    raw_byte('\n');
+    /* Cursor stays at the last text row after the scroll. */
+    s_trow = ed.scr_rows - 2;
+    s_tcol = 0;
 }
 
 /*
- * Read one character from the console without echo.
- * Uses HiTech-C getch() which calls CP/M BIOS directly.
+ * Scroll the text area down by 1 visual row (content moves down, blank
+ * line appears at the top of the text area).
+ *
+ * Technique: position at row 0 (top margin of scroll region) and emit
+ * ESC M (Reverse Index).  The scroll region scrolls down; cursor stays
+ * at row 0.
+ */
+void term_scroll_dn()
+{
+    term_goto(0, 0);
+    raw_byte(0x1B);
+    raw_byte('M');   /* Reverse Index */
+    s_trow = 0;
+    s_tcol = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Terminal lifecycle                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Initialise the terminal:
+ *   1. Query size (or use defaults).
+ *   2. Clear the screen.
+ *   3. Set the scroll region to the text area rows 1..(scr_rows-1) so that
+ *      term_scroll_up/dn() work without disturbing the status line.
+ */
+void term_init()
+{
+    char buf[16];
+    ed.scr_rows = DEF_ROWS;
+    ed.scr_cols = DEF_COLS;
+    term_getsize(&ed.scr_rows, &ed.scr_cols);
+    term_clear();
+    /* Set scroll region: rows 1..(scr_rows-1) in 1-based ANSI coordinates
+     * = rows 0..(scr_rows-2) in 0-based editor coordinates (the text area). */
+    sprintf(buf, "\033[1;%dr", ed.scr_rows - 1);
+    raw_str(buf);
+    s_trow = -1;
+    s_tcol = -1;
+    term_flush();
+}
+
+/*
+ * Restore terminal on exit: reset the scroll region to full screen so the
+ * shell's output is not constrained, then clear the status line.
+ */
+void term_restore()
+{
+    raw_str("\033[r");   /* reset scroll region to full screen */
+    term_normal();
+    /* Invalidate tracking so term_goto emits an unconditional move.
+     * The tracking state may be stale after reading the :q keystroke. */
+    s_trow = -1; s_tcol = -1;
+    term_goto(ed.scr_rows - 1, 0);
+    term_clreol();
+    raw_byte('\n');      /* leave cursor at bottom, below editor content */
+    term_flush();
+}
+
+/*
+ * Clear the entire screen and home the cursor.
+ * Does NOT touch the scroll region — term_init() sets it; term_restore()
+ * clears it.  Callers (e.g. KEY_CTRL_L) can call this freely.
+ */
+void term_clear()
+{
+    raw_str("\033[2J\033[H");
+    s_trow = 0;
+    s_tcol = 0;
+    term_flush();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Input                                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Read one raw keypress.  Flushes all pending output first so the screen
+ * is fully updated before we block.
  */
 int term_getch()
 {
@@ -119,31 +326,14 @@ int term_getch()
     return c & 0xFF;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Terminal size query                                                 */
+/* ------------------------------------------------------------------ */
+
 /*
  * Query terminal dimensions using the ANSI cursor-position report.
- *
- * Send ESC[999;999H (move cursor to extreme corner) then ESC[6n (request
- * cursor position).  The terminal responds with ESC[rows;colsR.
- *
- * Root cause of prior failures: on CP/M systems whose host terminal is in
- * canonical (line-buffered) mode, ESC (0x1B) is delivered immediately by
- * the Unix line discipline as a special character, but the rest of the
- * response ([rows;colsR) is held until the user presses ENTER.  BDOS fn 2
- * (console output), called by fprintf inside the read loop, also invokes
- * BIOS CONST to check for ^S/^C; if the buffered response bytes are
- * visible to CONST at that moment they can be consumed before we read them.
- *
- * Fix — two changes:
- *   1. Phase 2 uses bios(3,0,0) (BIOS CONIN) directly rather than getch()
- *      or BDOS wrappers.  BIOS CONIN is the lowest-level console input; on
- *      emulators that implement it via a raw-mode read it avoids the
- *      canonical buffer entirely.
- *   2. All debug output is deferred until after Phase 2 is complete, so
- *      no BDOS console-output call runs between consecutive bios(3) reads.
- *
- * On systems where BIOS CONIN is still line-buffered one ENTER keypress
- * after the query flushes the canonical buffer and the response is read
- * correctly in a single burst.
+ * See the original comment in the earlier version for the full explanation
+ * of the canonical-mode / BIOS-CONIN rationale.
  */
 void term_getsize(rows, cols)
 int *rows;
@@ -156,12 +346,9 @@ int *cols;
     *rows = DEF_ROWS;
     *cols = DEF_COLS;
 
-    /* Send query; fflush guarantees it leaves the stdio buffer. */
     term_puts("\033[999;999H\033[6n");
-    fflush(stdout);
+    term_flush();
 
-    /* Phase 1: wait up to 30000 BIOS CONST polls for any response byte.
-     * bios(2,...) is BIOS CONST: returns 0 if no char ready, else non-zero. */
     wait = 30000;
     while (bios(2, 0, 0) == 0) {
         if (--wait == 0) {
@@ -171,17 +358,10 @@ int *cols;
         }
     }
 
-    /*
-     * Phase 2: read the full CPR sequence via BIOS CONIN (bios(3,...)).
-     * No debug output inside this loop — BDOS console writes between reads
-     * can interfere with the buffered response on some CP/M implementations.
-     * The loop is bounded by 48 iterations so a truncated response cannot
-     * stall indefinitely.
-     */
     i = 0;
     state = 0;
     for (total = 0; total < 48 && i < (int)(sizeof(buf) - 1); total++) {
-        c = (int)(unsigned char)bios(3, 0, 0);  /* BIOS CONIN */
+        c = (int)(unsigned char)bios(3, 0, 0);
 
         switch (state) {
         case 0:
@@ -213,7 +393,6 @@ int *cols;
     }
     buf[i] = '\0';
 
-    /* All reads done; debug output is safe now. */
     if (ed.debug)
         fprintf(stderr, "\r\nDBG getsize: state=%d buf=[%s]\r\n", state, buf);
 

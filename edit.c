@@ -346,227 +346,10 @@ int c, count;
 }
 
 /* Adjust cursor to the insertion point for the original entry command. */
-static void dot_ins_position()
-{
-    int sz, eol;
-    switch (ed.dot_cmd) {
-    case 'a':
-        sz = gb_content_len();
-        if (sz > 0 && ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n')
-            ed.cur_pos++;
-        break;
-    case 'A':
-        mv_eol();
-        sz = gb_content_len();
-        if (sz > 0 && ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n')
-            ed.cur_pos++;
-        break;
-    case 'I':
-        mv_bnb();
-        break;
-    case 'o':
-        sz = gb_content_len();
-        eol = ed.cur_pos;
-        while (eol < sz && gb_char_at(eol) != '\n') eol++;
-        if (eol < sz) eol++;
-        ed.cur_pos = eol;
-        break;
-    case 'O':
-        while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
-        break;
-    default: break;
-    }
-}
-
-/* Replay c/C: delete the range then re-insert stored text. */
-static void dot_replay_c(n)
-int n;
-{
-    int from, to, ins_pos, sz, linewise, endpoint;
-    linewise = 0;
-    if (ed.dot_cmd == 'C' || ed.dot_motion == 'c') {
-        from = ed.cur_pos;
-        while (from > 0 && gb_char_at(from - 1) != '\n') from--;
-        to = from;
-        sz = gb_content_len();
-        while (to < sz && gb_char_at(to) != '\n') to++;
-    } else {
-        endpoint = motion_endpoint(ed.dot_motion, n, &linewise);
-        if (endpoint < 0) return;
-        from = (ed.cur_pos < endpoint) ? ed.cur_pos : endpoint;
-        to   = (ed.cur_pos < endpoint) ? endpoint   : ed.cur_pos;
-    }
-    ins_pos = from;
-    if (to > from) {
-        undo_save_delete(from, to - from);
-        gb_delete(from, to - from);
-        ed.cur_pos = from;
-        ed.modified = 1;
-    }
-    if (ed.dot_len > 0) {
-        undo_save_insert(ins_pos, ed.dot_len);
-        gb_insert(ins_pos, ed.dot_text, ed.dot_len);
-        ed.cur_pos = ins_pos + ed.dot_len;
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
-        if (ed.cur_pos < 0) ed.cur_pos = 0;
-    }
-    scr_scroll_to_cursor();
-    scr_refresh();
-}
-
-/*
- * Replay the last change command at the current cursor position.
- * count == 0 means use the stored dot_count; otherwise use count.
- */
-static void dot_replay(count)
-int count;
-{
-    int  n, sz, k, linewise, endpoint;
-    int  from, to, ins_pos, ch, eol;
-    int  start_line, end_line, total;
-    char tmp_c[1];
-    char sp;
-
-    if (!ed.dot_cmd) return;
-    n  = (count > 0) ? count : ed.dot_count;
-    sp = ' ';
-
-    switch (ed.dot_cmd) {
-
-    case 'x':
-        k = n;
-        while (k-- > 0 && ed.cur_pos < gb_content_len() &&
-               gb_char_at(ed.cur_pos) != '\n') {
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            ed.modified = 1;
-        }
-        sz = gb_content_len();
-        if (ed.cur_pos >= sz) ed.cur_pos = (sz > 0) ? sz - 1 : 0;
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n' &&
-            gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
-        scr_redraw_cur_line();
-        break;
-
-    case 'X':
-        k = n;
-        while (k-- > 0 && ed.cur_pos > 0 &&
-               gb_char_at(ed.cur_pos - 1) != '\n') {
-            ed.cur_pos--;
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            ed.modified = 1;
-        }
-        scr_redraw_cur_line();
-        break;
-
-    case 'r':
-        sz = gb_content_len();
-        if (ed.cur_pos < sz) {
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            tmp_c[0] = (char)ed.dot_arg;
-            gb_insert(ed.cur_pos, tmp_c, 1);
-            ed.modified = 1;
-            if (ed.dot_arg == '\n') scr_refresh();
-            else scr_redraw_cur_line();
-        }
-        break;
-
-    case 'D':
-        to = ed.cur_pos;
-        sz = gb_content_len();
-        while (to < sz && gb_char_at(to) != '\n') to++;
-        if (to > ed.cur_pos) {
-            undo_save_delete(ed.cur_pos, to - ed.cur_pos);
-            gb_delete(ed.cur_pos, to - ed.cur_pos);
-            ed.modified = 1;
-            sz = gb_content_len();
-            if (ed.cur_pos > 0 && (ed.cur_pos >= sz ||
-                gb_char_at(ed.cur_pos) == '\n'))
-                if (gb_char_at(ed.cur_pos - 1) != '\n')
-                    ed.cur_pos--;
-        }
-        scr_redraw_cur_line();
-        break;
-
-    case '~':
-        sz = gb_content_len();
-        for (k = 0; k < n; k++) {
-            if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') break;
-            ch = gb_char_at(ed.cur_pos);
-            if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
-            else if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
-            tmp_c[0] = (char)ch;
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            gb_insert(ed.cur_pos, tmp_c, 1);
-            ed.cur_pos++;
-            ed.modified = 1;
-        }
-        scr_redraw_cur_line();
-        break;
-
-    case 'J':
-        k = (n > 1) ? n - 1 : 1;
-        while (k-- > 0) {
-            sz = gb_content_len();
-            eol = ed.cur_pos;
-            while (eol < sz && gb_char_at(eol) != '\n') eol++;
-            if (eol >= sz) break;
-            undo_save_delete(eol, 1);
-            gb_delete(eol, 1);
-            sz = gb_content_len();
-            if (eol < sz && gb_char_at(eol) != ' ')
-                gb_insert(eol, &sp, 1);
-            ed.modified = 1;
-        }
-        scr_refresh();
-        break;
-
-    case 'd':
-        if (ed.dot_motion == 'd') {
-            start_line = scr_pos_line(ed.cur_pos);
-            end_line = start_line + ed.dot_count - 1;
-            total = scr_line_count();
-            if (end_line >= total) end_line = total - 1;
-            from = scr_line_start(start_line);
-            to = (end_line + 1 < total)
-                 ? scr_line_start(end_line + 1) : gb_content_len();
-            apply_op('d', from, to, 1);
-        } else {
-            linewise = 0;
-            endpoint = motion_endpoint(ed.dot_motion, ed.dot_count, &linewise);
-            if (endpoint >= 0)
-                apply_op('d', ed.cur_pos, endpoint, linewise);
-        }
-        break;
-
-    case 'c':
-    case 'C':
-        dot_replay_c(n);
-        break;
-
-    default:
-        /* Insert-mode commands: position then re-insert stored text. */
-        if (ed.dot_len > 0) {
-            dot_ins_position();
-            ins_pos = ed.cur_pos;
-            undo_save_insert(ins_pos, ed.dot_len);
-            gb_insert(ins_pos, ed.dot_text, ed.dot_len);
-            ed.cur_pos = ins_pos + ed.dot_len;
-            if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-                ed.cur_pos--;
-            ed.modified = 1;
-            scr_scroll_to_cursor();
-            scr_refresh();
-        }
-        break;
-    }
-}
+/* dot_ins_position(), dot_replay_c(), dot_replay() live in erepeat.c */
+void dot_ins_position();
+void dot_replay_c();
+void dot_replay();
 
 /* Handle insert/edit/search commands (split from normal_cmd for optimizer). */
 /* Handle yank/put/search/undo/ex commands. */
@@ -742,8 +525,14 @@ int c, count, size;
 
     /* --- Screen control --- */
     case KEY_CTRL_L:   /* redraw */
-        term_clear();
-        scr_refresh();
+        {
+            char buf[16];
+            term_clear();
+            /* Re-establish scroll region after term_clear() homes the cursor. */
+            sprintf(buf, "\033[1;%dr", ed.scr_rows - 1);
+            term_puts(buf);
+            scr_refresh();
+        }
         break;
 
     /* --- Ex command line --- */
@@ -901,7 +690,7 @@ int c, count, size;
                 ed.dot_cmd = 'r'; ed.dot_count = 1;
                 ed.dot_motion = 0; ed.dot_arg = repl;
                 if (repl == '\n') scr_refresh();
-                else scr_redraw_cur_line();
+                else scr_redraw_cur_vrow();
             }
         }
         break;
@@ -1035,6 +824,76 @@ int c, count, size;
     }
 }
 
+/*
+ * Handle G, Ctrl+F/B/D/U — page and large-motion commands.
+ * Split out of normal_cmd to keep the label count under the compiler limit.
+ */
+static void normal_page_cmd(c, count, had_count)
+int c, count, had_count;
+{
+    int n, top_line, total, line, clen, text_rows;
+
+    switch (c) {
+
+    case 'G':
+        while (ed.tail_offset > 0L) {
+            clen = gb_content_len();
+            if (clen > 0) ed.cur_pos = clen - 1;
+            if (gb_load_more(LOAD_CHUNK) == 0) break;
+        }
+        line = had_count ? count - 1 : scr_line_count() - 1;
+        if (line < 0) line = 0;
+        if (line >= scr_line_count()) line = scr_line_count() - 1;
+        ed.cur_pos = scr_line_start(line);
+        mv_bnb();
+        ed.want_col = scr_pos_col(ed.cur_pos);
+        scr_scroll_to_cursor();
+        scr_refresh();
+        break;
+
+    case KEY_CTRL_F:
+        text_rows = ed.scr_rows - 1;
+        n        = count * (text_rows - 2);
+        top_line = scr_pos_line(ed.top_pos) + n;
+        total    = scr_line_count();
+        if (ed.tail_offset > 0L && top_line >= total - 1)
+            gb_load_more(LOAD_CHUNK);
+        total = scr_line_count();
+        if (top_line >= total) top_line = total - 1;
+        ed.top_pos = scr_line_start(top_line);
+        ed.cur_pos = ed.top_pos;
+        scr_refresh();
+        break;
+
+    case KEY_CTRL_B:
+        text_rows = ed.scr_rows - 1;
+        n        = count * (text_rows - 2);
+        top_line = scr_pos_line(ed.top_pos) - n;
+        if (top_line < 0) top_line = 0;
+        ed.top_pos = scr_line_start(top_line);
+        ed.cur_pos = ed.top_pos;
+        scr_refresh();
+        break;
+
+    case KEY_CTRL_D:
+        n = (ed.scr_rows - 1) / 2;
+        if (ed.tail_offset > 0L &&
+            ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
+            gb_load_more(LOAD_CHUNK);
+        mv_down(n * count);
+        scr_scroll_to_cursor();
+        scr_refresh();
+        break;
+
+    case KEY_CTRL_U:
+        n = (ed.scr_rows - 1) / 2;
+        mv_up(n * count);
+        scr_scroll_to_cursor();
+        scr_refresh();
+        break;
+    }
+}
+
 static void normal_cmd(c)
 int c;
 {
@@ -1102,7 +961,6 @@ int c;
     if (g_g) {
         g_g = 0;
         if (c == 'g') {
-            /* gg: go to first line (or line count if given before 'g') */
             int line = (g_g_count > 0) ? g_g_count - 1 : 0;
             if (line >= scr_line_count()) line = scr_line_count() - 1;
             ed.cur_pos = scr_line_start(line);
@@ -1118,119 +976,59 @@ int c;
     switch (c) {
 
     /* --- Movement --- */
-    case 'h':  mv_left(count);  scr_update_cursor(); break;
-    case 'l':  mv_right(count); scr_update_cursor(); break;
+    case 'h':  mv_left(count);  scr_show_status(ed.status); break;
+    case 'l':  mv_right(count); scr_show_status(ed.status); break;
 
     case 'j':
-        old_top = ed.top_pos;
-        /* Load more from tail when cursor nears the end of loaded content */
         if (ed.tail_offset > 0L &&
-            ed.cur_pos >= gb_content_len() - ed.scr_cols)
+            ed.cur_pos >= gb_content_len() - ed.scr_cols) {
             gb_load_more(LOAD_CHUNK);
-        mv_down(count); scr_scroll_to_cursor();
-        if (ed.top_pos != old_top) scr_refresh(); else scr_update_cursor();
+            mv_down(count); scr_scroll_to_cursor();
+            scr_refresh();
+        } else {
+            old_top = ed.top_pos;
+            mv_down(count); scr_scroll_to_cursor();
+            scr_update_after_move(old_top);
+        }
         break;
     case 'k':
         old_top = ed.top_pos;
         mv_up(count); scr_scroll_to_cursor();
-        if (ed.top_pos != old_top) scr_refresh(); else scr_update_cursor();
+        scr_update_after_move(old_top);
         break;
 
     case 'w':
         old_top = ed.top_pos;
         mv_word_fwd(count); scr_scroll_to_cursor();
-        if (ed.top_pos != old_top) scr_refresh(); else scr_update_cursor();
+        scr_update_after_move(old_top);
         break;
     case 'b':
         old_top = ed.top_pos;
         mv_word_back(count); scr_scroll_to_cursor();
-        if (ed.top_pos != old_top) scr_refresh(); else scr_update_cursor();
+        scr_update_after_move(old_top);
         break;
     case 'e':
         old_top = ed.top_pos;
         mv_word_end(count); scr_scroll_to_cursor();
-        if (ed.top_pos != old_top) scr_refresh(); else scr_update_cursor();
+        scr_update_after_move(old_top);
         break;
 
-    case '0':  mv_bol();  ed.want_col = 0; scr_update_cursor(); break;
-    case '^':  mv_bnb();  ed.want_col = scr_pos_col(ed.cur_pos); scr_update_cursor(); break;
-    case '$':  mv_eol();  ed.want_col = 9999; scr_update_cursor(); break;
+    case '0':  mv_bol();  ed.want_col = 0; scr_show_status(ed.status); break;
+    case '^':  mv_bnb();  ed.want_col = scr_pos_col(ed.cur_pos); scr_show_status(ed.status); break;
+    case '$':  mv_eol();  ed.want_col = 9999; scr_show_status(ed.status); break;
 
-    case '.':   /* repeat last change */
+    case '.':
         dot_replay(had_count ? count : 0);
-        break;
-
-    case 'G':  /* go to last line, or line count if explicit */
-        {
-            int line, clen;
-            /* Load as much tail as possible; advance cur_pos to near the end
-             * each iteration so gb_load_more's "don't discard past cursor"
-             * cap doesn't block progress when cur_pos starts at 0. */
-            while (ed.tail_offset > 0L) {
-                clen = gb_content_len();
-                if (clen > 0) ed.cur_pos = clen - 1;
-                if (gb_load_more(LOAD_CHUNK) == 0) break;
-            }
-            line = had_count ? count - 1 : scr_line_count() - 1;
-            if (line < 0) line = 0;
-            if (line >= scr_line_count()) line = scr_line_count() - 1;
-            ed.cur_pos = scr_line_start(line);
-            mv_bnb();
-            ed.want_col = scr_pos_col(ed.cur_pos);
-            scr_scroll_to_cursor();
-            scr_refresh();
-        }
         break;
 
     case 'g':  g_g = 1; g_g_count = had_count ? count : 0; return;
 
-    case KEY_CTRL_F:   /* page forward */
-        {
-            int text_rows = ed.scr_rows - 1;
-            int n = count * (text_rows - 2);
-            int top_line = scr_pos_line(ed.top_pos) + n;
-            int total    = scr_line_count();
-            if (ed.tail_offset > 0L && top_line >= total - 1)
-                gb_load_more(LOAD_CHUNK);
-            total = scr_line_count();
-            if (top_line >= total) top_line = total - 1;
-            ed.top_pos  = scr_line_start(top_line);
-            ed.cur_pos  = ed.top_pos;
-            scr_refresh();
-        }
-        break;
-
-    case KEY_CTRL_B:   /* page backward */
-        {
-            int text_rows = ed.scr_rows - 1;
-            int n = count * (text_rows - 2);
-            int top_line = scr_pos_line(ed.top_pos) - n;
-            if (top_line < 0) top_line = 0;
-            ed.top_pos  = scr_line_start(top_line);
-            ed.cur_pos  = ed.top_pos;
-            scr_refresh();
-        }
-        break;
-
-    case KEY_CTRL_D:   /* half page down */
-        {
-            int n = (ed.scr_rows - 1) / 2;
-            if (ed.tail_offset > 0L &&
-                ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
-                gb_load_more(LOAD_CHUNK);
-            mv_down(n * count);
-            scr_scroll_to_cursor();
-            scr_refresh();
-        }
-        break;
-
-    case KEY_CTRL_U:   /* half page up */
-        {
-            int n = (ed.scr_rows - 1) / 2;
-            mv_up(n * count);
-            scr_scroll_to_cursor();
-            scr_refresh();
-        }
+    case 'G':
+    case KEY_CTRL_F:
+    case KEY_CTRL_B:
+    case KEY_CTRL_D:
+    case KEY_CTRL_U:
+        normal_page_cmd(c, count, had_count);
         break;
 
     default:

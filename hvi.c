@@ -32,10 +32,12 @@ char *argv[];
 
     /* --- Zero-initialise editor state --- */
     memset(&ed, 0, sizeof(ed));
-    ed.scr_rows    = DEF_ROWS;
-    ed.scr_cols    = DEF_COLS;
-    ed.search_dir  = SEARCH_FWD;
-    ed.undo.type   = UNDO_NONE;
+    ed.scr_rows       = DEF_ROWS;
+    ed.scr_cols       = DEF_COLS;
+    ed.search_dir     = SEARCH_FWD;
+    ed.undo.type      = UNDO_NONE;
+    ed.cur_line       = 0;
+    ed.cur_line_pos   = -1;  /* force full scan on first scr_cur_line() call */
 
     file_arg = -1;
 

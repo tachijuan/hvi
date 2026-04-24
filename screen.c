@@ -12,6 +12,15 @@
  * terminal line's worth of content (scr_cols display columns, or fewer
  * when a newline ends the logical line sooner).  top_pos may point to
  * the middle of a long logical line (the start of any visual row).
+ *
+ * Performance notes (9600 baud, 4 MHz Z80):
+ *   scr_update_after_move() uses term_scroll_up/dn() to repaint just
+ *   one new line (~53 bytes) instead of a full screen (~1200 bytes)
+ *   when the viewport shifts by exactly 1 visual row.
+ *
+ *   scr_cur_line() maintains an incremental cache of the current line
+ *   number so that the status bar update and movement routines avoid
+ *   the O(buffer) scan of scr_pos_line(cur_pos) on every keystroke.
  */
 
 #include <stdio.h>
@@ -55,11 +64,9 @@ static int vrow_start_of(pos)
 int pos;
 {
     int p, next;
-    /* retreat to start of logical line */
     p = pos;
     while (p > 0 && gb_char_at(p - 1) != '\n')
         p--;
-    /* advance visual rows until the next one would go past pos */
     for (;;) {
         next = next_vrow(p);
         if (next > pos || next <= p) break;
@@ -70,7 +77,6 @@ int pos;
 
 /*
  * Return the display column of pos within its current visual row.
- * Used by insert_key() to detect wrap without a full redraw.
  */
 int scr_vrow_col(pos)
 int pos;
@@ -95,6 +101,7 @@ int pos;
 
 /*
  * Return the line number (0-based) of buffer position pos.
+ * O(pos) scan — use scr_cur_line() for the current cursor position.
  */
 int scr_pos_line(pos)
 int pos;
@@ -108,8 +115,49 @@ int pos;
 }
 
 /*
- * Return the display column (0-based) of pos within its logical line,
- * with tab expansion.  May exceed scr_cols for wrapped lines.
+ * Cached, incremental line number for ed.cur_pos.
+ *
+ * On the first call after initialisation (cur_line_pos == -1) a full
+ * scr_pos_line() scan is done once.  Subsequent calls update the cache
+ * incrementally: for a forward move scan only [old_pos, new_pos); for a
+ * backward move scan [new_pos, old_pos) and subtract.  For typical
+ * single-line movement (j/k) this is O(line_length) instead of O(buffer).
+ *
+ * The cache is invalidated (cur_line_pos set to -1) by any operation
+ * that changes cur_pos non-incrementally (G, gg, search, undo, put, …).
+ * Those callers call scr_cur_line() once afterwards to rebuild the cache.
+ */
+int scr_cur_line()
+{
+    int pos, old_pos, old_line, i;
+
+    pos = ed.cur_pos;
+
+    if (ed.cur_line_pos == pos)
+        return ed.cur_line;
+
+    old_pos  = ed.cur_line_pos;
+    old_line = ed.cur_line;
+
+    if (old_pos >= 0 && old_line >= 0) {
+        if (pos > old_pos) {
+            for (i = old_pos; i < pos; i++)
+                if (gb_char_at(i) == '\n') old_line++;
+        } else {
+            for (i = pos; i < old_pos; i++)
+                if (gb_char_at(i) == '\n') old_line--;
+            if (old_line < 0) old_line = 0;
+        }
+        ed.cur_line = old_line;
+    } else {
+        ed.cur_line = scr_pos_line(pos);
+    }
+    ed.cur_line_pos = pos;
+    return ed.cur_line;
+}
+
+/*
+ * Return the display column (0-based) of pos within its logical line.
  */
 int scr_pos_col(pos)
 int pos;
@@ -129,9 +177,7 @@ int pos;
     return col;
 }
 
-/*
- * Return the buffer position of the start of logical line linenum.
- */
+/* Return the buffer position of the start of logical line linenum. */
 int scr_line_start(linenum)
 int linenum;
 {
@@ -193,25 +239,22 @@ void scr_scroll_to_cursor()
 
     text_rows = ed.scr_rows - 1;
 
-    /* cursor above viewport */
     if (ed.cur_pos < ed.top_pos) {
         ed.top_pos = vrow_start_of(ed.cur_pos);
         return;
     }
 
-    /* count visual rows from top_pos until we reach cur_pos */
     p    = ed.top_pos;
     rows = 0;
     while (p < ed.cur_pos) {
         next = next_vrow(p);
         if (next <= p) break;
-        if (next > ed.cur_pos) break;   /* next row goes past cursor */
+        if (next > ed.cur_pos) break;
         p = next;
         rows++;
     }
 
     if (rows >= text_rows) {
-        /* cursor below viewport: advance top_pos forward */
         advance = rows - text_rows + 1;
         p = ed.top_pos;
         while (advance-- > 0) {
@@ -225,7 +268,6 @@ void scr_scroll_to_cursor()
 
 /*
  * Move the terminal cursor to match the editor cursor position.
- * Computes screen row and column in terms of visual rows.
  */
 void scr_update_cursor()
 {
@@ -234,7 +276,6 @@ void scr_update_cursor()
     size   = gb_content_len();
     vstart = vrow_start_of(ed.cur_pos);
 
-    /* count visual rows from top_pos to the start of cursor's visual row */
     p       = ed.top_pos;
     scr_row = 0;
     while (p < vstart) {
@@ -244,7 +285,6 @@ void scr_update_cursor()
         scr_row++;
     }
 
-    /* column within this visual row */
     col = 0;
     p   = vstart;
     while (p < ed.cur_pos && p < size) {
@@ -275,7 +315,6 @@ int screen_row;
 {
     int pos, r, col, size, c, nc, next;
 
-    /* find start of this visual row */
     pos = ed.top_pos;
     for (r = 0; r < screen_row; r++) {
         next = next_vrow(pos);
@@ -298,7 +337,7 @@ int screen_row;
         if (c == '\n') break;
         if (c == '\t') {
             nc = (col / TAB_STOP + 1) * TAB_STOP;
-            if (nc > ed.scr_cols) break;   /* tab overflows — wrap */
+            if (nc > ed.scr_cols) break;
             while (col < nc) { term_putch(' '); col++; }
         } else {
             term_putch(c);
@@ -310,6 +349,9 @@ int screen_row;
 
 /*
  * Full screen refresh: redraws all text rows and the status line.
+ * Sequential rows use \r\n (2 bytes) instead of a full ESC[R;CH goto
+ * (7-10 bytes) — term_goto() handles this automatically via cursor
+ * tracking.
  */
 void scr_refresh()
 {
@@ -318,26 +360,24 @@ void scr_refresh()
     scr_scroll_to_cursor();
     for (row = 0; row < text_rows; row++)
         scr_redraw_line(row);
-    scr_update_cursor();
     scr_show_status(ed.status);
 }
 
 /*
- * Redraw from the cursor's visual row to the bottom of the text area,
- * then reposition the terminal cursor.
- *
- * Redraws more than just the cursor's row because a character insertion
- * or deletion on a long line can shift content across visual-row
- * boundaries below the cursor.
+ * Redraw only the visual rows that belong to the current logical line,
+ * plus one extra row after the line ends (to clear any row freed by a
+ * deletion that shortened the line).  Much cheaper than redrawing the
+ * entire area below the cursor for single-line edits (x, X, D, ~, …).
  */
 void scr_redraw_cur_line()
 {
-    int p, vstart, scr_row, text_rows, row, next;
+    int p, vstart, scr_row, text_rows, row, next, size;
 
     vstart    = vrow_start_of(ed.cur_pos);
     p         = ed.top_pos;
     scr_row   = 0;
     text_rows = ed.scr_rows - 1;
+    size      = gb_content_len();
 
     while (p < vstart) {
         next = next_vrow(p);
@@ -346,19 +386,129 @@ void scr_redraw_cur_line()
         scr_row++;
     }
 
-    for (row = scr_row; row < text_rows; row++)
+    p   = vstart;
+    row = scr_row;
+    for (;;) {
+        if (row >= text_rows) break;
         scr_redraw_line(row);
+        row++;
+        next = next_vrow(p);
+        /* Stop at end of buffer or end of this logical line */
+        if (next <= p || next >= size || gb_char_at(next - 1) == '\n') {
+            if (row < text_rows) scr_redraw_line(row); /* 1 extra: clears freed row */
+            break;
+        }
+        p = next;
+    }
 
     scr_update_cursor();
 }
 
 /*
+ * Redraw only the single visual row that contains the cursor.
+ * Use this for in-place replacements (r, ~) where the character count
+ * does not change — just one terminal row needs to be refreshed.
+ */
+void scr_redraw_cur_vrow()
+{
+    int p, vstart, scr_row, next;
+
+    vstart  = vrow_start_of(ed.cur_pos);
+    p       = ed.top_pos;
+    scr_row = 0;
+
+    while (p < vstart) {
+        next = next_vrow(p);
+        if (next <= p) break;
+        p = next;
+        scr_row++;
+    }
+
+    scr_redraw_line(scr_row);
+    scr_update_cursor();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Smart scroll after cursor movement                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * After a movement command that may have changed top_pos, decide the
+ * cheapest way to update the display.
+ *
+ *   No scroll    — top_pos unchanged: only reposition the terminal cursor.
+ *   ±1 vrow      — use terminal scroll (term_scroll_up/dn) + redraw one
+ *                  new line.  ~53 bytes vs ~1200 for a full refresh.
+ *   Larger jump  — fall back to full scr_refresh().
+ *
+ * Pass the value of top_pos that was saved BEFORE calling
+ * scr_scroll_to_cursor().
+ */
+void scr_update_after_move(old_top)
+int old_top;
+{
+    int text_rows, p, new_top, delta, nx;
+
+    text_rows = ed.scr_rows - 1;
+    new_top   = ed.top_pos;
+
+    if (new_top == old_top) {
+        scr_show_status(ed.status);
+        return;
+    }
+
+    delta = 0;
+    if (new_top > old_top) {
+        p = old_top;
+        while (p < new_top && delta < 2) {
+            nx = next_vrow(p);
+            if (nx <= p) break;
+            p = nx;
+            delta++;
+        }
+        if (delta == 1 && p == new_top) {
+            term_scroll_up();
+            scr_redraw_line(text_rows - 1);
+            scr_show_status(ed.status);
+            return;
+        }
+    } else {
+        p = new_top;
+        while (p < old_top && delta < 2) {
+            nx = next_vrow(p);
+            if (nx <= p) break;
+            p = nx;
+            delta++;
+        }
+        if (delta == 1 && p == old_top) {
+            term_scroll_dn();
+            scr_redraw_line(0);
+            scr_show_status(ed.status);
+            return;
+        }
+    }
+
+    scr_refresh();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Status line                                                         */
+/* ------------------------------------------------------------------ */
+
+/*
  * Display msg in the status line (row scr_rows-1).
+ * If msg is empty or NULL, show the default:
+ *   "filename" [+] L<cur>/<total>
+ * When the file is larger than the buffer (tail_offset > 0), the total
+ * is the count of lines currently in memory followed by '+' to indicate
+ * that more content exists beyond what has been loaded.
+ * Uses scr_cur_line() (O(1) when cache is warm) for the line number.
  */
 void scr_show_status(msg)
 char *msg;
 {
-    char lineno[32];
+    char lineno[48];
+    int  cur, total;
 
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
@@ -368,10 +518,18 @@ char *msg;
         term_puts(msg);
         term_normal();
     } else {
-        sprintf(lineno, "\"%s\"%s L%d",
-            ed.filename[0] ? ed.filename : "[No Name]",
-            ed.modified ? " [+]" : "",
-            scr_pos_line(ed.cur_pos) + 1);
+        cur   = scr_cur_line() + 1;
+        total = scr_line_count();
+        if (ed.tail_offset > 0L)
+            sprintf(lineno, "\"%s\"%s L%d/%d+",
+                ed.filename[0] ? ed.filename : "[No Name]",
+                ed.modified ? " [+]" : "",
+                cur, total);
+        else
+            sprintf(lineno, "\"%s\"%s L%d/%d",
+                ed.filename[0] ? ed.filename : "[No Name]",
+                ed.modified ? " [+]" : "",
+                cur, total);
         term_reverse();
         term_puts(lineno);
         term_normal();

@@ -144,25 +144,42 @@ int n;
     ed.want_col = scr_pos_col(ed.cur_pos);
 }
 
+/*
+ * mv_up / mv_down scan only the neighbouring lines (O(line_length))
+ * instead of calling scr_pos_line() + scr_line_start() which each scan
+ * the buffer from position 0 (O(buffer)).  At 4 MHz this matters.
+ */
 void mv_up(n)
 int n;
 {
+    int pos, prev_lstart;
     while (n-- > 0) {
-        int line = scr_pos_line(ed.cur_pos);
-        if (line == 0) break;
-        ed.cur_pos = pos_at_col(scr_line_start(line - 1), ed.want_col);
+        pos = ed.cur_pos;
+        /* Move to start of current line */
+        while (pos > 0 && gb_char_at(pos - 1) != '\n') pos--;
+        if (pos == 0) break;    /* already on first line */
+        /* Step over the preceding newline to reach end of previous line */
+        pos--;
+        /* Find start of previous line */
+        prev_lstart = pos;
+        while (prev_lstart > 0 && gb_char_at(prev_lstart - 1) != '\n')
+            prev_lstart--;
+        ed.cur_pos = pos_at_col(prev_lstart, ed.want_col);
     }
 }
 
 void mv_down(n)
 int n;
 {
+    int pos, size;
+    size = gb_content_len();
     while (n-- > 0) {
-        int size = gb_content_len();
-        int line = scr_pos_line(ed.cur_pos);
-        int next = scr_line_start(line + 1);
-        if (next >= size) break;
-        ed.cur_pos = pos_at_col(next, ed.want_col);
+        pos = ed.cur_pos;
+        /* Scan forward to the newline that ends the current line */
+        while (pos < size && gb_char_at(pos) != '\n') pos++;
+        if (pos >= size) break; /* on last line */
+        pos++;                  /* first char of next line */
+        ed.cur_pos = pos_at_col(pos, ed.want_col);
     }
 }
 

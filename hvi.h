@@ -163,6 +163,10 @@ typedef struct {
     long    win_start;           /* byte offset in tail_file where buffer begins */
     long    tail_offset;         /* byte offset in tail_file where buffer ends */
     char    tail_file[PATH_MAX]; /* original source file for head and tail */
+
+    /* Cached current line number (incremental, avoids O(n) scans) */
+    int     cur_line;            /* line number of cur_pos; -1 = stale */
+    int     cur_line_pos;        /* cur_pos when cur_line was computed; -1 = stale */
 } Editor;
 
 extern Editor ed;
@@ -187,20 +191,26 @@ void term_clreol();
 void term_goto(/* int row, int col */);
 void term_putch(/* int c */);
 void term_puts(/* char *s */);
+void term_flush();
 int  term_getch();
 void term_getsize(/* int *rows, int *cols */);
 void term_bold();
 void term_reverse();
 void term_normal();
+void term_scroll_up();
+void term_scroll_dn();
 
 /* ---- screen.c ---- */
 void scr_refresh();
 void scr_redraw_line(/* int screen_row */);
 void scr_redraw_cur_line();
+void scr_redraw_cur_vrow();
 void scr_update_cursor();
 void scr_show_status(/* char *msg */);
 void scr_clear_status();
 void scr_scroll_to_cursor();
+void scr_update_after_move(/* int old_top */);
+int  scr_cur_line();
 int  scr_pos_line(/* int pos */);
 int  scr_pos_col(/* int pos */);
 int  scr_vrow_col(/* int pos */);
