@@ -42,12 +42,19 @@ and command-line (ex) mode.
 .TP
 .B \-d
 Enable debug output.
-Diagnostic messages (key codes, mode changes, buffer operations) are written
-to standard error.
-Redirect stderr to a file to capture them:
+Diagnostic messages (key codes, mode changes, buffer allocation, terminal
+size negotiation) are written to the console via
+.IR stderr .
+On CP/M,
+.I stderr
+maps to CON: and cannot be redirected to a file; messages appear on screen
+interleaved with the editor display and will disrupt it.
+Debug mode is most useful for diagnosing startup and initialization problems
+(before full-screen editing begins), or when running under a Unix
+cross-compile environment where stderr redirection is available:
 .PP
 .RS
-.B HVI \-d MYFILE.TXT 2>DEBUG.TXT
+.B hvi \-d myfile.txt 2>debug.txt
 .RE
 .\"
 .\" ----------------------------------------------------------------
@@ -461,13 +468,18 @@ It defaults to 80 columns \(mu 24 rows on startup.
 Compatible terminals include VT100, VT220, xterm, ANSI.SYS, and most
 modern terminal emulators connected via a serial port.
 .PP
-The ANSI cursor-position report (DSR/CPR) sequence used for terminal-size
-detection is disabled by default, as many CP/M terminals do not respond to it.
-HVI uses the compile-time defaults
+At startup HVI queries the terminal for its actual dimensions by sending
+.B ESC[999;999H
+followed by
+.B ESC[6n
+(ANSI cursor-position report).
+The response is read byte-by-byte via BIOS CONIN, bypassing BDOS canonical
+buffering.
+If the terminal does not respond within the polling timeout, HVI silently
+falls back to the compiled-in defaults
 .RB ( DEF_COLS =80,
-.BR DEF_ROWS =24)
-unless rebuilt with
-.BR \-DTERM_QUERY .
+.BR DEF_ROWS =24).
+No recompilation flag is required; the query is always active.
 .\"
 .\" ----------------------------------------------------------------
 .SH FILE FORMAT

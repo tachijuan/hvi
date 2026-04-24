@@ -76,15 +76,25 @@ HVI -d [filename]
 ```
 
 - `filename` — file to open (created if it does not exist)
-- `-d` — enable debug output to stderr (useful when redirecting stderr to a file)
+- `-d` — enable debug output to the console
 
 ### Debug Mode
 
 ```
-HVI -d MYFILE.TXT 2>DEBUG.TXT
+HVI -d MYFILE.TXT
 ```
 
-This logs every keypress and mode change to `DEBUG.TXT` for troubleshooting.
+Debug messages (key codes, mode changes, buffer allocation, terminal size
+negotiation) are written to the console via `fprintf(stderr, ...)`.  On CP/M,
+stderr maps to CON: and cannot be redirected to a file — the messages will
+appear on screen interleaved with the editor display, which will disrupt the
+output.  Debug mode is therefore most useful for diagnosing startup or
+initialization problems (before full-screen editing begins), or when running
+under a Unix cross-compile environment where stderr can be redirected:
+
+```
+hvi -d myfile.txt 2>debug.txt
+```
 
 ---
 
@@ -283,10 +293,12 @@ the tail is preserved unchanged on save.
 HVI uses ANSI/VT100 escape sequences. It defaults to 80 columns × 24 rows,
 which is the standard CP/M terminal size.
 
-The ANSI DSR size query (ESC[6n) is disabled by default because many CP/M
-terminals do not respond to it, which would cause HVI to hang at startup.
-To enable dynamic size detection on terminals that do respond, recompile with
-`-DTERM_QUERY`.
+At startup HVI always queries the terminal for its actual dimensions by
+sending `ESC[999;999H` (cursor to extreme bottom-right) followed by
+`ESC[6n` (ANSI cursor-position report). The response is read byte-by-byte
+via BIOS CONIN, bypassing BDOS canonical buffering. If the terminal does
+not respond within the polling timeout, HVI silently falls back to the
+80 × 24 defaults — it will not hang. No recompilation flag is needed.
 
 Compatible terminals: VT100, VT220, xterm, ANSI.SYS, and most modern
 terminal emulators connected via a serial port.
