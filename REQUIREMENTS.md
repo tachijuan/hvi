@@ -2,8 +2,8 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 1.0  
-**Date:** 2026-04-23
+**Version:** 1.2  
+**Date:** 2026-04-24
 
 ---
 
@@ -191,6 +191,7 @@ Insert text is captured when ESC exits insert mode, reading from `undo.pos` for 
 - `TAB_STOP = 8`: tab characters expand to the next multiple of 8.
 - Lines past the end of the file are shown as `~` in column 0 (except row 0).
 - Status line shows: filename, `[+]` if modified, current line number, or a transient message (search result, error, mode indicator).
+- `line_cnt_cached` in the `Editor` struct caches the total line count computed by `scr_line_count()`. Set to 0 (invalid) by `gb_insert()` and `gb_delete()` whenever buffer content changes; recomputed on the next status bar update. This avoids an O(buffer) scan on every cursor movement.
 
 ---
 
@@ -332,6 +333,7 @@ If the terminal does not respond, `DEF_ROWS = 24` and `DEF_COLS = 80` are used.
 | `l` | Move right one character (within line) |
 | `j` | Move down one line (preserves want_col) |
 | `k` | Move up one line (preserves want_col) |
+| `Enter` | Move to first non-blank character of the next line |
 | `w` | Forward to start of next word |
 | `b` | Backward to start of previous word |
 | `e` | Forward to end of word |
@@ -340,14 +342,16 @@ If the terminal does not respond, `DEF_ROWS = 24` and `DEF_COLS = 80` are used.
 | `$` | Move to end of line |
 | `G` | Go to last line (or line N with count prefix) |
 | `gg` | Go to first line (or line N: `5gg`) |
-| `Ctrl-F` | Scroll forward one page |
-| `Ctrl-B` | Scroll backward one page |
+| `Ctrl-F` | Scroll forward one page; cursor lands at the middle row of the new page (first non-blank). No-op if the last line of the file is already visible. |
+| `Ctrl-B` | Scroll backward one page; cursor lands at the middle row of the new page (first non-blank). No-op if `top_pos == 0` (file beginning already displayed). |
 | `Ctrl-D` | Scroll forward half page |
 | `Ctrl-U` | Scroll backward half page |
 
 Vertical movement maintains a "wanted column" (`want_col`) so that `j`/`k` through short lines returns to the original column when a longer line is reached.
 
 `j` triggers `gb_load_more()` when the cursor approaches the end of loaded content and a tail exists.
+
+`Enter` behaves identically to `j` for screen update purposes but lands on the first non-blank character of the destination line (same as `^` after `j`). Accepts a count prefix.
 
 ### 10.2 Normal Mode — Insert / Append
 
@@ -491,6 +495,8 @@ Insert mode optimises terminal output on slow (9600 baud) connections:
 | `:wq!` | Write and quit (force) |
 | `:x` | Write if modified, then quit |
 | `:x!` | Write and quit (force) |
+| `:e filename` | Abandon current buffer and edit named file (fails if unsaved changes) |
+| `:e! filename` | Abandon current buffer (discarding changes) and edit named file |
 | `:r filename` | Read file and insert after current line |
 | `:N` | Go to line number N (1-based) |
 | `:$` | Go to last line (loads entire tail for large files) |
@@ -513,6 +519,26 @@ The bottom row (`scr_rows - 1`) shows either:
 - The default status: `"filename" [+] L<current>/<total>` (filename in quotes, optional `[+]` if modified, current line number and total line count), also in reverse video. When the file has unloaded tail content (`ed.tail_offset > 0`), a `+` is appended to the total: `"filename" [+] L42/300+`.
 
 Transient messages are cleared on the next keypress in normal mode, or replaced with `-- INSERT --` in insert mode.
+
+### 11.4 Rendering Tiers (Performance)
+
+All screen output is sized to the minimum needed for the operation. From cheapest to most expensive:
+
+| Tier | Function | When used |
+|------|----------|-----------|
+| Cursor move only | `scr_update_cursor()` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport unchanged; terminal cursor repositioned (~10 bytes) |
+| Cursor move only | `scr_show_status()` | `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` — text unchanged, cursor stays on-screen |
+| Terminal scroll + 1 row | `scr_update_after_move(old_top)` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport shifts by exactly ±1 visual row (~53 bytes vs ~1200 for full refresh) |
+| Single visual row | `scr_redraw_cur_vrow()` | `r` replace (character count unchanged) |
+| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `x`, `X`, `D`, `~`, `s`, `S`, `C`, insert-mode Ctrl-U, Ctrl-W (within line) |
+| Cursor row to bottom | `scr_redraw_from_cur()` | `J`, `o`, `O`, `p`, `P`, `u`, `dw`/`dd`/`cw`/etc., insert-mode Enter/BS-over-newline/Ctrl-W-across-newline, dot-repeat of insert/join — content above cursor unchanged |
+| Full screen | `scr_refresh()` | `G`, Ctrl-F/B/D/U, `:` commands, large file tail load, viewport shift after any operation |
+
+The `scr_redraw_from_cur()` tier (added in v1.1) is the key new level: for any operation that modifies content at or below the cursor without moving `top_pos`, it skips all rows above the cursor. On a 24-row terminal with the cursor at the middle, this halves the terminal output compared to a full refresh.
+
+`scr_update_after_move()` no longer updates the status bar for the no-scroll and ±1-scroll cases (it calls `scr_update_cursor()` instead). This eliminates ~58 bytes of status bar I/O per `j`/`k`/`Enter` keypress (~10 ms at 56K baud). The status bar refreshes on the next edit, search, full-screen command, or `Ctrl-L`.
+
+**O(N) row rendering:** All multi-row drawing loops (`scr_refresh()`, `scr_redraw_from_cur()`, `scr_redraw_cur_line()`) use `draw_row_at(row, pos)`, a static helper that draws a row at a known buffer position. The calling loop advances `pos` with one `next_vrow()` call per row. The public `scr_redraw_line(row)` wrapper (used for single-row redraws) still scans from `top_pos`, but multi-row callers no longer pay the O(N²) rescan cost (previously, row N required N `next_vrow()` walks from `top_pos`, so a 23-row refresh cost 0+1+…+22 = 253 extra walks). The threaded approach reduces this to 23 walks total.
 
 ---
 
@@ -580,6 +606,18 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | No `scr_refresh()` on quit | Avoids unnecessary terminal I/O when the user is about to see the shell prompt |
 | `HVITMP.TMP` for large-file saves | Prevents reading and writing the same file simultaneously when saving to the tail source |
 | Dot-repeat captures text at ESC | At ESC time the inserted text is contiguous in the buffer at `undo.pos`; simple loop copies it |
+| `scr_redraw_from_cur()` rendering tier | Skips rows above the cursor for operations that only change content at/below cursor; halves terminal output in the common case |
+| `old_top` check before `scr_redraw_from_cur()` | Saved `top_pos` before `scr_scroll_to_cursor()` determines whether the viewport actually shifted; if not, the cheaper tier is used; if yes, full refresh |
+| Search uses `scr_update_after_move()` | `/`, `?`, `n`, `N` move the cursor but don't change text; the terminal-scroll tier is sufficient for ±1-row jumps |
+| `scr_update_after_move()` skips status bar for small moves | The `j`/`k`/`Enter` hot path calls `scr_update_cursor()` instead of `scr_show_status()` for no-scroll and ±1-scroll cases, saving ~58 bytes of terminal output (~10 ms at 56K baud) per keypress |
+| `line_cnt_cached` avoids O(buffer) scan on every keypress | `scr_line_count()` scans the entire buffer to count newlines; caching the result and invalidating on `gb_insert()`/`gb_delete()` reduces this to O(1) on consecutive movement keystrokes |
+| `draw_row_at(row, pos)` threads position through multi-row loops | Multi-row render loops (full refresh, cursor-to-bottom) previously re-walked from `top_pos` for each row — O(N²) total. Threading `pos` through reduces to O(N). Critical for page refresh responsiveness at 20 MHz Z80 |
+| `nG` does not load the tail | With a count prefix, `G` jumps to a specific line number. Loading the full file tail (as bare `G` requires) is unnecessary; gating the tail-load loop by `!had_count` avoids the overhead and lets `scr_update_after_move()` use the cursor-only tier when the target line is already visible |
+| Ctrl-F/B cursor in middle of new page | Standard vi places the cursor at the top of the new page; placing it in the middle gives a more balanced editing context and matches the feel of modern editors |
+| Ctrl-F/B no-op at file boundaries | If already at the top (`top_pos == 0`) or the bottom (new top would not advance), no redraw is issued — avoids a visible flash/flicker for no-effect keypresses |
+| `:e` resets gap buffer in-place | Rather than `gb_free()` + `gb_init()`, the buffer is emptied by resetting `gstart=0, gend=size`. This avoids `malloc`/`free` churn and the CP/M heap fragmentation risk |
+| `ex_execute()` does not call `scr_refresh()` | All screen updates for ex commands are done by `cmdline_mode()` after `ex_execute()` returns, ensuring exactly one refresh per command regardless of which ex command ran |
+| `mv_eol()` returns immediately on `\n` | When the cursor is already on a newline (empty line), `mv_eol()` previously walked forward past the `\n` onto the next line's content, causing `A` and `$` to land on the wrong line. An early return when `gb_char_at(cur_pos) == '\n'` corrects this |
 
 ---
 

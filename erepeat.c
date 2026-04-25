@@ -70,7 +70,7 @@ void dot_ins_position()
 void dot_replay_c(n)
 int n;
 {
-    int from, to, ins_pos, sz, linewise, endpoint;
+    int from, to, ins_pos, sz, linewise, endpoint, old_top;
     linewise = 0;
     if (ed.dot_cmd == 'C' || ed.dot_motion == 'c') {
         from = ed.cur_pos;
@@ -99,8 +99,11 @@ int n;
             ed.cur_pos--;
         if (ed.cur_pos < 0) ed.cur_pos = 0;
     }
+    old_top = ed.top_pos;
     scr_scroll_to_cursor();
-    scr_refresh();
+    if (ed.top_pos == old_top) scr_redraw_from_cur();
+    else scr_refresh();
+    scr_show_status(ed.status);
 }
 
 /*
@@ -113,6 +116,7 @@ int count;
     int  n, sz, k, linewise, endpoint;
     int  from, to, ins_pos, ch, eol;
     int  start_line, end_line, total;
+    int  old_top, has_nl, ki;
     char tmp_c[1];
     char sp;
 
@@ -211,7 +215,8 @@ int count;
                 gb_insert(eol, &sp, 1);
             ed.modified = 1;
         }
-        scr_refresh();
+        scr_redraw_from_cur();
+        scr_show_status(ed.status);
         break;
 
     case 'd':
@@ -247,8 +252,27 @@ int count;
             if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
                 ed.cur_pos--;
             ed.modified = 1;
-            scr_scroll_to_cursor();
-            scr_refresh();
+            /* Check if inserted text crosses a line boundary. */
+            has_nl = 0;
+            for (ki = 0; ki < ed.dot_len; ki++)
+                if (ed.dot_text[ki] == '\n') { has_nl = 1; break; }
+            if (has_nl) {
+                /* Multi-line insert: redraw from insertion point. */
+                ed.cur_pos = ins_pos;
+                old_top = ed.top_pos;
+                scr_scroll_to_cursor();
+                if (ed.top_pos == old_top) scr_redraw_from_cur();
+                else scr_refresh();
+                ed.cur_pos = ins_pos + ed.dot_len;
+                if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
+                    ed.cur_pos--;
+            } else {
+                old_top = ed.top_pos;
+                scr_scroll_to_cursor();
+                if (ed.top_pos == old_top) scr_redraw_from_cur();
+                else scr_refresh();
+            }
+            scr_show_status(ed.status);
         }
         break;
     }

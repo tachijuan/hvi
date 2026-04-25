@@ -142,8 +142,9 @@ char *text;
 int   len;
 {
     int i;
-    /* Any buffer change may alter line numbers — invalidate the cache. */
-    ed.cur_line_pos = -1;
+    /* Any buffer change may alter line counts — invalidate both caches. */
+    ed.cur_line_pos  = -1;
+    ed.line_cnt_cached = 0;
     for (i = 0; i < len; i++) {
         if (ed.gb.gend - ed.gb.gstart < 1) {
             if (!gb_ensure_gap())
@@ -165,7 +166,8 @@ int pos;
 int len;
 {
     int clen;
-    ed.cur_line_pos = -1;
+    ed.cur_line_pos  = -1;
+    ed.line_cnt_cached = 0;
     clen = gb_content_len();
     if (pos < 0 || pos >= clen)
         return 0;

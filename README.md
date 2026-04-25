@@ -1,9 +1,11 @@
 # HVI - VI Clone for CP/M
 
+**Version 1.2**
+
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
-for terminal control. Implements most of the basic movement and editing command
-including the . operator for repeat. Also has a single level undo.
+for terminal control. Implements most of the basic movement and editing commands
+including the `.` operator for repeat. Also has a single level undo.
 
 **Author:** Juan Orlandini  
 **License:** MIT
@@ -109,6 +111,7 @@ hvi -d myfile.txt 2>debug.txt
 | `l`        | Move right one character            |
 | `j`        | Move down one line                  |
 | `k`        | Move up one line                    |
+| `Enter`    | Move to first non-blank of next line |
 | `w`        | Forward to start of next word       |
 | `b`        | Backward to start of previous word  |
 | `e`        | Forward to end of word              |
@@ -117,8 +120,8 @@ hvi -d myfile.txt 2>debug.txt
 | `$`        | Move to end of line                 |
 | `G`        | Go to last line (or line N with count) |
 | `gg`       | Go to first line (or line N: `5gg`) |
-| `Ctrl-F`   | Scroll forward one page             |
-| `Ctrl-B`   | Scroll backward one page            |
+| `Ctrl-F`   | Scroll forward one page; cursor lands in the middle of the new page. No-op if already at the end of the file. |
+| `Ctrl-B`   | Scroll backward one page; cursor lands in the middle of the new page. No-op if already at the beginning of the file. |
 | `Ctrl-D`   | Scroll forward half page            |
 | `Ctrl-U`   | Scroll backward half page           |
 
@@ -220,6 +223,8 @@ Both repeat commands accept a count prefix (e.g. `3;` skips to the third next ma
 | `:wq!`       | Write and quit (force)                      |
 | `:x`         | Write if modified, then quit                |
 | `:x!`        | Write and quit (force)                      |
+| `:e filename`| Abandon current buffer and edit named file  |
+| `:e! filename`| Abandon modified buffer and edit named file |
 | `:r filename`| Read file and insert after current line     |
 | `:N`         | Go to line number N                         |
 | `:$`         | Go to last line                             |
@@ -311,6 +316,32 @@ terminal emulators connected via a serial port.
 HVI reads files in binary mode, stripping bare `CR` characters on load.
 On save, each `LF` is written as `CR+LF` per CP/M convention, and the
 file is terminated with `Ctrl-Z` (0x1A) per CP/M file format rules.
+
+---
+
+## Performance
+
+HVI is designed for 9600 baud serial terminals. All screen updates are sized to
+the minimum needed for the operation:
+
+| Operation | Output sent |
+|-----------|-------------|
+| `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` | Cursor reposition only — no text redrawn, no status bar update |
+| `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` | Terminal scroll + one new line (~53 bytes) when viewport shifts by one row, or cursor reposition only when no scroll needed — status bar not updated |
+| `r` replace character | Single visual row redrawn |
+| `x`, `X`, `D`, `~`, `s`, `S`, `C` | Current logical line redrawn |
+| `J`, `o`, `O`, `p`, `P`, `u`, `dw`, `dd`, `cw`, Enter in insert mode | Rows from cursor to bottom redrawn (rows above cursor skipped) |
+| `G`, `Ctrl-F`, `Ctrl-B`, `Ctrl-D`, `Ctrl-U`, `:` commands | Full screen redrawn |
+
+The "cursor to bottom" tier is the key optimization for editing operations: on
+a 24-row terminal with the cursor near the middle, it sends roughly half the
+bytes of a full screen refresh (~600 bytes vs ~1200 bytes at 9600 baud ≈ 0.5
+seconds saved per keystroke).
+
+The status bar line counter is not refreshed on every `j`/`k`/`Enter`/`nG`
+keypress — it updates on the next edit, search, page scroll, or `Ctrl-L`. The
+total line count is cached after the first computation and invalidated only when
+the buffer changes, so the status bar update itself is cheap when it does occur.
 
 ---
 

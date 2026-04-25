@@ -107,6 +107,8 @@ void mv_eol()   /* end of line (last real char) */
 {
     int size = gb_content_len();
     if (size == 0) return;
+    /* Already at end of an empty line — nowhere to move. */
+    if (gb_char_at(ed.cur_pos) == '\n') return;
     while (ed.cur_pos < size - 1) {
         if (gb_char_at(ed.cur_pos + 1) == '\n') break;
         ed.cur_pos++;
@@ -406,7 +408,7 @@ int *linewise;
 void apply_op(op, from, to, linewise)
 int op, from, to, linewise;
 {
-    int len, i;
+    int len, i, old_top;
 
     if (from > to) { int t = from; from = to; to = t; }
     len = to - from;
@@ -424,6 +426,7 @@ int op, from, to, linewise;
         ed.yank_line  = linewise;
         ed.cur_pos    = from;
         sprintf(ed.status, "%d char%s yanked", save, save == 1 ? "" : "s");
+        scr_show_status(ed.status);
         return;
     }
 
@@ -456,13 +459,18 @@ int op, from, to, linewise;
         }
     }
 
+    /* Cursor is at 'from' (start of deleted range) — content above unchanged. */
+    old_top = ed.top_pos;
     scr_scroll_to_cursor();
-    scr_refresh();
+    if (ed.top_pos == old_top) scr_redraw_from_cur();
+    else scr_refresh();
+    scr_show_status(ed.status);
 
     /* 'c' enters insert mode after delete; set up insert undo tracking */
     if (op == 'c') {
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
+        scr_show_status("-- INSERT --");
     }
 }
 

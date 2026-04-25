@@ -3,7 +3,7 @@
  * Author: Juan Orlandini
  * License: MIT
  *
- * Handles :q :q! :w :wq :wq! :x :x! :r and :N (go to line).
+ * Handles :q :q! :w :wq :wq! :x :x! :r :e :e! and :N (go to line).
  */
 
 #include <stdio.h>
@@ -32,6 +32,7 @@ char *cmd;
     int   force;
     int   do_write;
     int   do_quit;
+    int   rc;
 
     p = skip_space(cmd);
 
@@ -49,7 +50,6 @@ char *cmd;
             ed.want_col = 0;
         }
         scr_scroll_to_cursor();
-        scr_refresh();
         return;
     }
 
@@ -65,7 +65,6 @@ char *cmd;
         ed.cur_pos = scr_line_start(total - 1);
         ed.want_col = 0;
         scr_scroll_to_cursor();
-        scr_refresh();
         return;
     }
 
@@ -118,7 +117,56 @@ char *cmd;
         new_len = gb_content_len();
         ed.modified = 1;
         sprintf(ed.status, "\"%s\" %d chars", fname, new_len - old_len);
-        scr_refresh();
+        return;
+    }
+
+    /* :e[!] filename -- abandon current buffer and edit a new file */
+    if (*p == 'e' && (p[1] == ' ' || p[1] == '\t' || p[1] == '!' || p[1] == '\0')) {
+        char *fname;
+        p++;
+        force = (*p == '!') ? (p++, 1) : 0;
+        fname = skip_space(p);
+        if (*fname == '\0') {
+            strcpy(ed.status, "Usage: :e[!] filename");
+            return;
+        }
+        if (ed.modified && !force) {
+            strcpy(ed.status, "Modified buffer (use :e! to discard)");
+            return;
+        }
+
+        /* Reset gap buffer to empty without reallocating. */
+        ed.gb.gstart = 0;
+        ed.gb.gend   = ed.gb.size;
+
+        /* Reset all cursor, viewport, and edit state. */
+        ed.cur_pos         = 0;
+        ed.top_pos         = 0;
+        ed.modified        = 0;
+        ed.win_start       = 0L;
+        ed.tail_offset     = 0L;
+        ed.tail_file[0]    = '\0';
+        ed.cur_line        = 0;
+        ed.cur_line_pos    = -1;
+        ed.line_cnt_cached = 0;
+        ed.want_col        = 0;
+        ed.count           = 0;
+        ed.undo.type       = UNDO_NONE;
+        ed.yank_len        = 0;
+        ed.yank_line       = 0;
+        ed.dot_cmd         = 0;
+        ed.status[0]       = '\0';
+
+        strncpy(ed.filename, fname, PATH_MAX - 1);
+        ed.filename[PATH_MAX - 1] = '\0';
+
+        rc = gb_load(fname);
+        if (rc == 0)
+            sprintf(ed.status, "\"%s\" [New File]", fname);
+        else if (rc == 2)
+            sprintf(ed.status, "\"%s\" (partial load)", fname);
+        else
+            sprintf(ed.status, "\"%s\" loaded", fname);
         return;
     }
 

@@ -9,7 +9,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "1.0"
+#define HVI_VERSION "1.2"
 
 /* Terminal defaults */
 #define DEF_COLS    80
@@ -167,6 +167,9 @@ typedef struct {
     /* Cached current line number (incremental, avoids O(n) scans) */
     int     cur_line;            /* line number of cur_pos; -1 = stale */
     int     cur_line_pos;        /* cur_pos when cur_line was computed; -1 = stale */
+
+    /* Cached total line count (0 = invalid; set by scr_line_count) */
+    int     line_cnt_cached;
 } Editor;
 
 extern Editor ed;
@@ -205,6 +208,7 @@ void scr_refresh();
 void scr_redraw_line(/* int screen_row */);
 void scr_redraw_cur_line();
 void scr_redraw_cur_vrow();
+void scr_redraw_from_cur();
 void scr_update_cursor();
 void scr_show_status(/* char *msg */);
 void scr_clear_status();

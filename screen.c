@@ -18,6 +18,11 @@
  *   one new line (~53 bytes) instead of a full screen (~1200 bytes)
  *   when the viewport shifts by exactly 1 visual row.
  *
+ *   scr_redraw_from_cur() redraws only the rows from the cursor to the
+ *   bottom of the text area.  Used by editing commands (J, o, O, d, c,
+ *   p, u, Enter) where content above the cursor is unchanged.  Saves
+ *   all rows above the cursor vs a full scr_refresh().
+ *
  *   scr_cur_line() maintains an incremental cache of the current line
  *   number so that the status bar update and movement routines avoid
  *   the O(buffer) scan of scr_pos_line(cur_pos) on every keystroke.
@@ -210,19 +215,26 @@ int pos;
     return pos;
 }
 
-/* Return total number of logical lines in the buffer. */
+/*
+ * Return total number of logical lines in the buffer.
+ * Result is cached in ed.line_cnt_cached; invalidated to 0 by gb_insert()
+ * and gb_delete() whenever the buffer content changes.
+ */
 int scr_line_count()
 {
     int i, size, lines;
+    if (ed.line_cnt_cached > 0) return ed.line_cnt_cached;
     size = gb_content_len();
-    if (size == 0) return 1;
+    if (size == 0) { ed.line_cnt_cached = 1; return 1; }
     lines = 0;
     for (i = 0; i < size; i++)
         if (gb_char_at(i) == '\n')
             lines++;
     if (gb_char_at(size - 1) != '\n')
         lines++;
-    return (lines > 0) ? lines : 1;
+    lines = (lines > 0) ? lines : 1;
+    ed.line_cnt_cached = lines;
+    return lines;
 }
 
 /* ------------------------------------------------------------------ */
@@ -307,30 +319,23 @@ void scr_update_cursor()
 /* ------------------------------------------------------------------ */
 
 /*
- * Draw one terminal row (0-based index within the text area).
- * Advances 'screen_row' visual rows from top_pos to find the content.
+ * Draw terminal row screen_row using buffer content starting at pos.
+ * pos must already be the correct vrow start — no scanning from top_pos.
+ * This is the inner drawing kernel; all multi-row loops use this directly
+ * to avoid the O(N^2) rescan that arises when every row re-walks from
+ * top_pos to find its start position.
  */
-void scr_redraw_line(screen_row)
-int screen_row;
+static void draw_row_at(screen_row, pos)
+int screen_row, pos;
 {
-    int pos, r, col, size, c, nc, next;
-
-    pos = ed.top_pos;
-    for (r = 0; r < screen_row; r++) {
-        next = next_vrow(pos);
-        if (next <= pos) break;
-        pos = next;
-    }
-
+    int col, size, c, nc;
     size = gb_content_len();
     term_goto(screen_row, 0);
     term_clreol();
-
     if (pos >= size) {
         if (screen_row > 0) term_putch('~');
         return;
     }
-
     col = 0;
     while (pos < size && col < ed.scr_cols) {
         c = gb_char_at(pos);
@@ -348,18 +353,42 @@ int screen_row;
 }
 
 /*
+ * Draw one terminal row by index, scanning from top_pos to find its start.
+ * O(screen_row) buffer walk — only use for single-row redraws where the
+ * starting position is not already known.  Multi-row callers use draw_row_at
+ * directly and thread pos through the loop.
+ */
+void scr_redraw_line(screen_row)
+int screen_row;
+{
+    int pos, r, next;
+    pos = ed.top_pos;
+    for (r = 0; r < screen_row; r++) {
+        next = next_vrow(pos);
+        if (next <= pos) break;
+        pos = next;
+    }
+    draw_row_at(screen_row, pos);
+}
+
+/*
  * Full screen refresh: redraws all text rows and the status line.
+ * Threads pos through the row loop (O(N) total, not O(N^2)).
  * Sequential rows use \r\n (2 bytes) instead of a full ESC[R;CH goto
  * (7-10 bytes) — term_goto() handles this automatically via cursor
  * tracking.
  */
 void scr_refresh()
 {
-    int row, text_rows;
+    int row, text_rows, pos, next;
     text_rows = ed.scr_rows - 1;
     scr_scroll_to_cursor();
-    for (row = 0; row < text_rows; row++)
-        scr_redraw_line(row);
+    pos = ed.top_pos;
+    for (row = 0; row < text_rows; row++) {
+        draw_row_at(row, pos);
+        next = next_vrow(pos);
+        if (next > pos) pos = next;
+    }
     scr_show_status(ed.status);
 }
 
@@ -368,6 +397,7 @@ void scr_refresh()
  * plus one extra row after the line ends (to clear any row freed by a
  * deletion that shortened the line).  Much cheaper than redrawing the
  * entire area below the cursor for single-line edits (x, X, D, ~, …).
+ * Uses draw_row_at with a threaded pos to avoid rescanning from top_pos.
  */
 void scr_redraw_cur_line()
 {
@@ -390,12 +420,12 @@ void scr_redraw_cur_line()
     row = scr_row;
     for (;;) {
         if (row >= text_rows) break;
-        scr_redraw_line(row);
+        draw_row_at(row, p);
         row++;
         next = next_vrow(p);
         /* Stop at end of buffer or end of this logical line */
         if (next <= p || next >= size || gb_char_at(next - 1) == '\n') {
-            if (row < text_rows) scr_redraw_line(row); /* 1 extra: clears freed row */
+            if (row < text_rows) draw_row_at(row, next); /* 1 extra: clears freed row */
             break;
         }
         p = next;
@@ -428,6 +458,39 @@ void scr_redraw_cur_vrow()
     scr_update_cursor();
 }
 
+/*
+ * Redraw all visual rows from the cursor's screen row to the bottom of
+ * the text area.  Use this when content at or below the cursor changed
+ * but content ABOVE the cursor is unmodified — saves every row above.
+ * Caller is responsible for calling scr_scroll_to_cursor() first and
+ * for calling scr_show_status() afterward.
+ */
+void scr_redraw_from_cur()
+{
+    int vstart, p, scr_row, next, text_rows, row;
+
+    text_rows = ed.scr_rows - 1;
+    vstart    = vrow_start_of(ed.cur_pos);
+    p         = ed.top_pos;
+    scr_row   = 0;
+
+    while (p < vstart) {
+        next = next_vrow(p);
+        if (next <= p) break;
+        p = next;
+        scr_row++;
+    }
+
+    /* p is now the vrow-start for scr_row; thread it through the loop. */
+    for (row = scr_row; row < text_rows; row++) {
+        draw_row_at(row, p);
+        next = next_vrow(p);
+        if (next > p) p = next;
+    }
+
+    scr_update_cursor();
+}
+
 /* ------------------------------------------------------------------ */
 /*  Smart scroll after cursor movement                                  */
 /* ------------------------------------------------------------------ */
@@ -453,7 +516,7 @@ int old_top;
     new_top   = ed.top_pos;
 
     if (new_top == old_top) {
-        scr_show_status(ed.status);
+        scr_update_cursor();
         return;
     }
 
@@ -469,7 +532,7 @@ int old_top;
         if (delta == 1 && p == new_top) {
             term_scroll_up();
             scr_redraw_line(text_rows - 1);
-            scr_show_status(ed.status);
+            scr_update_cursor();
             return;
         }
     } else {
@@ -483,7 +546,7 @@ int old_top;
         if (delta == 1 && p == old_top) {
             term_scroll_dn();
             scr_redraw_line(0);
-            scr_show_status(ed.status);
+            scr_update_cursor();
             return;
         }
     }
