@@ -123,18 +123,8 @@ int pos;
 }
 
 /*
- * The gap buffer is pre-allocated to its full capacity in gb_init().
- * If gb_insert() is called when the gap is already empty the buffer is
- * full; signal failure so the caller can report "Buffer full".
- */
-static int gb_ensure_gap()
-{
-    return 0;   /* buffer is pre-allocated; cannot grow */
-}
-
-/*
  * Insert len bytes from text at logical position pos.
- * Returns 1 on success, 0 on failure.
+ * Returns 1 on success, 0 if the buffer is full (gap exhausted).
  */
 int gb_insert(pos, text, len)
 int   pos;
@@ -142,14 +132,12 @@ char *text;
 int   len;
 {
     int i;
-    /* Any buffer change may alter line counts — invalidate both caches. */
-    ed.cur_line_pos  = -1;
+    ed.cur_line_pos    = -1;
     ed.line_cnt_cached = 0;
+    ed.cur_vrow        = -1;
     for (i = 0; i < len; i++) {
-        if (ed.gb.gend - ed.gb.gstart < 1) {
-            if (!gb_ensure_gap())
-                return 0;
-        }
+        if (ed.gb.gend - ed.gb.gstart < 1)
+            return 0;   /* buffer is pre-allocated; cannot grow */
         gb_move_gap(pos + i);
         ed.gb.buf[ed.gb.gstart] = text[i];
         ed.gb.gstart++;
@@ -168,6 +156,7 @@ int len;
     int clen;
     ed.cur_line_pos  = -1;
     ed.line_cnt_cached = 0;
+    ed.cur_vrow      = -1;
     clen = gb_content_len();
     if (pos < 0 || pos >= clen)
         return 0;
@@ -179,108 +168,82 @@ int len;
     return 1;
 }
 
-/* Record the tail start position when the buffer fills during load. */
-static void gb_record_tail(f, filename, c, prev_cr)
+/*
+ * Show the [Loading...] indicator on the status line.
+ * The caller's subsequent scr_refresh() will overwrite it.
+ */
+static void show_loading()
+{
+    term_goto(ed.scr_rows - 1, 0);
+    term_clreol();
+    term_reverse();
+    term_puts("[Loading...]");
+    term_normal();
+    term_flush();
+}
+
+/*
+ * Inner read loop shared by gb_load and gb_reload_from.
+ * Reads chars from f into the gap buffer until EOF/^Z or the buffer fills.
+ * On partial fill: records tail offset; if filename != NULL also sets
+ * tail_file.  Always closes f before returning.
+ * Returns 1 (complete) or 2 (partial — buffer filled before EOF).
+ */
+static int gb_fill(f, filename)
 FILE *f;
 char *filename;
-int   c, prev_cr;
 {
+    int  c, prev_cr, full;
     long pos;
-    pos = ftell(f) - 1L;
-    if (c == 0x0A && prev_cr)
-        pos -= 1L;
-    ed.tail_offset = pos;
-    strncpy(ed.tail_file, filename, PATH_MAX - 1);
-    ed.tail_file[PATH_MAX - 1] = '\0';
+    char tmp[1];
+
+    prev_cr = 0;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == 0x0D) { prev_cr = 1; continue; }
+        if (c == 0x1A) break;
+        full = (gb_content_len() >= ed.gb.size - GAP_MIN);
+        if (full) {
+            pos = ftell(f) - 1L;
+            if (c == 0x0A && prev_cr) pos -= 1L;
+            ed.tail_offset = pos;
+            if (filename) {
+                strncpy(ed.tail_file, filename, PATH_MAX - 1);
+                ed.tail_file[PATH_MAX - 1] = '\0';
+            }
+            fclose(f);
+            return 2;
+        }
+        prev_cr = 0;
+        tmp[0] = (char)c;
+        gb_insert(gb_content_len(), tmp, 1);
+    }
+    fclose(f);
+    return 1;
 }
 
 /*
  * Load a file into the gap buffer.
+ * If fp != NULL use that already-open handle (pre-opened before gb_init()
+ * so the heap is still free for fopen's buffer); otherwise fopen filename.
  * Strips bare CR characters to normalise line endings.
- * When the file exceeds the buffer capacity, records the byte offset where
- * loading stopped so gb_save() can append the tail on write.
  * Returns 1 on success, 0 on open error, 2 on partial load (file too large).
  */
-int gb_load(filename)
+int gb_load(filename, fp)
 char *filename;
+FILE *fp;
 {
-    FILE *f;
-    int   c, prev_cr, full;
-    char  tmp[1];
-
-    /* Open the file first, before touching any struct fields,
-     * to rule out struct-write side-effects on the C library state. */
     if (ed.debug)
-        fprintf(stderr, "gb_load: file='%s' gbsize=%d\n",
-                filename, ed.gb.size);
-    f = fopen(filename, "rb");
-    if (ed.debug)
-        fprintf(stderr, "gb_load: fopen=%s\n", f ? "ok" : "FAILED");
-    if (!f)
-        return 0;
-
+        fprintf(stderr, "gb_load: '%s'\n", filename);
+    if (!fp) {
+        fp = fopen(filename, "rb");
+        if (!fp) return 0;
+    }
     ed.gb.gstart    = 0;
     ed.gb.gend      = ed.gb.size;
+    ed.win_start    = 0L;
     ed.tail_offset  = 0L;
     ed.tail_file[0] = '\0';
-
-    prev_cr = 0;
-    while ((c = fgetc(f)) != EOF) {
-        if (c == 0x0D) { prev_cr = 1; continue; }
-        if (c == 0x1A) break;
-        full = (gb_content_len() >= ed.gb.size - GAP_MIN);
-        if (full) {
-            gb_record_tail(f, filename, c, prev_cr);
-            fclose(f);
-            return 2;
-        }
-        prev_cr = 0;
-        tmp[0] = (char)c;
-        gb_insert(gb_content_len(), tmp, 1);
-    }
-    fclose(f);
-    return 1;
-}
-
-/*
- * Load from an already-open file handle (pre-opened before gb_init()).
- * Identical to gb_load() but skips fopen() so that the caller can open
- * the file while the heap is still free, before gb_init() consumes it.
- * Closes f on return.
- * Returns 1 on full load, 2 on partial load.
- */
-int gb_load_fp(f, filename)
-FILE *f;
-char *filename;
-{
-    int   c, prev_cr, full;
-    char  tmp[1];
-
-    if (ed.debug)
-        fprintf(stderr, "gb_load_fp: file='%s' gbsize=%d\n",
-                filename, ed.gb.size);
-
-    ed.gb.gstart    = 0;
-    ed.gb.gend      = ed.gb.size;
-    ed.tail_offset  = 0L;
-    ed.tail_file[0] = '\0';
-
-    prev_cr = 0;
-    while ((c = fgetc(f)) != EOF) {
-        if (c == 0x0D) { prev_cr = 1; continue; }
-        if (c == 0x1A) break;
-        full = (gb_content_len() >= ed.gb.size - GAP_MIN);
-        if (full) {
-            gb_record_tail(f, filename, c, prev_cr);
-            fclose(f);
-            return 2;
-        }
-        prev_cr = 0;
-        tmp[0] = (char)c;
-        gb_insert(gb_content_len(), tmp, 1);
-    }
-    fclose(f);
-    return 1;
+    return gb_fill(fp, filename);
 }
 
 /*
@@ -335,6 +298,8 @@ int n;
     if (need > 0)
         if (gb_discard_head(need) == 0) return 0;
 
+    show_loading();
+
     f = fopen(ed.tail_file, "rb");
     if (!f) return 0;
     fseek(f, ed.tail_offset, 0);
@@ -353,6 +318,41 @@ int n;
 
     fclose(f);
     return loaded;
+}
+
+/*
+ * Reload the buffer starting from a given byte offset in tail_file.
+ * Clears all buffer content and loads fresh content from that offset.
+ * Resets cur_pos, top_pos, win_start, tail_offset, and display caches.
+ * Shows [Loading...] on the status line while reading.
+ * Returns 1 on success, 0 on failure (file not open, seek failed, etc.).
+ */
+int gb_reload_from(offset)
+long offset;
+{
+    FILE *f;
+
+    if (!ed.tail_file[0]) return 0;
+    if (offset < 0L) offset = 0L;
+
+    f = fopen(ed.tail_file, "rb");
+    if (!f) return 0;
+    if (fseek(f, offset, 0) != 0) { fclose(f); return 0; }
+
+    show_loading();
+
+    /* Clear buffer and reset all window and display tracking. */
+    ed.gb.gstart       = 0;
+    ed.gb.gend         = ed.gb.size;
+    ed.win_start       = offset;
+    ed.tail_offset     = 0L;
+    ed.cur_pos         = 0;
+    ed.top_pos         = 0;
+    ed.cur_vrow        = -1;
+    ed.cur_line_pos    = -1;
+    ed.line_cnt_cached = 0;
+    /* tail_file unchanged — same source file */
+    return gb_fill(f, (char *)0);
 }
 
 /*

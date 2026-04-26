@@ -160,7 +160,7 @@ char *cmd;
         strncpy(ed.filename, fname, PATH_MAX - 1);
         ed.filename[PATH_MAX - 1] = '\0';
 
-        rc = gb_load(fname);
+        rc = gb_load(fname, (FILE *)0);
         if (rc == 0)
             sprintf(ed.status, "\"%s\" [New File]", fname);
         else if (rc == 2)

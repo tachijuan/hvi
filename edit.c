@@ -29,19 +29,16 @@ static int g_ins_cmd   = 0; /* command that entered insert mode     */
 /* Return effective count (at least 1), then clear. */
 static int get_count()
 {
-    int n = (g_hcnt) ? g_count : 1;
+    static int n;
+    n = (g_hcnt) ? g_count : 1;
     g_count = 0; g_hcnt = 0;
     return n;
 }
 
-/*
- * Move cursor to the next (dir>0) or previous (dir<0) occurrence of ch
- * on the current logical line.  Stays put if not found.
- */
 static void do_find(ch, dir)
 int ch, dir;
 {
-    int p, sz;
+    static int p, sz;
     if (!ch) return;
     sz = gb_content_len();
     if (dir > 0) {
@@ -90,13 +87,13 @@ int  do_search_from();
 static int insert_key(c)
 int c;
 {
-    char tmp[2];
-    int del_ch, cur_col, new_col, sz, old_top;
+    static char tmp[2];
+    static int del_ch, cur_col, new_col, sz;
+    static int old_top, i, ilen, prev;
+    static int start, del, had_nl, sol;
 
     if (c == KEY_ESC) {
-        int old_top, i, ilen;
         ed.mode = MODE_NORMAL;
-        /* Capture inserted text for dot-repeat before adjusting cursor. */
         if (g_ins_cmd && ed.undo.type == UNDO_INSERT && ed.undo.len > 0) {
             ilen = ed.undo.len;
             if (ilen > DOT_TEXT_MAX) ilen = DOT_TEXT_MAX;
@@ -110,7 +107,7 @@ int c;
         }
         g_ins_cmd = 0;
         if (ed.cur_pos > 0) {
-            int prev = gb_char_at(ed.cur_pos - 1);
+            prev = gb_char_at(ed.cur_pos - 1);
             if (prev != '\n') ed.cur_pos--;
         }
         ed.want_col = scr_pos_col(ed.cur_pos);
@@ -118,14 +115,22 @@ int c;
         old_top = ed.top_pos;
         scr_scroll_to_cursor();
         if (ed.top_pos != old_top) {
-            /* Viewport shifted (cursor was below screen): full refresh. */
             scr_refresh();
         } else {
-            /* Common case: only redraw the line that was edited. */
             scr_redraw_cur_line();
             scr_show_status(ed.status);
         }
         return 1;
+    }
+
+    if (c == KEY_LEFT || c == KEY_RIGHT || c == KEY_UP || c == KEY_DOWN) {
+        if (c == KEY_LEFT)  mv_left(1);
+        if (c == KEY_RIGHT) mv_right(1);
+        if (c == KEY_UP)    mv_up(1);
+        if (c == KEY_DOWN)  mv_down(1);
+        scr_scroll_to_cursor();
+        scr_update_cursor();
+        return 0;
     }
 
     if (c == KEY_BS || c == KEY_DEL || c == KEY_CTRL_H) {
@@ -137,26 +142,16 @@ int c;
             if (ed.undo.type == UNDO_INSERT && ed.undo.len > 0)
                 ed.undo.len--;
             if (del_ch == '\n') {
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                if (ed.top_pos == old_top) scr_redraw_from_cur();
-                else scr_refresh();
+                scr_adj();
                 scr_show_status("-- INSERT --");
             } else if (del_ch == '\t') {
-                /* tab width varies — must redraw to recompute columns */
                 scr_redraw_cur_line();
             } else {
                 sz = gb_content_len();
                 if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
-                    /*
-                     * At end of line: BS moves terminal cursor left one
-                     * column (ANSI BS crosses visual-row boundaries correctly),
-                     * then clreol erases the deleted char.  No term_goto.
-                     */
                     term_putch(KEY_BS);
                     term_clreol();
                 } else {
-                    /* Middle of line: remaining chars must shift left. */
                     scr_redraw_cur_line();
                 }
             }
@@ -165,8 +160,7 @@ int c;
     }
 
     if (c == KEY_CTRL_W) {
-        int start = ed.cur_pos;
-        int del, i, had_nl;
+        start = ed.cur_pos;
         while (ed.cur_pos > 0 && isspacech(gb_char_at(ed.cur_pos - 1)))
             ed.cur_pos--;
         while (ed.cur_pos > 0 && !isspacech(gb_char_at(ed.cur_pos - 1)))
@@ -182,25 +176,18 @@ int c;
                 ed.undo.len -= del;
                 if (ed.undo.len < 0) ed.undo.len = 0;
             }
-            if (had_nl) {
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                if (ed.top_pos == old_top) scr_redraw_from_cur();
-                else scr_refresh();
-            } else {
-                scr_redraw_cur_line();
-            }
+            if (had_nl) scr_adj();
+            else        scr_redraw_cur_line();
         }
         scr_show_status("-- INSERT --");
         return 0;
     }
 
     if (c == KEY_CTRL_U) {
-        /* delete to start of line */
-        int sol = ed.cur_pos;
+        sol = ed.cur_pos;
         while (sol > 0 && gb_char_at(sol - 1) != '\n') sol--;
         if (sol < ed.cur_pos) {
-            int del = ed.cur_pos - sol;
+            del = ed.cur_pos - sol;
             gb_delete(sol, del);
             ed.cur_pos = sol;
             ed.modified = 1;
@@ -213,7 +200,6 @@ int c;
         return 0;
     }
 
-    /* Regular character or Enter */
     if (c == KEY_CR) c = '\n';
 
     if (c == '\n') {
@@ -225,23 +211,13 @@ int c;
         ed.cur_pos++;
         ed.modified = 1;
         if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
-        old_top = ed.top_pos;
-        scr_scroll_to_cursor();
-        if (ed.top_pos == old_top) scr_redraw_from_cur();
-        else scr_refresh();
+        scr_adj();
         scr_show_status("-- INSERT --");
         return 0;
     }
 
-    /*
-     * Compute the visual-row column BEFORE inserting so we can decide
-     * whether the new character will overflow the right edge.
-     * scr_vrow_col() is O(chars-from-line-start) — far cheaper than a
-     * screen redraw at 9600 baud.
-     */
     cur_col = scr_vrow_col(ed.cur_pos);
-    new_col = (c == '\t') ? (cur_col / TAB_STOP + 1) * TAB_STOP
-                          : cur_col + 1;
+    new_col = (c == '\t') ? (cur_col / TAB_STOP + 1) * TAB_STOP : cur_col + 1;
 
     tmp[0] = (char)c;
     if (!gb_insert(ed.cur_pos, tmp, 1)) {
@@ -253,17 +229,10 @@ int c;
     if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
 
     if (new_col > ed.scr_cols) {
-        /* Char caused a visual-row wrap: all rows below must shift down. */
         scr_redraw_cur_line();
     } else if (c == '\t') {
-        /* Expand tab as spaces; terminal cursor already in the right place. */
         while (cur_col < new_col) { term_putch(' '); cur_col++; }
     } else {
-        /*
-         * Common case: char fits on the current visual row.  Output it
-         * directly — the terminal cursor auto-advances one column,
-         * matching the new cur_pos.  Zero escape sequences emitted.
-         */
         term_putch(c);
     }
     return 0;
@@ -364,12 +333,31 @@ void dot_ins_position();
 void dot_replay_c();
 void dot_replay();
 
-/* Handle insert/edit/search commands (split from normal_cmd for optimizer). */
+/* Statics avoid local-variable IX-frame overhead in do_search_move. */
+static int sm_pos;
+static int sm_top;
+
+/* Shared search-result handler: move to match or report not found. */
+static void do_search_move()
+{
+    sm_pos = do_search_from(ed.cur_pos);
+    if (sm_pos >= 0) {
+        ed.cur_pos  = sm_pos;
+        ed.cur_vrow = -1;
+        sm_top = ed.top_pos;
+        scr_scroll_to_cursor();
+        scr_update_after_move(sm_top);
+    } else {
+        strcpy(ed.status, "Pattern not found");
+        scr_show_status(ed.status);
+    }
+}
+
 /* Handle yank/put/search/undo/ex commands. */
 static void normal_misc_cmd(c, count, size)
 int c, count, size;
 {
-    int save_len, old_top;
+    int save_len;
     switch (c) {
 
     /* --- Yank/Put --- */
@@ -417,11 +405,7 @@ int c, count, size;
                 ed.cur_pos = ins_pos;
             }
             ed.modified = 1;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
-            scr_show_status(ed.status);
+            scr_after_edit();
         }
         break;
 
@@ -441,82 +425,33 @@ int c, count, size;
                 gb_insert(ed.cur_pos, ed.yank, ed.yank_len);
             }
             ed.modified = 1;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
-            scr_show_status(ed.status);
+            scr_after_edit();
         }
         break;
 
     /* --- Search --- */
     case '/':   /* search forward */
         ed.search_dir = SEARCH_FWD;
-        if (read_pattern('/')) {
-            int pos = do_search_from(ed.cur_pos);
-            if (pos >= 0) {
-                ed.cur_pos = pos;
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                scr_update_after_move(old_top);
-            } else {
-                strcpy(ed.status, "Pattern not found");
-                scr_show_status(ed.status);
-            }
-        } else {
-            scr_clear_status();
-        }
+        if (read_pattern('/')) do_search_move();
+        else scr_clear_status();
         break;
 
     case '?':   /* search backward */
         ed.search_dir = SEARCH_BWD;
-        if (read_pattern('?')) {
-            int pos = do_search_from(ed.cur_pos);
-            if (pos >= 0) {
-                ed.cur_pos = pos;
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                scr_update_after_move(old_top);
-            } else {
-                strcpy(ed.status, "Pattern not found");
-                scr_show_status(ed.status);
-            }
-        } else {
-            scr_clear_status();
-        }
+        if (read_pattern('?')) do_search_move();
+        else scr_clear_status();
         break;
 
     case 'n':   /* repeat last search */
-        {
-            int pos = do_search_from(ed.cur_pos);
-            if (pos >= 0) {
-                ed.cur_pos = pos;
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                scr_update_after_move(old_top);
-            } else {
-                strcpy(ed.status, "Pattern not found");
-                scr_show_status(ed.status);
-            }
-        }
+        do_search_move();
         break;
 
     case 'N':   /* repeat last search in opposite direction */
         {
             int old_dir = ed.search_dir;
-            int pos;
             ed.search_dir = -old_dir;
-            pos = do_search_from(ed.cur_pos);
+            do_search_move();
             ed.search_dir = old_dir;
-            if (pos >= 0) {
-                ed.cur_pos = pos;
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                scr_update_after_move(old_top);
-            } else {
-                strcpy(ed.status, "Pattern not found");
-                scr_show_status(ed.status);
-            }
         }
         break;
 
@@ -530,22 +465,14 @@ int c, count, size;
             ed.cur_pos   = ed.undo.pos;
             ed.modified  = ed.undo.was_clean ? 0 : 1;
             ed.undo.type = UNDO_NONE;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
-            scr_show_status(ed.status);
+            scr_after_edit();
         } else if (ed.undo.type == UNDO_INSERT) {
             /* delete the previously inserted text */
             gb_delete(ed.undo.pos, ed.undo.len);
             ed.cur_pos   = ed.undo.pos;
             ed.modified  = ed.undo.was_clean ? 0 : 1;
             ed.undo.type = UNDO_NONE;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
-            scr_show_status(ed.status);
+            scr_after_edit();
         } else {
             strcpy(ed.status, "Nothing to undo");
             scr_show_status(ed.status);
@@ -721,7 +648,7 @@ int c, count, size;
                 ed.dot_cmd = 'r'; ed.dot_count = 1;
                 ed.dot_motion = 0; ed.dot_arg = repl;
                 if (repl == '\n') scr_refresh();
-                else scr_redraw_cur_vrow();
+                else scr_redraw_cur_line();
             }
         }
         break;
@@ -735,7 +662,6 @@ int c, count, size;
 static void normal_edit_cmd(c, count, size)
 int c, count, size;
 {
-    int old_top;
     switch (c) {
 
     /* --- Insert mode entry --- */
@@ -792,10 +718,7 @@ int c, count, size;
             ed.cur_pos = eol;        /* cursor on the new '\n' line */
             ed.modified = 1;
             ed.undo.len++;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
+            scr_adj();
             ed.mode = MODE_INSERT;
             scr_show_status("-- INSERT --");
         }
@@ -810,10 +733,7 @@ int c, count, size;
             gb_insert(ed.cur_pos, &nl, 1);
             ed.modified = 1;
             ed.undo.len++;
-            old_top = ed.top_pos;
-            scr_scroll_to_cursor();
-            if (ed.top_pos == old_top) scr_redraw_from_cur();
-            else scr_refresh();
+            scr_adj();
             ed.mode = MODE_INSERT;
             scr_show_status("-- INSERT --");
         }
@@ -870,10 +790,16 @@ static void normal_page_cmd(c, count, had_count)
 int c, count, had_count;
 {
     int n, top_line, total, line, clen, text_rows, old_top, mid, new_top;
+    long new_off;
 
     switch (c) {
 
     case 'G':
+        /* When navigating to a specific line and the head of the file has
+         * been discarded from the buffer, reload from the beginning so that
+         * scr_line_start() is anchored correctly at file line 1. */
+        if (had_count && ed.win_start > 0L)
+            gb_reload_from(0L);
         if (!had_count) {
             while (ed.tail_offset > 0L) {
                 clen = gb_content_len();
@@ -913,9 +839,31 @@ int c, count, had_count;
         break;
 
     case KEY_CTRL_B:
-        if (ed.top_pos == 0) break;  /* already at beginning of file */
         text_rows = ed.scr_rows - 1;
         n        = count * (text_rows - 2);
+        /* If the viewport is at the buffer start but earlier file content
+         * was discarded, reload an earlier window from the file. */
+        if (ed.top_pos == 0 && ed.win_start > 0L) {
+            /* Reload a window of content that precedes the current buffer. */
+            new_off = ed.win_start - (long)LOAD_CHUNK;
+            if (new_off < 0L) new_off = 0L;
+            gb_reload_from(new_off);
+            /* After reload cur_pos/top_pos are 0; let the normal path scroll. */
+            total   = scr_line_count();
+            new_top = total - 1 - n;
+            if (new_top < 0) new_top = 0;
+            ed.top_pos = scr_line_start(new_top);
+            mid = new_top + (text_rows - 1) / 2;
+            if (mid >= total) mid = total - 1;
+            if (mid < 0)      mid = 0;
+            ed.cur_pos  = scr_line_start(mid);
+            mv_bnb();
+            ed.want_col = 0;
+            ed.cur_vrow = -1;
+            scr_refresh();
+            break;
+        }
+        if (ed.top_pos == 0) break;  /* already at beginning of file */
         top_line = scr_pos_line(ed.top_pos);
         new_top  = top_line - n;
         if (new_top < 0) new_top = 0;
@@ -1026,6 +974,13 @@ int c;
         }
         return;
     }
+
+    /* Translate ANSI arrow keys to their hjkl equivalents so the switch
+     * below stays within the ASCII range and compiles efficiently on Z80. */
+    if (c == KEY_UP)    c = 'k';
+    if (c == KEY_DOWN)  c = 'j';
+    if (c == KEY_LEFT)  c = 'h';
+    if (c == KEY_RIGHT) c = 'l';
 
     /* ---- normal commands ---- */
     switch (c) {

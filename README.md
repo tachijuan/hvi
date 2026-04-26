@@ -107,10 +107,10 @@ hvi -d myfile.txt 2>debug.txt
 
 | Key        | Action                              |
 |------------|-------------------------------------|
-| `h`        | Move left one character             |
-| `l`        | Move right one character            |
-| `j`        | Move down one line                  |
-| `k`        | Move up one line                    |
+| `h` / `←`  | Move left one character             |
+| `l` / `→`  | Move right one character            |
+| `j` / `↓`  | Move down one line                  |
+| `k` / `↑`  | Move up one line                    |
 | `Enter`    | Move to first non-blank of next line |
 | `w`        | Forward to start of next word       |
 | `b`        | Backward to start of previous word  |
@@ -209,6 +209,7 @@ Both repeat commands accept a count prefix (e.g. `3;` skips to the third next ma
 | `Ctrl-H`   | Delete previous character           |
 | `Ctrl-W`   | Delete previous word                |
 | `Ctrl-U`   | Delete to start of line             |
+| `↑↓←→`    | Move cursor (stay in insert mode)   |
 | `ESC`      | Return to normal mode               |
 
 ### Ex Commands
@@ -260,6 +261,10 @@ total to indicate that more content exists beyond the loaded window:
 ```
 "filename" [+] L42/300+
 ```
+
+Whenever HVI reads the next chunk of a large file from disk, it briefly shows
+`[Loading...]` on the status line.  The indicator is replaced by the normal
+status display as soon as the screen is refreshed after the load completes.
 
 ---
 

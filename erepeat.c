@@ -70,7 +70,7 @@ void dot_ins_position()
 void dot_replay_c(n)
 int n;
 {
-    int from, to, ins_pos, sz, linewise, endpoint, old_top;
+    int from, to, ins_pos, sz, linewise, endpoint;
     linewise = 0;
     if (ed.dot_cmd == 'C' || ed.dot_motion == 'c') {
         from = ed.cur_pos;
@@ -99,11 +99,7 @@ int n;
             ed.cur_pos--;
         if (ed.cur_pos < 0) ed.cur_pos = 0;
     }
-    old_top = ed.top_pos;
-    scr_scroll_to_cursor();
-    if (ed.top_pos == old_top) scr_redraw_from_cur();
-    else scr_refresh();
-    scr_show_status(ed.status);
+    scr_after_edit();
 }
 
 /*
@@ -116,7 +112,7 @@ int count;
     int  n, sz, k, linewise, endpoint;
     int  from, to, ins_pos, ch, eol;
     int  start_line, end_line, total;
-    int  old_top, has_nl, ki;
+    int  has_nl, ki;
     char tmp_c[1];
     char sp;
 
@@ -163,7 +159,7 @@ int count;
             gb_insert(ed.cur_pos, tmp_c, 1);
             ed.modified = 1;
             if (ed.dot_arg == '\n') scr_refresh();
-            else scr_redraw_cur_vrow();
+            else scr_redraw_cur_line();
         }
         break;
 
@@ -259,18 +255,12 @@ int count;
             if (has_nl) {
                 /* Multi-line insert: redraw from insertion point. */
                 ed.cur_pos = ins_pos;
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                if (ed.top_pos == old_top) scr_redraw_from_cur();
-                else scr_refresh();
+                scr_adj();
                 ed.cur_pos = ins_pos + ed.dot_len;
                 if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
                     ed.cur_pos--;
             } else {
-                old_top = ed.top_pos;
-                scr_scroll_to_cursor();
-                if (ed.top_pos == old_top) scr_redraw_from_cur();
-                else scr_refresh();
+                scr_adj();
             }
             scr_show_status(ed.status);
         }

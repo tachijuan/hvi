@@ -38,6 +38,7 @@ char *argv[];
     ed.undo.type      = UNDO_NONE;
     ed.cur_line       = 0;
     ed.cur_line_pos   = -1;  /* force full scan on first scr_cur_line() call */
+    ed.cur_vrow       = -1;  /* force full scan on first scr_scroll_to_cursor() */
 
     file_arg = -1;
 
@@ -80,8 +81,7 @@ char *argv[];
     /* --- Load file using the pre-opened handle --- */
     if (file_arg >= 0) {
         if (preopen) {
-            /* gb_load_fp closes preopen when done */
-            partial = gb_load_fp(preopen, ed.filename);
+            partial = gb_load(ed.filename, preopen);
             if (partial == 2) {
                 sprintf(ed.status,
                         "\"%s\" [Partial: %d chars, tail preserved]",

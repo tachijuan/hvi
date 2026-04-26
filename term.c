@@ -317,13 +317,42 @@ void term_clear()
 /*
  * Read one raw keypress.  Flushes all pending output first so the screen
  * is fully updated before we block.
+ *
+ * ANSI arrow key sequences (ESC [ A/B/C/D) are decoded and returned as
+ * synthetic KEY_UP/DOWN/LEFT/RIGHT codes (>0xFF) so callers do not need
+ * to track multi-byte state.  A bare ESC or an unrecognised sequence
+ * returns KEY_ESC.
  */
 int term_getch()
 {
-    int c;
+    int c, c2, wait;
     term_flush();
-    c = getch();
-    return c & 0xFF;
+    c = getch() & 0xFF;
+
+    if (c == KEY_ESC) {
+        /* Quick poll for '[' — if nothing arrives promptly it is a bare ESC. */
+        wait = 8000;
+        while (bios(2, 0, 0) == 0) {
+            if (--wait == 0) return KEY_ESC;
+        }
+        c2 = (int)(unsigned char)bios(3, 0, 0);
+        if (c2 != '[') return KEY_ESC;
+
+        /* Read the direction letter. */
+        wait = 8000;
+        while (bios(2, 0, 0) == 0) {
+            if (--wait == 0) return KEY_ESC;
+        }
+        c2 = (int)(unsigned char)bios(3, 0, 0);
+        switch (c2) {
+        case 'A': return KEY_UP;
+        case 'B': return KEY_DOWN;
+        case 'C': return KEY_RIGHT;
+        case 'D': return KEY_LEFT;
+        default:  return KEY_ESC;
+        }
+    }
+    return c;
 }
 
 /* ------------------------------------------------------------------ */

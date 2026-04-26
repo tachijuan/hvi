@@ -37,14 +37,14 @@ int c;
 void undo_save_delete(pos, len)
 int pos, len;
 {
-    int i, save;
+    static int i, save, c;
     save = (len > UNDO_MAX) ? UNDO_MAX : len;
     ed.undo.type      = UNDO_DELETE;
     ed.undo.pos       = pos;
     ed.undo.len       = len;
     ed.undo.was_clean = !ed.modified;
     for (i = 0; i < save; i++) {
-        int c = gb_char_at(pos + i);
+        c = gb_char_at(pos + i);
         ed.undo.text[i] = (c < 0) ? 0 : (char)c;
     }
     if (save < UNDO_MAX)
@@ -69,18 +69,17 @@ int pos, len;
 int pos_at_col(lstart, wantcol)
 int lstart, wantcol;
 {
-    int pos = lstart;
-    int col = 0;
-    int size = gb_content_len();
-
+    static int pos, col, size, c, nc;
+    pos  = lstart;
+    col  = 0;
+    size = gb_content_len();
     while (pos < size && gb_char_at(pos) != '\n') {
-        int c  = gb_char_at(pos);
-        int nc = (c == '\t') ? (col / TAB_STOP + 1) * TAB_STOP : col + 1;
+        c  = gb_char_at(pos);
+        nc = (c == '\t') ? (col / TAB_STOP + 1) * TAB_STOP : col + 1;
         if (nc > wantcol) break;
         col = nc;
         pos++;
     }
-    /* retreat from newline when line is non-empty */
     if (pos > lstart && (pos >= size || gb_char_at(pos) == '\n'))
         pos--;
     return pos;
@@ -88,16 +87,18 @@ int lstart, wantcol;
 
 void mv_bol()   /* beginning of line */
 {
+    ed.cur_vrow = -1;
     while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
 }
 
 void mv_bnb()   /* first non-blank of line */
 {
-    int size = gb_content_len();
+    static int size, c;
+    size = gb_content_len();
     mv_bol();
     while (ed.cur_pos < size) {
-        int c = gb_char_at(ed.cur_pos);
+        c = gb_char_at(ed.cur_pos);
         if (c != ' ' && c != '\t') break;
         ed.cur_pos++;
     }
@@ -105,15 +106,15 @@ void mv_bnb()   /* first non-blank of line */
 
 void mv_eol()   /* end of line (last real char) */
 {
-    int size = gb_content_len();
+    static int size;
+    size = gb_content_len();
+    ed.cur_vrow = -1;
     if (size == 0) return;
-    /* Already at end of an empty line — nowhere to move. */
     if (gb_char_at(ed.cur_pos) == '\n') return;
     while (ed.cur_pos < size - 1) {
         if (gb_char_at(ed.cur_pos + 1) == '\n') break;
         ed.cur_pos++;
     }
-    /* handle trailing situation */
     if (ed.cur_pos < size && gb_char_at(ed.cur_pos) == '\n'
         && ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
@@ -122,6 +123,7 @@ void mv_eol()   /* end of line (last real char) */
 void mv_left(n)
 int n;
 {
+    ed.cur_vrow = -1;   /* may cross a visual-row boundary on wrapped lines */
     while (n-- > 0) {
         if (ed.cur_pos == 0) break;
         if (gb_char_at(ed.cur_pos - 1) == '\n') break;
@@ -133,7 +135,9 @@ int n;
 void mv_right(n)
 int n;
 {
-    int size = gb_content_len();
+    static int size;
+    size = gb_content_len();
+    ed.cur_vrow = -1;   /* may cross a visual-row boundary on wrapped lines */
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
         /* can't move if on newline (empty line) */
@@ -150,19 +154,22 @@ int n;
  * mv_up / mv_down scan only the neighbouring lines (O(line_length))
  * instead of calling scr_pos_line() + scr_line_start() which each scan
  * the buffer from position 0 (O(buffer)).  At 4 MHz this matters.
+ *
+ * They also maintain ed.cur_vrow incrementally so that
+ * scr_scroll_to_cursor() can skip its O(text_rows) viewport scan entirely,
+ * reducing the per-keypress cost of j/k from O(text_rows * line_len) to
+ * O(line_len).  cur_vrow tracks the cursor's visual-row offset from top_pos.
  */
 void mv_up(n)
 int n;
 {
-    int pos, prev_lstart;
+    static int pos, prev_lstart;
+    ed.cur_vrow = -1;
     while (n-- > 0) {
         pos = ed.cur_pos;
-        /* Move to start of current line */
         while (pos > 0 && gb_char_at(pos - 1) != '\n') pos--;
-        if (pos == 0) break;    /* already on first line */
-        /* Step over the preceding newline to reach end of previous line */
+        if (pos == 0) break;
         pos--;
-        /* Find start of previous line */
         prev_lstart = pos;
         while (prev_lstart > 0 && gb_char_at(prev_lstart - 1) != '\n')
             prev_lstart--;
@@ -173,14 +180,14 @@ int n;
 void mv_down(n)
 int n;
 {
-    int pos, size;
+    static int pos, size;
     size = gb_content_len();
+    ed.cur_vrow = -1;
     while (n-- > 0) {
         pos = ed.cur_pos;
-        /* Scan forward to the newline that ends the current line */
         while (pos < size && gb_char_at(pos) != '\n') pos++;
-        if (pos >= size) break; /* on last line */
-        pos++;                  /* first char of next line */
+        if (pos >= size) break;
+        pos++;
         ed.cur_pos = pos_at_col(pos, ed.want_col);
     }
 }
@@ -189,20 +196,19 @@ int n;
 void mv_word_fwd(n)
 int n;
 {
-    int size = gb_content_len();
+    static int size, type, t2;
+    size = gb_content_len();
+    ed.cur_vrow = -1;
     while (n-- > 0) {
-        int type;
         if (ed.cur_pos >= size) break;
         type = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
                isspacech(gb_char_at(ed.cur_pos)) ? 0 : 2;
-        /* skip current token */
         while (ed.cur_pos < size) {
-            int t2 = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
-                     isspacech(gb_char_at(ed.cur_pos)) ? 0 : 2;
+            t2 = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
+                 isspacech(gb_char_at(ed.cur_pos)) ? 0 : 2;
             if (t2 != type) break;
             ed.cur_pos++;
         }
-        /* skip whitespace */
         while (ed.cur_pos < size && isspacech(gb_char_at(ed.cur_pos))
                && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
@@ -214,19 +220,18 @@ int n;
 void mv_word_back(n)
 int n;
 {
+    static int type, t2;
+    ed.cur_vrow = -1;
     while (n-- > 0) {
-        int type;
         if (ed.cur_pos == 0) break;
         ed.cur_pos--;
-        /* skip whitespace */
         while (ed.cur_pos > 0 && isspacech(gb_char_at(ed.cur_pos)))
             ed.cur_pos--;
         if (ed.cur_pos == 0) break;
         type = iswordch(gb_char_at(ed.cur_pos)) ? 1 : 2;
-        /* skip current token backwards */
         while (ed.cur_pos > 0) {
-            int t2 = iswordch(gb_char_at(ed.cur_pos - 1)) ? 1 :
-                     isspacech(gb_char_at(ed.cur_pos - 1)) ? 0 : 2;
+            t2 = iswordch(gb_char_at(ed.cur_pos - 1)) ? 1 :
+                 isspacech(gb_char_at(ed.cur_pos - 1)) ? 0 : 2;
             if (t2 != type) break;
             ed.cur_pos--;
         }
@@ -238,19 +243,18 @@ int n;
 void mv_word_end(n)
 int n;
 {
-    int size = gb_content_len();
+    static int size, type, t2;
+    size = gb_content_len();
+    ed.cur_vrow = -1;
     while (n-- > 0) {
-        int type;
         if (ed.cur_pos >= size - 1) break;
         ed.cur_pos++;
-        /* skip whitespace */
         while (ed.cur_pos < size && isspacech(gb_char_at(ed.cur_pos)))
             ed.cur_pos++;
         type = iswordch(gb_char_at(ed.cur_pos)) ? 1 : 2;
-        /* move to end of token */
         while (ed.cur_pos < size - 1) {
-            int t2 = iswordch(gb_char_at(ed.cur_pos + 1)) ? 1 :
-                     isspacech(gb_char_at(ed.cur_pos + 1)) ? 0 : 2;
+            t2 = iswordch(gb_char_at(ed.cur_pos + 1)) ? 1 :
+                 isspacech(gb_char_at(ed.cur_pos + 1)) ? 0 : 2;
             if (t2 != type) break;
             ed.cur_pos++;
         }
@@ -408,65 +412,49 @@ int *linewise;
 void apply_op(op, from, to, linewise)
 int op, from, to, linewise;
 {
-    int len, i, old_top;
+    static int len, i, save, c, t, size;
 
-    if (from > to) { int t = from; from = to; to = t; }
+    if (from > to) { t = from; from = to; to = t; }
     len = to - from;
     if (len <= 0) return;
 
     if (op == 'y') {
-        /* Yank: copy range into yank buffer */
-        int save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
+        save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
         for (i = 0; i < save; i++) {
-            int c = gb_char_at(from + i);
+            c = gb_char_at(from + i);
             ed.yank[i] = (c < 0) ? 0 : (char)c;
         }
         ed.yank[save] = '\0';
         ed.yank_len   = save;
         ed.yank_line  = linewise;
         ed.cur_pos    = from;
+        ed.cur_vrow   = -1;
         sprintf(ed.status, "%d char%s yanked", save, save == 1 ? "" : "s");
         scr_show_status(ed.status);
         return;
     }
 
-    /* 'd' or 'c': save undo, delete range */
     undo_save_delete(from, len);
-    /* also put in yank buffer */
-    {
-        int save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
-        for (i = 0; i < save; i++) {
-            int c = gb_char_at(from + i);
-            ed.yank[i] = (c < 0) ? 0 : (char)c;
-        }
-        ed.yank[save] = '\0';
-        ed.yank_len   = save;
-        ed.yank_line  = linewise;
+    save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
+    for (i = 0; i < save; i++) {
+        c = gb_char_at(from + i);
+        ed.yank[i] = (c < 0) ? 0 : (char)c;
     }
+    ed.yank[save] = '\0';
+    ed.yank_len   = save;
+    ed.yank_line  = linewise;
     gb_delete(from, len);
     ed.modified = 1;
 
-    /* Clamp cursor */
-    {
-        int size = gb_content_len();
-        ed.cur_pos = from;
-        if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
-        /* Don't land on newline in normal mode (unless empty line) */
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n') {
-            /* back up to last char of line */
-            if (gb_char_at(ed.cur_pos - 1) != '\n')
-                ed.cur_pos--;
-        }
-    }
+    size = gb_content_len();
+    ed.cur_pos = from;
+    if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
+    if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n')
+        if (gb_char_at(ed.cur_pos - 1) != '\n')
+            ed.cur_pos--;
 
-    /* Cursor is at 'from' (start of deleted range) — content above unchanged. */
-    old_top = ed.top_pos;
-    scr_scroll_to_cursor();
-    if (ed.top_pos == old_top) scr_redraw_from_cur();
-    else scr_refresh();
-    scr_show_status(ed.status);
+    scr_after_edit();
 
-    /* 'c' enters insert mode after delete; set up insert undo tracking */
     if (op == 'c') {
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
@@ -486,8 +474,9 @@ int op, from, to, linewise;
 int read_pattern(prompt)
 int prompt;  /* '/' or '?' */
 {
-    int c, len;
-    char *pat = ed.search;
+    static int c, len;
+    static char *pat;
+    pat = ed.search;
 
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
@@ -521,17 +510,17 @@ int prompt;  /* '/' or '?' */
 int do_search_from(start_pos)
 int start_pos;
 {
-    int size = gb_content_len();
-    int plen = strlen(ed.search);
-    int i, j, match;
-    int dir  = ed.search_dir;
+    static int size, plen, i, j, match, dir, pos;
+    size = gb_content_len();
+    plen = strlen(ed.search);
+    dir  = ed.search_dir;
 
     if (plen == 0 || size == 0) return -1;
 
     for (i = 1; i <= size; i++) {
-        int pos = (dir == SEARCH_FWD)
-                  ? (start_pos + i) % size
-                  : (start_pos - i + size) % size;
+        pos = (dir == SEARCH_FWD)
+              ? (start_pos + i) % size
+              : (start_pos - i + size) % size;
         match = 1;
         for (j = 0; j < plen && match; j++) {
             if ((pos + j) >= size || gb_char_at(pos + j) != (unsigned char)ed.search[j])

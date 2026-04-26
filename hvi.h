@@ -64,6 +64,12 @@
 #define KEY_ESC     0x1B
 #define KEY_DEL     0x7F
 
+/* Synthetic codes for ANSI arrow keys (above 0xFF, never from raw input) */
+#define KEY_UP      0x101
+#define KEY_DOWN    0x102
+#define KEY_LEFT    0x103
+#define KEY_RIGHT   0x104
+
 /* Editor modes */
 #define MODE_NORMAL  0
 #define MODE_INSERT  1
@@ -170,6 +176,11 @@ typedef struct {
 
     /* Cached total line count (0 = invalid; set by scr_line_count) */
     int     line_cnt_cached;
+
+    /* Cached visual row of cursor within viewport (-1 = needs recompute).
+     * Maintained incrementally by mv_down/mv_up so scr_scroll_to_cursor()
+     * can skip the O(text_rows) viewport scan on every j/k keypress. */
+    int     cur_vrow;
 } Editor;
 
 extern Editor ed;
@@ -181,10 +192,10 @@ int  gb_content_len();  /* logical content size (no gap) */
 int  gb_char_at(/* int pos */);
 int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);
-int  gb_load(/* char *filename */);
-int  gb_load_fp(/* FILE *f, char *filename */);
+int  gb_load(/* char *filename, FILE *fp */); /* fp=NULL -> fopen filename */
 int  gb_save(/* char *filename */);
 int  gb_load_more(/* int n */);
+int  gb_reload_from(/* long offset */);
 
 /* ---- term.c ---- */
 void term_init();
@@ -207,19 +218,19 @@ void term_scroll_dn();
 void scr_refresh();
 void scr_redraw_line(/* int screen_row */);
 void scr_redraw_cur_line();
-void scr_redraw_cur_vrow();
 void scr_redraw_from_cur();
 void scr_update_cursor();
 void scr_show_status(/* char *msg */);
 void scr_clear_status();
 void scr_scroll_to_cursor();
 void scr_update_after_move(/* int old_top */);
+void scr_adj();
+void scr_after_edit();
 int  scr_cur_line();
 int  scr_pos_line(/* int pos */);
 int  scr_pos_col(/* int pos */);
 int  scr_vrow_col(/* int pos */);
 int  scr_line_start(/* int linenum */);
-int  scr_line_end(/* int pos */);
 int  scr_line_count();
 
 /* ---- edit.c ---- */
