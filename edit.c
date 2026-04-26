@@ -789,7 +789,7 @@ int c, count, size;
 static void normal_page_cmd(c, count, had_count)
 int c, count, had_count;
 {
-    int n, top_line, total, line, clen, text_rows, old_top, mid, new_top;
+    int n, top_line, total, line, clen, text_rows, mid, new_top;
     long new_off;
 
     switch (c) {
@@ -813,9 +813,8 @@ int c, count, had_count;
         ed.cur_pos = scr_line_start(line);
         mv_bnb();
         ed.want_col = scr_pos_col(ed.cur_pos);
-        old_top = ed.top_pos;
         scr_scroll_to_cursor();
-        scr_update_after_move(old_top);
+        scr_refresh();
         break;
 
     case KEY_CTRL_F:
