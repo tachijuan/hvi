@@ -2,8 +2,8 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 1.2  
-**Date:** 2026-04-24
+**Version:** 1.3  
+**Date:** 2026-04-26
 
 ---
 
@@ -136,8 +136,7 @@ Key functions:
 - `gb_char_at(pos)` — returns character at logical position (handles gap transparently)
 - `gb_insert(pos, text, len)` — insert text at logical position
 - `gb_delete(pos, len)` — delete len bytes at logical position (expands gap)
-- `gb_load(filename)` — opens and loads a file
-- `gb_load_fp(f, filename)` — loads from a pre-opened `FILE*` (see Section 7.2)
+- `gb_load(filename, fp)` — opens and loads a file; when `fp` is non-NULL, uses that already-open handle instead of calling `fopen()` (see Section 7.2)
 - `gb_save(filename)` — saves buffer to file
 - `gb_load_more(n)` — loads next n bytes from tail (large-file paging)
 
@@ -216,17 +215,43 @@ int gb_insert(/* int pos, char *text, int len */);
 ### 7.2 Heap Exhaustion and `fopen()` Failure
 **Problem:** HI-TECH C's `fopen()` allocates a `BUFSIZ`-sized I/O buffer from the heap for each file it opens. `gb_init()` allocates nearly the entire heap for the gap buffer, leaving no room for `fopen()` to succeed. Every subsequent file open returns `NULL`.
 
+
+
 **Root cause:** The heap on this CP/M system is approximately 24–40 KB. A single `malloc` call can consume virtually all of it.
 
-**Solution:** In `hvi.c::main()`, the input file is opened with `fopen()` **before** `gb_init()` is called — while the heap is still fully available. The resulting `FILE*` is passed to `gb_load_fp()`, a variant of `gb_load()` that accepts an already-open file handle rather than a filename. `gb_init()` then allocates the gap buffer from whatever heap remains.
+**Solution:** In `hvi.c::main()`, the input file is opened with `fopen()` **before** `gb_init()` is called — while the heap is still fully available. The resulting `FILE*` is passed as the second argument to `gb_load(filename, fp)`. When `fp` is non-NULL, `gb_load()` uses that already-open handle directly rather than calling `fopen()`. `gb_init()` then allocates the gap buffer from whatever heap remains.
 
-After `gb_load_fp()` closes the file with `fclose()`, the I/O buffer is returned to the heap (assuming HI-TECH C's `fclose()` calls `free()` internally), making it available for subsequent `fopen()` calls in `gb_save()` and `gb_load_more()`.
+After `gb_load()` closes the file with `fclose()`, the I/O buffer is returned to the heap (assuming HI-TECH C's `fclose()` calls `free()` internally), making it available for subsequent `fopen()` calls in `gb_save()` and `gb_load_more()`.
 
 **Probe strategy (abandoned):** An earlier attempt used a probe allocation to find the largest available heap block, then freed it and re-allocated a smaller block to leave headroom. This failed because on CP/M, `free()` may not reliably return memory to the free list, causing the probe to permanently consume heap in addition to the actual allocation.
 
-### 7.3 HI-TECH C Compiler Limits
+### 7.3 IX Frame Elimination (Binary Size Optimisation)
 
-#### 7.3.1 Optimizer Memory Limit: "optim: Out of memory"
+HI-TECH C V3.09 generates an IX-register stack frame in every function that has at least one `auto` (stack-allocated) local variable. The prologue/epilogue sequence (`PUSH IX` / `LD IX,0` / `ADD IX,SP` / one `DEC SP` per local byte / `LD SP,IX` / `POP IX`) costs 12–16 bytes per function. For a codebase with many small functions this overhead is significant.
+
+**Solution:** Declare local variables as `static` instead of `auto`. File-level `static` variables and function-scope `static` variables are placed in BSS (fixed addresses) and accessed without IX. If **all** locals in a function are `static` (or if the function has no locals), the compiler emits no IX frame at all.
+
+**Constraints:**
+- Only safe for non-recursive, single-threaded functions (all functions in HVI satisfy this — CP/M is single-process, single-thread).
+- Inner-block declarations (inside `switch` cases, `if` blocks) also contribute to the IX frame and must be hoisted to function-scope `static`.
+- Functions with `static` locals are not re-entrant. This is intentional and safe here.
+
+**Affected functions (v1.3):**
+
+| File | Functions |
+|------|-----------|
+| `screen.c` | `next_vrow`, `vrow_start_of`, `scr_vrow_col`, `scr_pos_line`, `scr_cur_line`, `scr_pos_col`, `scr_line_start`, `scr_line_count`, `draw_row_at`, `scr_show_status`, `scr_update_after_move` |
+| `edit.c` | `get_count`, `do_find`, `insert_key` |
+| `emove.c` | `undo_save_delete`, `pos_at_col`, `mv_bnb`, `mv_eol`, `mv_right`, `mv_up`, `mv_down`, `mv_word_fwd`, `mv_word_back`, `mv_word_end`, `apply_op`, `read_pattern`, `do_search_from` |
+
+**Additional dead code removed (v1.3):**
+- `gb_load_fp()` — merged into `gb_load(filename, fp)` via an optional `FILE*` parameter. When `fp` is non-NULL it is used directly; otherwise `fopen()` is called internally. Eliminates the entire function body and its IX frame.
+- `scr_redraw_cur_vrow()` — single-visual-row redraw used only by `r` (replace character). Replaced with `scr_redraw_cur_line()`, which redraws the full logical line. The result is identical for single-width lines and correct for wrapped lines. Eliminates ~60 bytes.
+- `scr_line_end()` — declared in `hvi.h` and defined in `screen.c` but never called anywhere. Eliminated as dead code (~40 bytes).
+
+### 7.4 HI-TECH C Compiler Limits
+
+#### 7.4.1 Optimizer Memory Limit: "optim: Out of memory"
 **Problem:** HI-TECH C's optimizer has a fixed memory budget for processing a single function. Functions beyond a certain complexity cause the compiler to abort with `optim: Out of memory`.
 
 **Solution:** Keep all functions small. When a function grows too large (typically beyond ~80–120 lines with many local variables and branches), split it into multiple smaller static helper functions.
@@ -237,7 +262,7 @@ After `gb_load_fp()` closes the file with `fclose()`, the I/O buffer is returned
 - `gap.c::gb_load_more()` — split out `gb_discard_head()`
 - `edit.c::normal_cmd()` — split into `normal_edit_cmd()`, `normal_delchg_cmd()`, `normal_misc_cmd()`, `normal_find_cmd()`, `normal_page_cmd()`
 
-#### 7.3.2 Per-File Label Limit: "Too many temporary labels"
+#### 7.4.2 Per-File Label Limit: "Too many temporary labels"
 **Problem:** HI-TECH C generates an assembly label for every `if`, `while`, `for`, `&&`, `||`, `switch` case, and ternary expression. There is a hard per-file limit on the total number of these temporary labels. When a `.C` file generates too many labels across all its functions combined, the assembler phase aborts with `Too many temporary labels`.
 
 This is distinct from the optimizer memory limit: splitting a large function into smaller functions within the **same** `.C` file does not help, because the label count is per-file, not per-function.
@@ -247,7 +272,7 @@ This is distinct from the optimizer memory limit: splitting a large function int
 **Affected in this codebase:**
 - `erepeat.c` was created to hold `dot_ins_position()`, `dot_replay_c()`, and `dot_replay()`, which were extracted from `edit.c` to reduce `edit.c`'s total label count.
 
-### 7.4 Variable Declaration Rules (K&R C)
+### 7.5 Variable Declaration Rules (K&R C)
 All variable declarations must appear at the **top** of their enclosing block, before any statements. Declaring a variable after a statement in the same block is illegal in K&R C and will cause a compile error.
 
 ```c
@@ -267,16 +292,16 @@ This applies inside `switch` case bodies as well — use explicit `{ }` blocks t
 
 **Special caution with `long`:** Declaring a `long` variable inside a nested block (rather than at the function top) has been observed to cause optimizer failures on HI-TECH C. All `long` variables should be declared at the top of their function.
 
-### 7.5 No `memmove()`
+### 7.6 No `memmove()`
 HI-TECH C V3.09 does not include `memmove()` in its library. The gap buffer requires an overlapping-safe memory copy for gap movement. A private implementation named `gb_memmove()` is provided in `gap.c`.
 
-### 7.6 Integer Width
+### 7.7 Integer Width
 On Z80, `int` is 2 bytes (range −32768 to 32767). Buffer positions and sizes are stored as `int`, which limits the effective buffer to 32 KB. This is acceptable given CP/M TPA constraints. File offsets (e.g., `tail_offset`, `win_start`) are stored as `long` (4 bytes) to support files larger than 32 KB.
 
-### 7.7 Terminal Input
+### 7.8 Terminal Input
 CP/M does not have a `termios`-style raw mode API. HI-TECH C's `getch()` function reads a single character without echo using the BIOS CONIN call directly. No setup or teardown is required for raw mode.
 
-### 7.8 Terminal Size Query and BIOS CONIN
+### 7.9 Terminal Size Query and BIOS CONIN
 **Problem:** The ANSI CPR response (`ESC[rows;colsR`) is fragmented on CP/M emulators running under a Unix host with canonical (line-buffered) terminal mode. The ESC byte arrives immediately, but the remaining bytes are buffered until Enter is pressed.
 
 **Solution:** `term_getsize()` uses a two-phase approach:
@@ -287,7 +312,7 @@ All debug output from the size query is deferred until after Phase 2 completes, 
 
 If the terminal does not respond, `DEF_ROWS = 24` and `DEF_COLS = 80` are used.
 
-### 7.9 File I/O Buffer Count
+### 7.10 File I/O Buffer Count
 `gb_save()` opens at most **two** files simultaneously: the output file and the source file (for head/tail reads). The pre-open strategy ensures the initial file's I/O buffer is allocated before the gap buffer consumes the heap. If `free()` works (returns memory to the heap on `fclose()`), the pattern of open-read/write-close ensures only one or two file handles are live at any moment.
 
 ---
@@ -529,12 +554,11 @@ All screen output is sized to the minimum needed for the operation. From cheapes
 | Cursor move only | `scr_update_cursor()` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport unchanged; terminal cursor repositioned (~10 bytes) |
 | Cursor move only | `scr_show_status()` | `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` — text unchanged, cursor stays on-screen |
 | Terminal scroll + 1 row | `scr_update_after_move(old_top)` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport shifts by exactly ±1 visual row (~53 bytes vs ~1200 for full refresh) |
-| Single visual row | `scr_redraw_cur_vrow()` | `r` replace (character count unchanged) |
-| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `x`, `X`, `D`, `~`, `s`, `S`, `C`, insert-mode Ctrl-U, Ctrl-W (within line) |
+| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `r`, `x`, `X`, `D`, `~`, `s`, `S`, `C`, insert-mode Ctrl-U, Ctrl-W (within line) |
 | Cursor row to bottom | `scr_redraw_from_cur()` | `J`, `o`, `O`, `p`, `P`, `u`, `dw`/`dd`/`cw`/etc., insert-mode Enter/BS-over-newline/Ctrl-W-across-newline, dot-repeat of insert/join — content above cursor unchanged |
 | Full screen | `scr_refresh()` | `G`, Ctrl-F/B/D/U, `:` commands, large file tail load, viewport shift after any operation |
 
-The `scr_redraw_from_cur()` tier (added in v1.1) is the key new level: for any operation that modifies content at or below the cursor without moving `top_pos`, it skips all rows above the cursor. On a 24-row terminal with the cursor at the middle, this halves the terminal output compared to a full refresh.
+The `scr_redraw_from_cur()` tier (added in v1.1) is the key level: for any operation that modifies content at or below the cursor without moving `top_pos`, it skips all rows above the cursor. On a 24-row terminal with the cursor at the middle, this halves the terminal output compared to a full refresh.
 
 `scr_update_after_move()` no longer updates the status bar for the no-scroll and ±1-scroll cases (it calls `scr_update_cursor()` instead). This eliminates ~58 bytes of status bar I/O per `j`/`k`/`Enter` keypress (~10 ms at 56K baud). The status bar refreshes on the next edit, search, full-screen command, or `Ctrl-L`.
 
@@ -577,7 +601,7 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 1. **Single-level undo.** Only the most recent change can be undone. `u` after `u` is a no-op.
 2. **Edits restricted to loaded window.** For large files, only the in-memory portion is editable. The unloaded tail is preserved verbatim on save.
 3. **Dot-repeat text truncated at 128 bytes.** Long insertions are truncated silently.
-4. **No backward paging for large files.** `gb_discard_head()` can discard the head to make room for forward paging, but there is no mechanism to reload previously discarded head content.
+4. **Large-file backward paging reloads the full window.** `Ctrl-B` uses `gb_reload_from()` to reload from an earlier file offset, which clears all in-memory edits from the current window. Save before paging backward in large files to avoid data loss.
 5. **No visual/block selection mode.**
 6. **No macro recording or playback.**
 7. **No window splitting.**
@@ -618,6 +642,11 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | `:e` resets gap buffer in-place | Rather than `gb_free()` + `gb_init()`, the buffer is emptied by resetting `gstart=0, gend=size`. This avoids `malloc`/`free` churn and the CP/M heap fragmentation risk |
 | `ex_execute()` does not call `scr_refresh()` | All screen updates for ex commands are done by `cmdline_mode()` after `ex_execute()` returns, ensuring exactly one refresh per command regardless of which ex command ran |
 | `mv_eol()` returns immediately on `\n` | When the cursor is already on a newline (empty line), `mv_eol()` previously walked forward past the `\n` onto the next line's content, causing `A` and `$` to land on the wrong line. An early return when `gb_char_at(cur_pos) == '\n'` corrects this |
+| `G` uses `scr_refresh()` instead of `scr_update_after_move()` | After `gb_reload_from(0L)` resets `ed.top_pos` to 0, the saved `old_top` is also 0. `scr_update_after_move(0)` sees no viewport change and only calls `scr_update_cursor()`, leaving the screen blank. Using `scr_refresh()` unconditionally after `G` fixes this and is always correct since `G` is a large-distance jump |
+| Static locals eliminate IX frames | HI-TECH C generates a 12–16 byte PUSH/POP IX stack frame for every function with at least one `auto` local. Declaring all locals `static` moves them to BSS and eliminates the frame. Safe because all HVI functions are non-recursive and CP/M is single-threaded. See Section 7.3 |
+| `gb_load_fp()` merged into `gb_load()` | Both functions were nearly identical. Adding a `FILE *fp` parameter to `gb_load()` (NULL = fopen internally) eliminates the entire `gb_load_fp()` function body and its IX frame |
+| `scr_redraw_cur_vrow()` removed | Used only by `r` (replace). `scr_redraw_cur_line()` is a correct superset: it redraws the full logical line, which is identical for single-width lines and also handles wrapped lines. Removes ~60 bytes |
+| `scr_line_end()` removed as dead code | Declared in `hvi.h`, defined in `screen.c`, but never called from anywhere in the codebase. Removing dead declarations and definitions reduces binary size without any functional change |
 
 ---
 
