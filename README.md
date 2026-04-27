@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 1.3**
+**Version 1.4**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -49,14 +49,7 @@ LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE
 > **Note:** The HI-TECH C linker is named `LINQ`, not `LINK`. Adjust the
 > `-C100H` load address if your TPA starts elsewhere.
 
-4. For a debug build, add `-H` to each compile step and use the same link command:
 
-```
-C -H -C HVI.C
-C -H -C GAP.C
-... (repeat for all files)
-LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EDIT.OBJ EREPEAT.OBJ EX.OBJ LIBC.LIB
-```
 
 ### Cross-Compilation (Linux/macOS host)
 
@@ -75,29 +68,9 @@ Transfer `hvi.com` to your CP/M system via XMODEM, Z-Modem, or disk image.
 
 ```
 HVI [filename]
-HVI -d [filename]
 ```
 
 - `filename` — file to open (created if it does not exist)
-- `-d` — enable debug output to the console
-
-### Debug Mode
-
-```
-HVI -d MYFILE.TXT
-```
-
-Debug messages (key codes, mode changes, buffer allocation, terminal size
-negotiation) are written to the console via `fprintf(stderr, ...)`.  On CP/M,
-stderr maps to CON: and cannot be redirected to a file — the messages will
-appear on screen interleaved with the editor display, which will disrupt the
-output.  Debug mode is therefore most useful for diagnosing startup or
-initialization problems (before full-screen editing begins), or when running
-under a Unix cross-compile environment where stderr can be redirected:
-
-```
-hvi -d myfile.txt 2>debug.txt
-```
 
 ---
 

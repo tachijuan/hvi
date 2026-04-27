@@ -2,8 +2,8 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 1.3  
-**Date:** 2026-04-26
+**Version:** 1.4  
+**Date:** 2026-04-27
 
 ---
 
@@ -75,7 +75,7 @@ LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE
 ```
 
 ### 4.2 Debug Build
-Add `-H` to each compile step to enable debug symbol output. The `-d` runtime flag enables in-application debug logging to `stderr`.
+Add `-H` to each compile step to enable debug symbol output (symbol table only). The internal `-d` application logging scaffolding has been permanently removed to minimize the binary footprint for strict CP/M environments.
 
 ### 4.3 Cross-Compilation (Linux/macOS)
 ```
@@ -92,13 +92,11 @@ linq -Z -N -C100H -ohvi.com crtcpm.obj hvi.obj gap.obj term.obj screen.obj emove
 
 ```
 HVI [filename]
-HVI -d [filename]
 ```
 
 - If `filename` is given and exists, it is loaded into the gap buffer.
 - If `filename` is given but does not exist, the editor starts with an empty buffer and the status shows `[New File]`.
 - If no filename is given, the editor starts with an empty unnamed buffer.
-- `-d` enables debug output to `stderr`. On CP/M, `stderr` maps to CON: and cannot be redirected; debug messages appear on screen interleaved with the editor display. Debug mode is most useful for diagnosing startup or initialization problems (before full-screen editing begins), or when running under a Unix cross-compile environment where stderr can be redirected: `hvi -d myfile.txt 2>debug.txt`.
 
 ---
 
@@ -647,6 +645,10 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | `gb_load_fp()` merged into `gb_load()` | Both functions were nearly identical. Adding a `FILE *fp` parameter to `gb_load()` (NULL = fopen internally) eliminates the entire `gb_load_fp()` function body and its IX frame |
 | `scr_redraw_cur_vrow()` removed | Used only by `r` (replace). `scr_redraw_cur_line()` is a correct superset: it redraws the full logical line, which is identical for single-width lines and also handles wrapped lines. Removes ~60 bytes |
 | `scr_line_end()` removed as dead code | Declared in `hvi.h`, defined in `screen.c`, but never called from anywhere in the codebase. Removing dead declarations and definitions reduces binary size without any functional change |
+| Bitwise arithmetic for `TAB_STOP` | Tab-stop alignments historically use compiler-injected modulo/division code. We switched this block `((col / TAB_STOP + 1) * TAB_STOP)` to a hardware bitwise OR block `((col \| (TAB_STOP - 1)) + 1)` which compiles drastically smaller since `TAB_STOP` is 8 (a power of 2). |
+| `begin_hmove`/`end_hmove` abstraction | Horizontal motion commands abstractly bracket updates to `ed.cur_pos`. The `end_hmove` block natively catches if a visual boundary crossing occurs on the physical screen (line wrap text) and correctly invalidates `ed.cur_vrow` to snap the UI rendering context back without redundant checks scattered. |
+| Extract newline scans to `find_bol`/`find_eol` | 16+ inline while-loops repeating newline scanning logic across the code base were refactored into `gap.c` exports to cut binary block duplication via central CALL jumps. |
+| Encapsulate `mv_find` inline command | The `f/F/;/;` character-find routines were moved from `edit.c` to `emove.c` (`mv_find()`) so they could operate under the secure caching brackets of `begin_hmove`, stopping UI freezing. We removed the "f_" status prompt to replicate pure vi mechanics. |
 
 ---
 
