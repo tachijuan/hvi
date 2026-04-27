@@ -26,6 +26,7 @@ static int g_find_char = 0; /* last char target for f/F             */
 static int g_find_dir  = 1; /* 1 = forward (f), -1 = backward (F)  */
 static int g_ins_cmd   = 0; /* command that entered insert mode     */
 
+static void normal_cmd();
 /* Return effective count (at least 1), then clear. */
 static int get_count()
 {
@@ -143,7 +144,7 @@ int c;
                 ed.undo.len--;
             if (del_ch == '\n') {
                 scr_adj();
-                scr_show_status("-- INSERT --");
+                scr_show_status(msg_insert);
             } else if (del_ch == '\t') {
                 scr_redraw_cur_line();
             } else {
@@ -152,7 +153,8 @@ int c;
                     term_putch(KEY_BS);
                     term_clreol();
                 } else {
-                    scr_redraw_cur_line();
+                    term_putch(KEY_BS);
+                    term_del_char();
                 }
             }
         }
@@ -179,7 +181,7 @@ int c;
             if (had_nl) scr_adj();
             else        scr_redraw_cur_line();
         }
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         return 0;
     }
 
@@ -212,7 +214,7 @@ int c;
         ed.modified = 1;
         if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
         scr_adj();
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         return 0;
     }
 
@@ -230,10 +232,24 @@ int c;
 
     if (new_col > ed.scr_cols) {
         scr_redraw_cur_line();
-    } else if (c == '\t') {
-        while (cur_col < new_col) { term_putch(' '); cur_col++; }
     } else {
-        term_putch(c);
+        sz = gb_content_len();
+        /* If appending at the end of the line, emit the byte directly to save output.
+           Otherwise, shift the trailing text right. */
+        if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
+            if (c == '\t') {
+                while (cur_col < new_col) { term_putch(' '); cur_col++; }
+            } else {
+                term_putch(c);
+            }
+        } else {
+            if (c == '\t') {
+                scr_redraw_cur_line();
+            } else {
+                term_ins_char();
+                term_putch(c);
+            }
+        }
     }
     return 0;
 }
@@ -260,9 +276,15 @@ static void cmdline_mode()
         }
         if (c == KEY_CR || c == KEY_LF) {
             ed.cmdline[ed.cmdlen] = '\0';
-            if (ed.cmdlen > 0)
-                ex_execute(ed.cmdline);
-            if (!ed.quit) scr_refresh();
+            if (ed.cmdlen > 0) {
+                if (ex_execute(ed.cmdline)) {
+                    if (!ed.quit) scr_refresh();
+                } else {
+                    if (!ed.quit) scr_show_status(ed.status);
+                }
+            } else {
+                if (!ed.quit) scr_clear_status();
+            }
             return;
         }
         if ((c == KEY_BS || c == KEY_DEL) && ed.cmdlen > 0) {
@@ -362,23 +384,8 @@ int c, count, size;
 
     /* --- Yank/Put --- */
     case 'Y':   /* yank current line (alias for yy) */
-        {
-            int ln    = scr_pos_line(ed.cur_pos);
-            int from  = scr_line_start(ln);
-            int to    = (ln + 1 < scr_line_count()) ? scr_line_start(ln + 1) : size;
-            int save  = to - from;
-            int i;
-            if (save >= YANK_MAX) save = YANK_MAX - 1;
-            for (i = 0; i < save; i++) {
-                int ch = gb_char_at(from + i);
-                ed.yank[i] = (ch < 0) ? 0 : (char)ch;
-            }
-            ed.yank[save] = '\0';
-            ed.yank_len   = save;
-            ed.yank_line  = 1;
-            sprintf(ed.status, "1 line yanked");
-            scr_show_status(ed.status);
-        }
+        g_op = 'y'; g_count = count; g_hcnt = 1;
+        normal_cmd('y');
         break;
 
     case 'p':   /* put after cursor */
@@ -562,76 +569,19 @@ int c, count, size;
     case 'y':  g_op = 'y'; g_count = count; g_hcnt = 1; return;
 
     case 'D':   /* delete to end of line */
-        {
-            int to = ed.cur_pos;
-            while (to < size && gb_char_at(to) != '\n') to++;
-            undo_save_delete(ed.cur_pos, to - ed.cur_pos);
-            gb_delete(ed.cur_pos, to - ed.cur_pos);
-            ed.modified = 1;
-            if (ed.cur_pos > 0 && (ed.cur_pos >= gb_content_len() ||
-                gb_char_at(ed.cur_pos) == '\n')) {
-                if (gb_char_at(ed.cur_pos - 1) != '\n')
-                    ed.cur_pos--;
-            }
-            ed.dot_cmd = 'D'; ed.dot_count = 1;
-            ed.dot_motion = 0; ed.dot_arg = 0;
-            scr_redraw_cur_line();
-        }
+        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('$');
         break;
 
     case 'C':   /* change to end of line */
-        {
-            int to = ed.cur_pos;
-            while (to < size && gb_char_at(to) != '\n') to++;
-            undo_save_delete(ed.cur_pos, to - ed.cur_pos);
-            gb_delete(ed.cur_pos, to - ed.cur_pos);
-            ed.modified = 1;
-            ed.dot_cmd = 'C'; ed.dot_count = 1;
-            ed.dot_motion = 0; ed.dot_arg = 0; ed.dot_len = 0;
-            g_ins_cmd = 'C';
-            undo_save_insert(ed.cur_pos, 0);
-            scr_redraw_cur_line();
-            ed.mode = MODE_INSERT;
-            scr_show_status("-- INSERT --");
-        }
+        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('$');
         break;
 
     case 'x':   /* delete char under cursor */
-        {
-            int n = count;
-            while (n-- > 0 && ed.cur_pos < gb_content_len() &&
-                   gb_char_at(ed.cur_pos) != '\n') {
-                undo_save_delete(ed.cur_pos, 1);
-                gb_delete(ed.cur_pos, 1);
-                ed.modified = 1;
-            }
-            {
-                int sz = gb_content_len();
-                if (ed.cur_pos >= sz) ed.cur_pos = sz > 0 ? sz - 1 : 0;
-                if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n'
-                    && gb_char_at(ed.cur_pos-1) != '\n')
-                    ed.cur_pos--;
-            }
-            ed.dot_cmd = 'x'; ed.dot_count = count;
-            ed.dot_motion = 0; ed.dot_arg = 0;
-            scr_redraw_cur_line();
-        }
+        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('l');
         break;
 
     case 'X':   /* delete char before cursor */
-        {
-            int n = count;
-            while (n-- > 0 && ed.cur_pos > 0 &&
-                   gb_char_at(ed.cur_pos - 1) != '\n') {
-                ed.cur_pos--;
-                undo_save_delete(ed.cur_pos, 1);
-                gb_delete(ed.cur_pos, 1);
-                ed.modified = 1;
-            }
-            ed.dot_cmd = 'X'; ed.dot_count = count;
-            ed.dot_motion = 0; ed.dot_arg = 0;
-            scr_redraw_cur_line();
-        }
+        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('h');
         break;
 
     case 'r':   /* replace single character */
@@ -669,7 +619,7 @@ int c, count, size;
         g_ins_cmd = 'i';
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         break;
 
     case 'a':   /* append after cursor */
@@ -678,7 +628,7 @@ int c, count, size;
         g_ins_cmd = 'a';
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         break;
 
     case 'I':   /* insert at beginning of line */
@@ -686,7 +636,7 @@ int c, count, size;
         g_ins_cmd = 'I';
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         break;
 
     case 'A':   /* append at end of line */
@@ -696,7 +646,7 @@ int c, count, size;
         g_ins_cmd = 'A';
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
         break;
 
     case 'o':   /* open line below */
@@ -720,7 +670,7 @@ int c, count, size;
             ed.undo.len++;
             scr_adj();
             ed.mode = MODE_INSERT;
-            scr_show_status("-- INSERT --");
+            scr_show_status(msg_insert);
         }
         break;
 
@@ -735,45 +685,16 @@ int c, count, size;
             ed.undo.len++;
             scr_adj();
             ed.mode = MODE_INSERT;
-            scr_show_status("-- INSERT --");
+            scr_show_status(msg_insert);
         }
         break;
 
     case 's':   /* substitute character (delete + insert) */
-        g_ins_cmd = 's';
-        {
-            int del = (count > 1) ? count : 1;
-            int from = ed.cur_pos;
-            int to = from;
-            while (del-- > 0 && to < size && gb_char_at(to) != '\n') to++;
-            undo_save_delete(from, to - from);
-            gb_delete(from, to - from);
-            ed.modified = 1;
-            undo_save_insert(from, 0);
-            /* Deletion stays within current line; only that line needs refresh. */
-            scr_redraw_cur_line();
-            ed.mode = MODE_INSERT;
-            scr_show_status("-- INSERT --");
-        }
+        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('l');
         break;
 
     case 'S':   /* substitute line */
-        g_ins_cmd = 'S';
-        {
-            int from = scr_line_start(scr_pos_line(ed.cur_pos));
-            int to;
-            to = from;
-            while (to < size && gb_char_at(to) != '\n') to++;
-            undo_save_delete(from, to - from);
-            gb_delete(from, to - from);
-            ed.cur_pos = from;
-            ed.modified = 1;
-            undo_save_insert(from, 0);
-            /* Line content cleared; lines below unchanged. */
-            scr_redraw_cur_line();
-            ed.mode = MODE_INSERT;
-            scr_show_status("-- INSERT --");
-        }
+        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('c');
         break;
 
     default:
@@ -985,8 +906,8 @@ int c;
     switch (c) {
 
     /* --- Movement --- */
-    case 'h':  mv_left(count);  scr_show_status(ed.status); break;
-    case 'l':  mv_right(count); scr_show_status(ed.status); break;
+    case 'h':  mv_left(count);  scr_update_cursor(); break;
+    case 'l':  mv_right(count); scr_update_cursor(); break;
 
     case KEY_CR:  /* Enter: move to first non-blank of next line */
         old_top = ed.top_pos;
@@ -1028,9 +949,9 @@ int c;
         scr_update_after_move(old_top);
         break;
 
-    case '0':  mv_bol();  ed.want_col = 0; scr_show_status(ed.status); break;
-    case '^':  mv_bnb();  ed.want_col = scr_pos_col(ed.cur_pos); scr_show_status(ed.status); break;
-    case '$':  mv_eol();  ed.want_col = 9999; scr_show_status(ed.status); break;
+    case '0':  mv_bol();  ed.want_col = 0; scr_update_cursor(); break;
+    case '^':  mv_bnb();  ed.want_col = scr_pos_col(ed.cur_pos); scr_update_cursor(); break;
+    case '$':  mv_eol();  ed.want_col = 9999; scr_update_cursor(); break;
 
     case '.':
         dot_replay(had_count ? count : 0);
@@ -1086,7 +1007,7 @@ void edit_run()
              */
             if (ed.status[0]) {
                 ed.status[0] = '\0';
-                scr_show_status("-- INSERT --");
+                scr_show_status(msg_insert);
             }
             insert_key(c);
             /* Display any transient message set by insert_key. */

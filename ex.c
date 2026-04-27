@@ -23,9 +23,10 @@ char *s;
 
 /*
  * Execute an ex command string (without the leading colon).
+ * Returns 1 if the viewport was changed (requiring scr_refresh), 0 otherwise.
  * Sets ed.status for feedback and ed.quit to terminate the editor.
  */
-void ex_execute(cmd)
+int ex_execute(cmd)
 char *cmd;
 {
     char *p;
@@ -50,7 +51,7 @@ char *cmd;
             ed.want_col = 0;
         }
         scr_scroll_to_cursor();
-        return;
+        return 1;
     }
 
     /* :$ -- go to last line (loads entire tail for large files) */
@@ -65,7 +66,7 @@ char *cmd;
         ed.cur_pos = scr_line_start(total - 1);
         ed.want_col = 0;
         scr_scroll_to_cursor();
-        return;
+        return 1;
     }
 
     do_write = 0;
@@ -84,7 +85,7 @@ char *cmd;
         fname = skip_space(p);
         if (*fname == '\0') {
             strcpy(ed.status, "Usage: :r filename");
-            return;
+            return 0;
         }
 
         /* Find end of current line, insert after newline */
@@ -104,7 +105,7 @@ char *cmd;
             fprintf(stderr, "ex :r %s\n", f ? "ok" : "FAILED");
         if (!f) {
             sprintf(ed.status, "Cannot open: %s", fname);
-            return;
+            return 0;
         }
         old_len = gb_content_len();
         while ((c = fgetc(f)) != EOF) {
@@ -117,7 +118,7 @@ char *cmd;
         new_len = gb_content_len();
         ed.modified = 1;
         sprintf(ed.status, "\"%s\" %d chars", fname, new_len - old_len);
-        return;
+        return 1;
     }
 
     /* :e[!] filename -- abandon current buffer and edit a new file */
@@ -128,11 +129,11 @@ char *cmd;
         fname = skip_space(p);
         if (*fname == '\0') {
             strcpy(ed.status, "Usage: :e[!] filename");
-            return;
+            return 0;
         }
         if (ed.modified && !force) {
             strcpy(ed.status, "Modified buffer (use :e! to discard)");
-            return;
+            return 0;
         }
 
         /* Reset gap buffer to empty without reallocating. */
@@ -167,7 +168,7 @@ char *cmd;
             sprintf(ed.status, "\"%s\" (partial load)", fname);
         else
             sprintf(ed.status, "\"%s\" loaded", fname);
-        return;
+        return 1;
     }
 
     /* Parse w / q / x / wq combinations with optional ! */
@@ -188,12 +189,12 @@ char *cmd;
         dest = (*p) ? p : ed.filename;
         if (!dest || !dest[0]) {
             strcpy(ed.status, "No filename: use :w filename");
-            return;
+            return 0;
         }
         ok = gb_save(dest);
         if (!ok) {
             sprintf(ed.status, "Cannot write: %s", dest);
-            return;
+            return 0;
         }
         /* If saved to a new name, record it */
         if (*p)
@@ -205,13 +206,14 @@ char *cmd;
     if (do_quit) {
         if (ed.modified && !force && !do_write) {
             strcpy(ed.status, "Modified buffer (use :q! to discard)");
-            return;
+            return 0;
         }
         ed.quit = 1;
-        return;
+        return 0;
     }
 
     if (!do_write && !do_quit) {
         sprintf(ed.status, "Unknown command: %s", cmd);
     }
+    return 0;
 }

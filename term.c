@@ -56,8 +56,7 @@ static void raw_byte(c)
 int c;
 {
     if (s_outpos >= OUT_BUF_SZ) {
-        fwrite(s_outbuf, 1, s_outpos, stdout);
-        s_outpos = 0;
+        term_flush();
     }
     s_outbuf[s_outpos++] = (char)c;
 }
@@ -80,9 +79,11 @@ char *s;
  */
 void term_flush()
 {
+    int i;
     if (s_outpos > 0) {
-        fwrite(s_outbuf, 1, s_outpos, stdout);
-        fflush(stdout);
+        for (i = 0; i < s_outpos; i++) {
+            bios(4, s_outbuf[i] & 0xFF, 0);
+        }
         s_outpos = 0;
     }
 }
@@ -182,11 +183,32 @@ int row, col;
     if (s_trow >= 0 && s_tcol >= 0) {
         dr = row - s_trow;
 
-        /* Same row, move to column 0. */
-        if (dr == 0 && col == 0) {
-            raw_byte('\r');
-            s_tcol = 0;
-            return;
+        /* Same row */
+        if (dr == 0) {
+            int dc = col - s_tcol;
+
+            if (col == 0) {
+                raw_byte('\r');
+                s_tcol = 0;
+                return;
+            }
+
+            /* Move left using backspace (1 byte per col) */
+            if (dc < 0 && dc >= -6) {
+                for (i = 0; i < -dc; i++) raw_byte('\b');
+                s_tcol = col;
+                return;
+            }
+
+            /* Move right using ESC [ C (3 bytes per col)
+               Break-even compared to 8-byte ESC [ r ; c H is dc <= 2 */
+            if (dc > 0 && dc <= 2) {
+                for (i = 0; i < dc; i++) {
+                    raw_byte(0x1B); raw_byte('['); raw_byte('C');
+                }
+                s_tcol = col;
+                return;
+            }
         }
 
         /*
@@ -251,6 +273,18 @@ void term_scroll_dn()
     raw_byte('M');   /* Reverse Index */
     s_trow = 0;
     s_tcol = 0;
+}
+
+/* Insert a blank character at the current cursor position */
+void term_ins_char()
+{
+    raw_str("\033[@");
+}
+
+/* Delete character at current cursor position */
+void term_del_char()
+{
+    raw_str("\033[P");
 }
 
 /* ------------------------------------------------------------------ */
@@ -327,7 +361,7 @@ int term_getch()
 {
     int c, c2, wait;
     term_flush();
-    c = getch() & 0xFF;
+    c = bios(3, 0, 0) & 0xFF;
 
     if (c == KEY_ESC) {
         /* Quick poll for '[' — if nothing arrives promptly it is a bare ESC. */

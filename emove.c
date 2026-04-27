@@ -87,28 +87,35 @@ int lstart, wantcol;
 
 void mv_bol()   /* beginning of line */
 {
-    ed.cur_vrow = -1;
+    static int old_vstart;
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
     while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 void mv_bnb()   /* first non-blank of line */
 {
-    static int size, c;
+    static int size, c, old_vstart;
     size = gb_content_len();
-    mv_bol();
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+    while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
+        ed.cur_pos--;
     while (ed.cur_pos < size) {
         c = gb_char_at(ed.cur_pos);
         if (c != ' ' && c != '\t') break;
         ed.cur_pos++;
     }
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 void mv_eol()   /* end of line (last real char) */
 {
-    static int size;
+    static int size, old_vstart;
     size = gb_content_len();
-    ed.cur_vrow = -1;
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
     if (size == 0) return;
     if (gb_char_at(ed.cur_pos) == '\n') return;
     while (ed.cur_pos < size - 1) {
@@ -118,26 +125,31 @@ void mv_eol()   /* end of line (last real char) */
     if (ed.cur_pos < size && gb_char_at(ed.cur_pos) == '\n'
         && ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 void mv_left(n)
 int n;
 {
-    ed.cur_vrow = -1;   /* may cross a visual-row boundary on wrapped lines */
+    static int old_vstart;
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
     while (n-- > 0) {
         if (ed.cur_pos == 0) break;
         if (gb_char_at(ed.cur_pos - 1) == '\n') break;
         ed.cur_pos--;
     }
     ed.want_col = scr_pos_col(ed.cur_pos);
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 void mv_right(n)
 int n;
 {
-    static int size;
+    static int size, old_vstart;
     size = gb_content_len();
-    ed.cur_vrow = -1;   /* may cross a visual-row boundary on wrapped lines */
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
         /* can't move if on newline (empty line) */
@@ -148,6 +160,8 @@ int n;
         ed.cur_pos++;
     }
     ed.want_col = scr_pos_col(ed.cur_pos);
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 /*
@@ -163,8 +177,7 @@ int n;
 void mv_up(n)
 int n;
 {
-    static int pos, prev_lstart;
-    ed.cur_vrow = -1;
+    static int pos, prev_lstart, target, curr_vstart, target_vstart;
     while (n-- > 0) {
         pos = ed.cur_pos;
         while (pos > 0 && gb_char_at(pos - 1) != '\n') pos--;
@@ -173,22 +186,41 @@ int n;
         prev_lstart = pos;
         while (prev_lstart > 0 && gb_char_at(prev_lstart - 1) != '\n')
             prev_lstart--;
-        ed.cur_pos = pos_at_col(prev_lstart, ed.want_col);
+        target = pos_at_col(prev_lstart, ed.want_col);
+        
+        if (ed.cur_vrow >= 0) {
+            curr_vstart = vrow_start_of(ed.cur_pos);
+            target_vstart = vrow_start_of(target);
+            while (target_vstart < curr_vstart) {
+                target_vstart = next_vrow(target_vstart);
+                ed.cur_vrow--;
+            }
+        }
+        ed.cur_pos = target;
     }
 }
 
 void mv_down(n)
 int n;
 {
-    static int pos, size;
+    static int pos, size, target, curr_vstart, target_vstart;
     size = gb_content_len();
-    ed.cur_vrow = -1;
     while (n-- > 0) {
         pos = ed.cur_pos;
         while (pos < size && gb_char_at(pos) != '\n') pos++;
         if (pos >= size) break;
         pos++;
-        ed.cur_pos = pos_at_col(pos, ed.want_col);
+        target = pos_at_col(pos, ed.want_col);
+        
+        if (ed.cur_vrow >= 0) {
+            curr_vstart = vrow_start_of(ed.cur_pos);
+            target_vstart = vrow_start_of(target);
+            while (curr_vstart < target_vstart) {
+                curr_vstart = next_vrow(curr_vstart);
+                ed.cur_vrow++;
+            }
+        }
+        ed.cur_pos = target;
     }
 }
 
@@ -196,9 +228,9 @@ int n;
 void mv_word_fwd(n)
 int n;
 {
-    static int size, type, t2;
+    static int size, type, t2, old_vstart;
     size = gb_content_len();
-    ed.cur_vrow = -1;
+    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
         type = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
@@ -214,6 +246,8 @@ int n;
             ed.cur_pos++;
     }
     ed.want_col = scr_pos_col(ed.cur_pos);
+    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
+        ed.cur_vrow = -1;
 }
 
 /* Backward to start of previous word. */
@@ -458,7 +492,7 @@ int op, from, to, linewise;
     if (op == 'c') {
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
-        scr_show_status("-- INSERT --");
+        scr_show_status(msg_insert);
     }
 }
 

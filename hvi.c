@@ -14,6 +14,7 @@
 
 /* Global editor state -- defined here, externed everywhere else. */
 Editor ed;
+char msg_insert[] = "-- INSERT --";
 
 static void usage()
 {

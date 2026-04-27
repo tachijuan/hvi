@@ -131,10 +131,25 @@ int   pos;
 char *text;
 int   len;
 {
-    int i;
-    ed.cur_line_pos    = -1;
-    ed.line_cnt_cached = 0;
-    ed.cur_vrow        = -1;
+    int i, nl_added = 0;
+    
+    for (i = 0; i < len; i++) {
+        if (text[i] == '\n') nl_added++;
+    }
+    
+    if (ed.line_cnt_cached > 0) ed.line_cnt_cached += nl_added;
+    
+    if (ed.cur_line_pos >= 0) {
+        if (pos <= ed.cur_line_pos) {
+            ed.cur_line_pos += len;
+            ed.cur_line += nl_added;
+        }
+    }
+    
+    if (pos != ed.cur_pos || nl_added > 0) {
+        ed.cur_vrow = -1;
+    }
+
     for (i = 0; i < len; i++) {
         if (ed.gb.gend - ed.gb.gstart < 1)
             return 0;   /* buffer is pre-allocated; cannot grow */
@@ -153,15 +168,33 @@ int gb_delete(pos, len)
 int pos;
 int len;
 {
-    int clen;
-    ed.cur_line_pos  = -1;
-    ed.line_cnt_cached = 0;
-    ed.cur_vrow      = -1;
+    int i, clen, nl_del = 0;
+    
     clen = gb_content_len();
     if (pos < 0 || pos >= clen)
         return 0;
     if (pos + len > clen)
         len = clen - pos;
+        
+    for (i = 0; i < len; i++) {
+        if (gb_char_at(pos + i) == '\n') nl_del++;
+    }
+    
+    if (ed.line_cnt_cached > 0) ed.line_cnt_cached -= nl_del;
+    
+    if (ed.cur_line_pos >= 0) {
+        if (pos + len <= ed.cur_line_pos) {
+            ed.cur_line_pos -= len;
+            ed.cur_line -= nl_del;
+        } else if (pos <= ed.cur_line_pos) {
+            ed.cur_line_pos = -1;
+        }
+    }
+    
+    if (pos != ed.cur_pos || nl_del > 0) {
+        ed.cur_vrow = -1;
+    }
+
     gb_move_gap(pos);
     /* Expand gap right to consume deleted chars */
     ed.gb.gend += len;

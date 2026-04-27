@@ -42,7 +42,7 @@ extern Editor ed;
 static int nvr_col, nvr_c, nvr_nc, nvr_size; /* next_vrow statics */
 static int nvs_p, nvs_next;                  /* vrow_start_of statics */
 
-static int next_vrow(from)
+int next_vrow(from)
 int from;
 {
     nvr_size = gb_content_len();
@@ -58,7 +58,7 @@ int from;
     return from;
 }
 
-static int vrow_start_of(pos)
+int vrow_start_of(pos)
 int pos;
 {
     nvs_p = pos;
@@ -243,6 +243,20 @@ void scr_scroll_to_cursor()
     if (ed.cur_vrow >= 0 && ed.cur_vrow < text_rows)
         return;
 
+    /* Fast path 2: cur_vrow valid but scrolled down */
+    if (ed.cur_vrow >= text_rows) {
+        advance = ed.cur_vrow - text_rows + 1;
+        p = ed.top_pos;
+        while (advance-- > 0) {
+            next = next_vrow(p);
+            if (next <= p) break;
+            p = next;
+        }
+        ed.top_pos = p;
+        ed.cur_vrow = text_rows - 1;
+        return;
+    }
+
     /* cur_vrow == -1: count visual rows from top_pos to find the cursor. */
     p    = ed.top_pos;
     rows = 0;
@@ -401,16 +415,27 @@ void scr_redraw_cur_line()
     int p, vstart, scr_row, text_rows, row, next, size;
 
     vstart    = vrow_start_of(ed.cur_pos);
-    p         = ed.top_pos;
-    scr_row   = 0;
     text_rows = ed.scr_rows - 1;
     size      = gb_content_len();
 
-    while (p < vstart) {
-        next = next_vrow(p);
-        if (next <= p) break;
-        p = next;
-        scr_row++;
+    if (ed.cur_vrow >= 0) {
+        p = vstart;
+        scr_row = ed.cur_vrow;
+        while (p < ed.cur_pos) {
+            next = next_vrow(p);
+            if (next <= p || next > ed.cur_pos) break;
+            p = next;
+            scr_row--;
+        }
+    } else {
+        p = ed.top_pos;
+        scr_row = 0;
+        while (p < vstart) {
+            next = next_vrow(p);
+            if (next <= p) break;
+            p = next;
+            scr_row++;
+        }
     }
 
     p   = vstart;
@@ -445,14 +470,26 @@ void scr_redraw_from_cur()
 
     text_rows = ed.scr_rows - 1;
     vstart    = vrow_start_of(ed.cur_pos);
-    p         = ed.top_pos;
-    scr_row   = 0;
 
-    while (p < vstart) {
-        next = next_vrow(p);
-        if (next <= p) break;
-        p = next;
-        scr_row++;
+    if (ed.cur_vrow >= 0) {
+        p = vstart;
+        scr_row = ed.cur_vrow;
+        while (p < ed.cur_pos) {
+            next = next_vrow(p);
+            if (next <= p || next > ed.cur_pos) break;
+            p = next;
+            scr_row--;
+        }
+        p = vstart;
+    } else {
+        p = ed.top_pos;
+        scr_row = 0;
+        while (p < vstart) {
+            next = next_vrow(p);
+            if (next <= p) break;
+            p = next;
+            scr_row++;
+        }
     }
 
     /* p is now the vrow-start for scr_row; thread it through the loop. */

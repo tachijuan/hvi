@@ -9,7 +9,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "1.2"
+#define HVI_VERSION "1.3"
 
 /* Terminal defaults */
 #define DEF_COLS    80
@@ -184,6 +184,7 @@ typedef struct {
 } Editor;
 
 extern Editor ed;
+extern char msg_insert[];
 
 /* ---- gap.c ---- */
 int  gb_init();
@@ -213,30 +214,34 @@ void term_reverse();
 void term_normal();
 void term_scroll_up();
 void term_scroll_dn();
+void term_ins_char();
+void term_del_char();
 
 /* ---- screen.c ---- */
 void scr_refresh();
-void scr_redraw_line(/* int screen_row */);
+void scr_redraw_line();
 void scr_redraw_cur_line();
 void scr_redraw_from_cur();
 void scr_update_cursor();
-void scr_show_status(/* char *msg */);
+void scr_show_status();
 void scr_clear_status();
 void scr_scroll_to_cursor();
-void scr_update_after_move(/* int old_top */);
+void scr_update_after_move();
 void scr_adj();
 void scr_after_edit();
 int  scr_cur_line();
-int  scr_pos_line(/* int pos */);
-int  scr_pos_col(/* int pos */);
-int  scr_vrow_col(/* int pos */);
-int  scr_line_start(/* int linenum */);
+int  scr_pos_line();
+int  scr_pos_col();
+int  scr_vrow_col();
+int  scr_line_start();
 int  scr_line_count();
+int  next_vrow();
+int  vrow_start_of();
 
 /* ---- edit.c ---- */
 void edit_run();
 
 /* ---- ex.c ---- */
-void ex_execute(/* char *cmd */);
+int ex_execute(/* char *cmd */);
 
 #endif /* HVI_H */
