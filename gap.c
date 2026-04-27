@@ -54,9 +54,6 @@ int gb_init()
     }
     if (!p) return 0;
 
-    if (ed.debug)
-        fprintf(stderr, "gb_init: alloc=%d\n", alloc);
-
     ed.gb.buf    = p;
     ed.gb.size   = alloc;
     ed.gb.gstart = 0;
@@ -265,8 +262,6 @@ int gb_load(filename, fp)
 char *filename;
 FILE *fp;
 {
-    if (ed.debug)
-        fprintf(stderr, "gb_load: '%s'\n", filename);
     if (!fp) {
         fp = fopen(filename, "rb");
         if (!fp) return 0;
@@ -496,4 +491,25 @@ char *filename;
         ed.tail_offset = new_tail;
     }
     return 1;
+}
+
+/*
+ * Find beginning of line logically containing pos.
+ */
+int find_bol(pos)
+int pos;
+{
+    while (pos > 0 && gb_char_at(pos - 1) != '\n') pos--;
+    return pos;
+}
+
+/*
+ * Find end of line logically containing pos.
+ */
+int find_eol(pos)
+int pos;
+{
+    int size = gb_content_len();
+    while (pos < size && gb_char_at(pos) != '\n') pos++;
+    return pos;
 }

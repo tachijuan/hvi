@@ -53,14 +53,12 @@ void dot_ins_position()
         break;
     case 'o':
         sz = gb_content_len();
-        eol = ed.cur_pos;
-        while (eol < sz && gb_char_at(eol) != '\n') eol++;
+        eol = find_eol(ed.cur_pos);
         if (eol < sz) eol++;
         ed.cur_pos = eol;
         break;
     case 'O':
-        while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
+        ed.cur_pos = find_bol(ed.cur_pos);
         break;
     default: break;
     }
@@ -70,14 +68,11 @@ void dot_ins_position()
 void dot_replay_c(n)
 int n;
 {
-    int from, to, ins_pos, sz, linewise, endpoint;
+    int from, to, ins_pos, linewise, endpoint;
     linewise = 0;
     if (ed.dot_cmd == 'C' || ed.dot_motion == 'c') {
-        from = ed.cur_pos;
-        while (from > 0 && gb_char_at(from - 1) != '\n') from--;
-        to = from;
-        sz = gb_content_len();
-        while (to < sz && gb_char_at(to) != '\n') to++;
+        from = find_bol(ed.cur_pos);
+        to = find_eol(from);
     } else {
         endpoint = motion_endpoint(ed.dot_motion, n, &linewise);
         if (endpoint < 0) return;
@@ -164,9 +159,8 @@ int count;
         break;
 
     case 'D':
-        to = ed.cur_pos;
         sz = gb_content_len();
-        while (to < sz && gb_char_at(to) != '\n') to++;
+        to = find_eol(ed.cur_pos);
         if (to > ed.cur_pos) {
             undo_save_delete(ed.cur_pos, to - ed.cur_pos);
             gb_delete(ed.cur_pos, to - ed.cur_pos);
@@ -201,8 +195,7 @@ int count;
         k = (n > 1) ? n - 1 : 1;
         while (k-- > 0) {
             sz = gb_content_len();
-            eol = ed.cur_pos;
-            while (eol < sz && gb_char_at(eol) != '\n') eol++;
+            eol = find_eol(ed.cur_pos);
             if (eol >= sz) break;
             undo_save_delete(eol, 1);
             gb_delete(eol, 1);

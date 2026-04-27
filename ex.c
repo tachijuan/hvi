@@ -98,11 +98,7 @@ char *cmd;
                 ins_pos++;   /* skip the newline */
         }
 
-        if (ed.debug)
-            fprintf(stderr, "ex :r '%s'\n", fname);
         f = fopen(fname, "rb");
-        if (ed.debug)
-            fprintf(stderr, "ex :r %s\n", f ? "ok" : "FAILED");
         if (!f) {
             sprintf(ed.status, "Cannot open: %s", fname);
             return 0;

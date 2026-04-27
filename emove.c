@@ -65,6 +65,18 @@ int pos, len;
 /*  Movement helpers (do NOT update want_col unless it makes sense)    */
 /* ------------------------------------------------------------------ */
 
+static int h_vstart;
+static void begin_hmove()
+{
+    h_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+}
+
+static void end_hmove()
+{
+    if (h_vstart >= 0 && vrow_start_of(ed.cur_pos) != h_vstart)
+        ed.cur_vrow = -1;
+}
+
 /* Place cursor at column wantcol on line starting at lstart. */
 int pos_at_col(lstart, wantcol)
 int lstart, wantcol;
@@ -75,7 +87,7 @@ int lstart, wantcol;
     size = gb_content_len();
     while (pos < size && gb_char_at(pos) != '\n') {
         c  = gb_char_at(pos);
-        nc = (c == '\t') ? (col / TAB_STOP + 1) * TAB_STOP : col + 1;
+        nc = (c == '\t') ? (col | (TAB_STOP - 1)) + 1 : col + 1;
         if (nc > wantcol) break;
         col = nc;
         pos++;
@@ -87,35 +99,30 @@ int lstart, wantcol;
 
 void mv_bol()   /* beginning of line */
 {
-    static int old_vstart;
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
-    while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-        ed.cur_pos--;
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    begin_hmove();
+    ed.cur_pos = find_bol(ed.cur_pos);
+    end_hmove();
 }
 
 void mv_bnb()   /* first non-blank of line */
 {
-    static int size, c, old_vstart;
+    static int size, c;
     size = gb_content_len();
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
-    while (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-        ed.cur_pos--;
+    begin_hmove();
+    ed.cur_pos = find_bol(ed.cur_pos);
     while (ed.cur_pos < size) {
         c = gb_char_at(ed.cur_pos);
         if (c != ' ' && c != '\t') break;
         ed.cur_pos++;
     }
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    end_hmove();
 }
 
 void mv_eol()   /* end of line (last real char) */
 {
-    static int size, old_vstart;
+    static int size;
     size = gb_content_len();
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+    begin_hmove();
     if (size == 0) return;
     if (gb_char_at(ed.cur_pos) == '\n') return;
     while (ed.cur_pos < size - 1) {
@@ -125,31 +132,28 @@ void mv_eol()   /* end of line (last real char) */
     if (ed.cur_pos < size && gb_char_at(ed.cur_pos) == '\n'
         && ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    end_hmove();
 }
 
 void mv_left(n)
 int n;
 {
-    static int old_vstart;
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+    begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos == 0) break;
         if (gb_char_at(ed.cur_pos - 1) == '\n') break;
         ed.cur_pos--;
     }
     ed.want_col = scr_pos_col(ed.cur_pos);
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    end_hmove();
 }
 
 void mv_right(n)
 int n;
 {
-    static int size, old_vstart;
+    static int size;
     size = gb_content_len();
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+    begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
         /* can't move if on newline (empty line) */
@@ -160,8 +164,7 @@ int n;
         ed.cur_pos++;
     }
     ed.want_col = scr_pos_col(ed.cur_pos);
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    end_hmove();
 }
 
 /*
@@ -179,13 +182,10 @@ int n;
 {
     static int pos, prev_lstart, target, curr_vstart, target_vstart;
     while (n-- > 0) {
-        pos = ed.cur_pos;
-        while (pos > 0 && gb_char_at(pos - 1) != '\n') pos--;
+        pos = find_bol(ed.cur_pos);
         if (pos == 0) break;
         pos--;
-        prev_lstart = pos;
-        while (prev_lstart > 0 && gb_char_at(prev_lstart - 1) != '\n')
-            prev_lstart--;
+        prev_lstart = find_bol(pos);
         target = pos_at_col(prev_lstart, ed.want_col);
         
         if (ed.cur_vrow >= 0) {
@@ -206,8 +206,7 @@ int n;
     static int pos, size, target, curr_vstart, target_vstart;
     size = gb_content_len();
     while (n-- > 0) {
-        pos = ed.cur_pos;
-        while (pos < size && gb_char_at(pos) != '\n') pos++;
+        pos = find_eol(ed.cur_pos);
         if (pos >= size) break;
         pos++;
         target = pos_at_col(pos, ed.want_col);
@@ -228,9 +227,9 @@ int n;
 void mv_word_fwd(n)
 int n;
 {
-    static int size, type, t2, old_vstart;
+    static int size, type, t2;
     size = gb_content_len();
-    old_vstart = (ed.cur_vrow >= 0) ? vrow_start_of(ed.cur_pos) : -1;
+    begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
         type = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
@@ -245,9 +244,7 @@ int n;
                && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
     }
-    ed.want_col = scr_pos_col(ed.cur_pos);
-    if (old_vstart >= 0 && vrow_start_of(ed.cur_pos) != old_vstart)
-        ed.cur_vrow = -1;
+    end_hmove();
 }
 
 /* Backward to start of previous word. */
@@ -255,7 +252,7 @@ void mv_word_back(n)
 int n;
 {
     static int type, t2;
-    ed.cur_vrow = -1;
+    begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos == 0) break;
         ed.cur_pos--;
@@ -270,7 +267,7 @@ int n;
             ed.cur_pos--;
         }
     }
-    ed.want_col = scr_pos_col(ed.cur_pos);
+    end_hmove();
 }
 
 /* Forward to end of current/next word. */
@@ -279,7 +276,7 @@ int n;
 {
     static int size, type, t2;
     size = gb_content_len();
-    ed.cur_vrow = -1;
+    begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos >= size - 1) break;
         ed.cur_pos++;
@@ -293,7 +290,39 @@ int n;
             ed.cur_pos++;
         }
     }
+    end_hmove();
+}
+
+/* ------------------------------------------------------------------ */
+/*  In-line find motion (f, F, ;, ,)                                    */
+/* ------------------------------------------------------------------ */
+void mv_find(ch, dir, count)
+int ch, dir, count;
+{
+    static int p, sz, found;
+    if (!ch) return;
+    sz = gb_content_len();
+    begin_hmove();
+    while (count-- > 0) {
+        found = -1;
+        if (dir > 0) {
+            p = ed.cur_pos + 1;
+            while (p < sz && gb_char_at(p) != '\n') {
+                if (gb_char_at(p) == ch) { found = p; break; }
+                p++;
+            }
+        } else {
+            p = ed.cur_pos - 1;
+            while (p >= 0 && gb_char_at(p) != '\n') {
+                if (gb_char_at(p) == ch) { found = p; break; }
+                p--;
+            }
+        }
+        if (found < 0) break;
+        ed.cur_pos = found;
+    }
     ed.want_col = scr_pos_col(ed.cur_pos);
+    end_hmove();
 }
 
 /* ------------------------------------------------------------------ */

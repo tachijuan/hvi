@@ -50,7 +50,7 @@ int from;
     while (from < nvr_size) {
         nvr_c  = gb_char_at(from);
         if (nvr_c == '\n') return from + 1;
-        nvr_nc = (nvr_c == '\t') ? (nvr_col / TAB_STOP + 1) * TAB_STOP : nvr_col + 1;
+        nvr_nc = (nvr_c == '\t') ? (nvr_col | (TAB_STOP - 1)) + 1 : nvr_col + 1;
         if (nvr_nc > ed.scr_cols) return from;
         nvr_col = nvr_nc;
         from++;
@@ -61,9 +61,7 @@ int from;
 int vrow_start_of(pos)
 int pos;
 {
-    nvs_p = pos;
-    while (nvs_p > 0 && gb_char_at(nvs_p - 1) != '\n')
-        nvs_p--;
+    nvs_p = find_bol(pos);
     for (;;) {
         nvs_next = next_vrow(nvs_p);
         if (nvs_next > pos || nvs_next <= nvs_p) break;
@@ -83,7 +81,7 @@ int pos;
     svc_p      = svc_vstart;
     while (svc_p < pos && svc_p < svc_size) {
         svc_c  = gb_char_at(svc_p);
-        svc_nc = (svc_c == '\t') ? (svc_col / TAB_STOP + 1) * TAB_STOP : svc_col + 1;
+        svc_nc = (svc_c == '\t') ? (svc_col | (TAB_STOP - 1)) + 1 : svc_col + 1;
         svc_col = svc_nc;
         svc_p++;
     }
@@ -156,14 +154,12 @@ static int spc_col, spc_i, spc_start, spc_c; /* scr_pos_col statics */
 int scr_pos_col(pos)
 int pos;
 {
-    spc_start = pos;
-    while (spc_start > 0 && gb_char_at(spc_start - 1) != '\n')
-        spc_start--;
+    spc_start = find_bol(pos);
     spc_col = 0;
     for (spc_i = spc_start; spc_i < pos; spc_i++) {
         spc_c = gb_char_at(spc_i);
         if (spc_c == '\t')
-            spc_col = (spc_col / TAB_STOP + 1) * TAB_STOP;
+            spc_col = (spc_col | (TAB_STOP - 1)) + 1;
         else
             spc_col++;
     }
@@ -311,7 +307,7 @@ void scr_update_cursor()
     p   = vstart;
     while (p < ed.cur_pos && p < size) {
         c  = gb_char_at(p);
-        nc = (c == '\t') ? (col / TAB_STOP + 1) * TAB_STOP : col + 1;
+        nc = (c == '\t') ? (col | (TAB_STOP - 1)) + 1 : col + 1;
         col = nc;
         p++;
     }
@@ -352,8 +348,7 @@ int screen_row, pos;
         dra_c = gb_char_at(pos);
         if (dra_c == '\n') break;
         if (dra_c == '\t') {
-            dra_nc = (dra_col / TAB_STOP + 1) * TAB_STOP;
-            if (dra_nc > ed.scr_cols) break;
+            dra_nc = (dra_col | (TAB_STOP - 1)) + 1;
             while (dra_col < dra_nc) { term_putch(' '); dra_col++; }
         } else {
             term_putch(dra_c);

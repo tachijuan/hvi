@@ -415,8 +415,6 @@ int *cols;
     wait = 30000;
     while (bios(2, 0, 0) == 0) {
         if (--wait == 0) {
-            if (ed.debug)
-                fprintf(stderr, "\r\nDBG getsize: no response\r\n");
             return;
         }
     }
@@ -456,9 +454,6 @@ int *cols;
     }
     buf[i] = '\0';
 
-    if (ed.debug)
-        fprintf(stderr, "\r\nDBG getsize: state=%d buf=[%s]\r\n", state, buf);
-
     if (state == 3) {
         p = buf;
         r = co = 0;
@@ -467,9 +462,5 @@ int *cols;
         while (*p && (*p < '0' || *p > '9')) p++;
         while (*p >= '0' && *p <= '9') co = co * 10 + (*p++ - '0');
         if (r > 0 && co > 0) { *rows = r; *cols = co; }
-        if (ed.debug)
-            fprintf(stderr, "DBG getsize: rows=%d cols=%d\r\n", r, co);
-    } else if (ed.debug) {
-        fprintf(stderr, "DBG getsize: parse failed\r\n");
     }
 }

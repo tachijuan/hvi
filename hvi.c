@@ -4,7 +4,6 @@
  * License: MIT
  *
  * Usage: hvi [filename]
- *        hvi -d [filename]   (enable debug output to stderr)
  */
 
 #include <stdio.h>
@@ -18,7 +17,7 @@ char msg_insert[] = "-- INSERT --";
 
 static void usage()
 {
-    fprintf(stderr, "Usage: hvi [-d] [filename]\n");
+    fprintf(stderr, "Usage: hvi [filename]\n");
     exit(1);
 }
 
@@ -46,11 +45,7 @@ char *argv[];
     /* --- Parse arguments --- */
     for (i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (argv[i][1] == 'd' || argv[i][1] == 'D') {
-                ed.debug = 1;
-            } else {
-                usage();
-            }
+            usage();
         } else {
             if (file_arg >= 0) usage();
             file_arg = i;
@@ -67,9 +62,6 @@ char *argv[];
         strncpy(ed.filename, argv[file_arg], PATH_MAX - 1);
         ed.filename[PATH_MAX - 1] = '\0';
         preopen = fopen(ed.filename, "rb");
-        if (ed.debug)
-            fprintf(stderr, "pre-open '%s': %s\n",
-                    ed.filename, preopen ? "ok" : "new file");
     }
 
     /* --- Initialise gap buffer (takes most of the heap) --- */

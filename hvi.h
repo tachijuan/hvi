@@ -9,7 +9,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "1.3"
+#define HVI_VERSION "1.4"
 
 /* Terminal defaults */
 #define DEF_COLS    80
@@ -159,9 +159,6 @@ typedef struct {
     int     dot_len;            /* length of text for insert replay */
     char    dot_text[DOT_TEXT_MAX]; /* inserted text for replay */
 
-    /* Debug flag */
-    int     debug;
-
     /* Quit flag */
     int     quit;
 
@@ -191,6 +188,8 @@ int  gb_init();
 void gb_free();
 int  gb_content_len();  /* logical content size (no gap) */
 int  gb_char_at(/* int pos */);
+int  find_bol(/* int pos */);
+int  find_eol(/* int pos */);
 int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);
 int  gb_load(/* char *filename, FILE *fp */); /* fp=NULL -> fopen filename */

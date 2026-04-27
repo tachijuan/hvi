@@ -36,26 +36,7 @@ static int get_count()
     return n;
 }
 
-static void do_find(ch, dir)
-int ch, dir;
-{
-    static int p, sz;
-    if (!ch) return;
-    sz = gb_content_len();
-    if (dir > 0) {
-        p = ed.cur_pos + 1;
-        while (p < sz && gb_char_at(p) != '\n') {
-            if (gb_char_at(p) == ch) { ed.cur_pos = p; return; }
-            p++;
-        }
-    } else {
-        p = ed.cur_pos - 1;
-        while (p >= 0 && gb_char_at(p) != '\n') {
-            if (gb_char_at(p) == ch) { ed.cur_pos = p; return; }
-            p--;
-        }
-    }
-}
+
 
 /* Functions defined in emove.c */
 int  iswordch();
@@ -72,6 +53,7 @@ void mv_down();
 void mv_word_fwd();
 void mv_word_back();
 void mv_word_end();
+void mv_find();
 int  motion_endpoint();
 void apply_op();
 int  read_pattern();
@@ -186,8 +168,7 @@ int c;
     }
 
     if (c == KEY_CTRL_U) {
-        sol = ed.cur_pos;
-        while (sol > 0 && gb_char_at(sol - 1) != '\n') sol--;
+        sol = find_bol(ed.cur_pos);
         if (sol < ed.cur_pos) {
             del = ed.cur_pos - sol;
             gb_delete(sol, del);
@@ -219,7 +200,7 @@ int c;
     }
 
     cur_col = scr_vrow_col(ed.cur_pos);
-    new_col = (c == '\t') ? (cur_col / TAB_STOP + 1) * TAB_STOP : cur_col + 1;
+    new_col = (c == '\t') ? (cur_col | (TAB_STOP - 1)) + 1 : cur_col + 1;
 
     tmp[0] = (char)c;
     if (!gb_insert(ed.cur_pos, tmp, 1)) {
@@ -308,40 +289,39 @@ static void cmdline_mode()
 static void normal_find_cmd(c, count)
 int c, count;
 {
-    int n;
     switch (c) {
     case 'f':
     case 'F':
         {
-            char prompt[3];
-            int ch;
-            prompt[0] = (char)c;
-            prompt[1] = '_';
-            prompt[2] = '\0';
-            scr_show_status(prompt);   /* show "f_" or "F_" while waiting */
-            ch = term_getch();
-            scr_clear_status();
+            int ch = term_getch();
+            if (ch == 27) break;
             g_find_char = ch;
             g_find_dir  = (c == 'f') ? 1 : -1;
-            for (n = 0; n < count; n++)
-                do_find(g_find_char, g_find_dir);
-            ed.want_col = scr_pos_col(ed.cur_pos);
-            scr_update_cursor();
+            {
+                int old_top = ed.top_pos;
+                mv_find(g_find_char, g_find_dir, count);
+                scr_scroll_to_cursor();
+                scr_update_after_move(old_top);
+            }
         }
         break;
 
     case ';':   /* repeat last f/F in same direction */
-        for (n = 0; n < count; n++)
-            do_find(g_find_char, g_find_dir);
-        ed.want_col = scr_pos_col(ed.cur_pos);
-        scr_update_cursor();
+        {
+            int old_top = ed.top_pos;
+            mv_find(g_find_char, g_find_dir, count);
+            scr_scroll_to_cursor();
+            scr_update_after_move(old_top);
+        }
         break;
 
     case ',':   /* repeat last f/F in opposite direction */
-        for (n = 0; n < count; n++)
-            do_find(g_find_char, -g_find_dir);
-        ed.want_col = scr_pos_col(ed.cur_pos);
-        scr_update_cursor();
+        {
+            int old_top = ed.top_pos;
+            mv_find(g_find_char, -g_find_dir, count);
+            scr_scroll_to_cursor();
+            scr_update_after_move(old_top);
+        }
         break;
 
     default:
@@ -394,8 +374,7 @@ int c, count, size;
             undo_save_insert(ed.cur_pos, ed.yank_len);
             if (ed.yank_line) {
                 /* linewise: insert below current line */
-                ins_pos = ed.cur_pos;
-                while (ins_pos < size && gb_char_at(ins_pos) != '\n') ins_pos++;
+                ins_pos = find_eol(ed.cur_pos);
                 if (ins_pos < size) ins_pos++;
                 gb_insert(ins_pos, ed.yank, ed.yank_len);
                 /* ensure trailing newline */
@@ -509,10 +488,8 @@ int c, count, size;
             int n = (count > 1) ? count - 1 : 1;
             while (n-- > 0) {
                 int sz = gb_content_len();
-                int end_of_line = ed.cur_pos;
+                int end_of_line = find_eol(ed.cur_pos);
                 char sp = ' ';
-                while (end_of_line < sz && gb_char_at(end_of_line) != '\n')
-                    end_of_line++;
                 if (end_of_line >= sz) break;
                 undo_save_delete(end_of_line, 1);
                 gb_delete(end_of_line, 1); /* remove newline */
@@ -992,11 +969,6 @@ void edit_run()
 
     while (!ed.quit) {
         c = term_getch();
-
-        if (ed.debug) {
-            fprintf(stderr, "DEBUG key=0x%02X mode=%d pos=%d\n",
-                    c, ed.mode, ed.cur_pos);
-        }
 
         if (ed.mode == MODE_INSERT) {
             /*
