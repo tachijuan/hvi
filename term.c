@@ -8,32 +8,31 @@
  *
  * Performance optimisations for slow serial links (9600 baud, 4 MHz Z80):
  *
- *   Output buffer  — all output is accumulated in a 256-byte buffer and
+ *   Output buffer  -- all output is accumulated in a 256-byte buffer and
  *     flushed as a single write just before blocking on input.  This turns
  *     many individual BDOS/BIOS calls into one, dramatically cutting CPU
  *     overhead when the terminal is baud-rate limited.
  *
- *   Cursor tracking  — s_trow / s_tcol shadow the terminal cursor so that
+ *   Cursor tracking  -- s_trow / s_tcol shadow the terminal cursor so that
  *     term_goto() can emit cheap sequences (\r, \r\n) instead of the full
  *     ESC[R;CH sequence (7-10 bytes) when moving to column 0 within the
  *     text area.  A full refresh of 24 rows saves ~150 bytes this way.
  *
- *   Scroll region  — set once in term_init() to cover rows 1..(scr_rows-1)
+ *   Scroll region  -- set once in term_init() to cover rows 1..(scr_rows-1)
  *     (the text area, in 1-based terminal coordinates).  term_scroll_up()
  *     and term_scroll_dn() exploit this to scroll by 1 visual row using 2-3
  *     bytes instead of repainting the entire screen.
+ *
+ * No standard library headers are included; hvi_sprintf from util.c
+ * is used for ANSI escape-sequence formatting.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <cpm.h>
 #include "hvi.h"
 
 extern Editor ed;
 
-/* getch() is in the HI-TECH C runtime; bdos() and bios() come from <cpm.h> */
-extern int getch();
+extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
 
 /* ------------------------------------------------------------------ */
 /*  Output buffer                                                       */
@@ -41,11 +40,16 @@ extern int getch();
 
 #define OUT_BUF_SZ  256
 static char s_outbuf[OUT_BUF_SZ];
-static int  s_outpos = 0;
+static int  s_outpos;
+static int  s_flush_i;  /* loop counter for term_flush -- static to avoid IX-relative locals */
+static int  s_rn_i, s_rn_d;        /* raw_num statics */
+static int  s_rn_pows[5];          /* powers table -- static so no IX-frame overhead */
+static int  s_rn_started;
+static int  s_tg_dr, s_tg_i;       /* term_goto statics -- avoid IX-relative locals */
 
-/* Tracked terminal cursor position (-1 = unknown). */
-static int  s_trow = -1;
-static int  s_tcol = -1;
+/* Tracked terminal cursor position (-1 = unknown, set by term_init). */
+static int  s_trow;
+static int  s_tcol;
 
 /*
  * Write one byte to the output buffer.
@@ -61,15 +65,27 @@ int c;
     s_outbuf[s_outpos++] = (char)c;
 }
 
-/*
- * Write a C-string to the output buffer without updating cursor tracking.
- * Use this for escape sequences whose content is fully controlled by the
- * caller (which then sets s_trow/s_tcol explicitly).
- */
-static void raw_str(s)
-char *s;
+
+/* Output the decimal representation of n (>= 0) via raw_byte.
+ * Uses only static variables so no IX-relative locals are needed. */
+static void raw_num(n)
+int n;
 {
-    while (*s) raw_byte((unsigned char)*s++);
+    s_rn_pows[0] = 10000;
+    s_rn_pows[1] =  1000;
+    s_rn_pows[2] =   100;
+    s_rn_pows[3] =    10;
+    s_rn_pows[4] =     1;
+    if (n <= 0) { raw_byte('0'); return; }
+    s_rn_started = 0;
+    for (s_rn_i = 0; s_rn_i < 5; s_rn_i++) {
+        s_rn_d = 0;
+        while (n >= s_rn_pows[s_rn_i]) { n -= s_rn_pows[s_rn_i]; s_rn_d++; }
+        if (s_rn_d || s_rn_started) {
+            raw_byte('0' + s_rn_d);
+            s_rn_started = 1;
+        }
+    }
 }
 
 /*
@@ -79,10 +95,11 @@ char *s;
  */
 void term_flush()
 {
-    int i;
     if (s_outpos > 0) {
-        for (i = 0; i < s_outpos; i++) {
-            bios(4, s_outbuf[i] & 0xFF, 0);
+        s_flush_i = 0;
+        while (s_flush_i < s_outpos) {
+            bdos_disk(2, (int)(unsigned char)s_outbuf[s_flush_i]);
+            s_flush_i++;
         }
         s_outpos = 0;
     }
@@ -112,7 +129,7 @@ int c;
         if (s_trow >= 0) s_trow++;
         s_tcol = 0;
     } else {
-        /* Control char other than CR/LF — lose tracking */
+        /* Control char other than CR/LF -- lose tracking */
         s_trow = -1;
         s_tcol = -1;
     }
@@ -138,19 +155,19 @@ void term_clreol()
 /* Set bold video attribute (cursor doesn't move). */
 void term_bold()
 {
-    raw_str("\033[1m");
+    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte('m');
 }
 
 /* Set reverse video attribute (cursor doesn't move). */
 void term_reverse()
 {
-    raw_str("\033[7m");
+    raw_byte(0x1B); raw_byte('['); raw_byte('7'); raw_byte('m');
 }
 
 /* Reset all video attributes (cursor doesn't move). */
 void term_normal()
 {
-    raw_str("\033[0m");
+    raw_byte(0x1B); raw_byte('['); raw_byte('0'); raw_byte('m');
 }
 
 /* ------------------------------------------------------------------ */
@@ -162,31 +179,24 @@ void term_normal()
  *
  * Optimisations (only when cursor position is known):
  *
- *   Same position        — no-op.
- *   Same row, col == 0   — emit \r (1 byte).
- *   col == 0, row N down — emit \r + N newlines (2+N bytes) when the
- *     destination is within the text area (row <= scr_rows-2).  Within the
- *     scroll region a newline at any row except the bottom margin simply
- *     moves the cursor down; it does NOT scroll the screen.
+ *   Same position        -- no-op.
+ *   Same row, col == 0   -- emit \r (1 byte).
+ *   col == 0, row N down -- emit \r + N newlines (2+N bytes) when the
+ *     destination is within the text area (row <= scr_rows-2).
  *
  * All other cases fall back to the full ANSI CSI sequence.
  */
 void term_goto(row, col)
 int row, col;
 {
-    char buf[16];
-    int  dr, i;
-
     /* No-op when already there. */
     if (row == s_trow && col == s_tcol) return;
 
     if (s_trow >= 0 && s_tcol >= 0) {
-        dr = row - s_trow;
+        s_tg_dr = row - s_trow;
 
         /* Same row */
-        if (dr == 0) {
-            int dc = col - s_tcol;
-
+        if (s_tg_dr == 0) {
             if (col == 0) {
                 raw_byte('\r');
                 s_tcol = 0;
@@ -194,17 +204,19 @@ int row, col;
             }
 
             /* Move left using backspace (1 byte per col) */
-            if (dc < 0 && dc >= -6) {
-                for (i = 0; i < -dc; i++) raw_byte('\b');
+            if (col < s_tcol && (s_tcol - col) <= 6) {
+                s_tg_i = s_tcol - col;
+                while (s_tg_i > 0) { raw_byte('\b'); s_tg_i--; }
                 s_tcol = col;
                 return;
             }
 
-            /* Move right using ESC [ C (3 bytes per col)
-               Break-even compared to 8-byte ESC [ r ; c H is dc <= 2 */
-            if (dc > 0 && dc <= 2) {
-                for (i = 0; i < dc; i++) {
+            /* Move right using ESC [ C (3 bytes per col) */
+            if (col > s_tcol && (col - s_tcol) <= 2) {
+                s_tg_i = col - s_tcol;
+                while (s_tg_i > 0) {
                     raw_byte(0x1B); raw_byte('['); raw_byte('C');
+                    s_tg_i--;
                 }
                 s_tcol = col;
                 return;
@@ -213,24 +225,23 @@ int row, col;
 
         /*
          * Move to column 0 on a lower row within the text area.
-         * Emitting N newlines starting from s_trow is safe as long as we
-         * never land on the bottom margin (scr_rows-2) mid-sequence:
-         * that is guaranteed by requiring row <= scr_rows-2.
-         * Limit to dr<=5 (6 bytes vs 7+ for full CSI — break-even favours
-         * this path).
          */
-        if (col == 0 && dr > 0 && dr <= 5 && row <= ed.scr_rows - 2) {
+        if (col == 0 && s_tg_dr > 0 && s_tg_dr <= 5 && row <= ed.scr_rows - 2) {
             if (s_tcol != 0) raw_byte('\r');
-            for (i = 0; i < dr; i++) raw_byte('\n');
+            s_tg_i = s_tg_dr;
+            while (s_tg_i > 0) { raw_byte('\n'); s_tg_i--; }
             s_trow = row;
             s_tcol = 0;
             return;
         }
     }
 
-    /* Full ANSI cursor-address sequence. */
-    sprintf(buf, "\033[%d;%dH", row + 1, col + 1);
-    raw_str(buf);
+    /* Full ANSI cursor-address sequence: ESC [ row+1 ; col+1 H */
+    raw_byte(0x1B); raw_byte('[');
+    raw_num(row + 1);
+    raw_byte(';');
+    raw_num(col + 1);
+    raw_byte('H');
     s_trow = row;
     s_tcol = col;
 }
@@ -239,33 +250,14 @@ int row, col;
 /*  Terminal scrolling                                                  */
 /* ------------------------------------------------------------------ */
 
-/*
- * Scroll the text area up by 1 visual row (content moves up, blank line
- * appears at the bottom of the text area).
- *
- * Technique: position at the last text row (which is the bottom margin of
- * the scroll region set in term_init) and emit a newline.  Within the
- * scroll region this scrolls the region up without touching the status
- * line.  3-10 bytes depending on current cursor position vs ~1200 bytes
- * for a full screen repaint.
- */
 void term_scroll_up()
 {
     term_goto(ed.scr_rows - 2, 0);
     raw_byte('\n');
-    /* Cursor stays at the last text row after the scroll. */
     s_trow = ed.scr_rows - 2;
     s_tcol = 0;
 }
 
-/*
- * Scroll the text area down by 1 visual row (content moves down, blank
- * line appears at the top of the text area).
- *
- * Technique: position at row 0 (top margin of scroll region) and emit
- * ESC M (Reverse Index).  The scroll region scrolls down; cursor stays
- * at row 0.
- */
 void term_scroll_dn()
 {
     term_goto(0, 0);
@@ -278,67 +270,52 @@ void term_scroll_dn()
 /* Insert a blank character at the current cursor position */
 void term_ins_char()
 {
-    raw_str("\033[@");
+    raw_byte(0x1B); raw_byte('['); raw_byte('@');
 }
 
 /* Delete character at current cursor position */
 void term_del_char()
 {
-    raw_str("\033[P");
+    raw_byte(0x1B); raw_byte('['); raw_byte('P');
 }
 
 /* ------------------------------------------------------------------ */
 /*  Terminal lifecycle                                                  */
 /* ------------------------------------------------------------------ */
 
-/*
- * Initialise the terminal:
- *   1. Query size (or use defaults).
- *   2. Clear the screen.
- *   3. Set the scroll region to the text area rows 1..(scr_rows-1) so that
- *      term_scroll_up/dn() work without disturbing the status line.
- */
 void term_init()
 {
-    char buf[16];
     ed.scr_rows = DEF_ROWS;
     ed.scr_cols = DEF_COLS;
     term_getsize(&ed.scr_rows, &ed.scr_cols);
     term_clear();
-    /* Set scroll region: rows 1..(scr_rows-1) in 1-based ANSI coordinates
-     * = rows 0..(scr_rows-2) in 0-based editor coordinates (the text area). */
-    sprintf(buf, "\033[1;%dr", ed.scr_rows - 1);
-    raw_str(buf);
+    /* Set scroll region: ESC [ 1 ; (scr_rows-1) r */
+    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte(';');
+    raw_num(ed.scr_rows - 1);
+    raw_byte('r');
     s_trow = -1;
     s_tcol = -1;
     term_flush();
 }
 
-/*
- * Restore terminal on exit: reset the scroll region to full screen so the
- * shell's output is not constrained, then clear the status line.
- */
 void term_restore()
 {
-    raw_str("\033[r");   /* reset scroll region to full screen */
+    raw_byte(0x1B); raw_byte('['); raw_byte('r'); /* reset scroll region */
     term_normal();
-    /* Invalidate tracking so term_goto emits an unconditional move.
-     * The tracking state may be stale after reading the :q keystroke. */
     s_trow = -1; s_tcol = -1;
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
-    raw_byte('\n');      /* leave cursor at bottom, below editor content */
+    raw_byte('\n');
     term_flush();
 }
 
 /*
  * Clear the entire screen and home the cursor.
- * Does NOT touch the scroll region — term_init() sets it; term_restore()
- * clears it.  Callers (e.g. KEY_CTRL_L) can call this freely.
  */
 void term_clear()
 {
-    raw_str("\033[2J\033[H");
+    raw_byte(0x1B); raw_byte('['); raw_byte('2'); raw_byte('J');
+    raw_byte(0x1B); raw_byte('['); raw_byte('H');
     s_trow = 0;
     s_tcol = 0;
     term_flush();
@@ -348,37 +325,34 @@ void term_clear()
 /*  Input                                                               */
 /* ------------------------------------------------------------------ */
 
-/*
- * Read one raw keypress.  Flushes all pending output first so the screen
- * is fully updated before we block.
- *
- * ANSI arrow key sequences (ESC [ A/B/C/D) are decoded and returned as
- * synthetic KEY_UP/DOWN/LEFT/RIGHT codes (>0xFF) so callers do not need
- * to track multi-byte state.  A bare ESC or an unrecognised sequence
- * returns KEY_ESC.
- */
+/* c, c2, wait are static: bios(3,0,0) may not preserve IX on CP/M,
+ * so IX-relative locals would be corrupted after the BIOS CONIN call. */
+static int s_tgc_c, s_tgc_c2, s_tgc_wait;
+
 int term_getch()
 {
-    int c, c2, wait;
     term_flush();
-    c = bios(3, 0, 0) & 0xFF;
 
-    if (c == KEY_ESC) {
-        /* Quick poll for '[' — if nothing arrives promptly it is a bare ESC. */
-        wait = 8000;
-        while (bios(2, 0, 0) == 0) {
-            if (--wait == 0) return KEY_ESC;
-        }
-        c2 = (int)(unsigned char)bios(3, 0, 0);
-        if (c2 != '[') return KEY_ESC;
+    /* BDOS 6, 0xFF = Direct Console Input (no echo, non-blocking).
+     * Poll via BDOS 11 (Console Status) first to reduce spin time, then read.
+     * Both go through bdos_disk to preserve IX around CALL 5. */
+    while (bdos_disk(11, 0) == 0) ;            /* wait for key available */
+    s_tgc_c = bdos_disk(6, 0xFF) & 0xFF;
 
-        /* Read the direction letter. */
-        wait = 8000;
-        while (bios(2, 0, 0) == 0) {
-            if (--wait == 0) return KEY_ESC;
+    if (s_tgc_c == KEY_ESC) {
+        s_tgc_wait = 8000;
+        while (bdos_disk(11, 0) == 0) {
+            if (--s_tgc_wait == 0) return KEY_ESC;
         }
-        c2 = (int)(unsigned char)bios(3, 0, 0);
-        switch (c2) {
+        s_tgc_c2 = bdos_disk(6, 0xFF) & 0xFF;
+        if (s_tgc_c2 != '[') return KEY_ESC;
+
+        s_tgc_wait = 8000;
+        while (bdos_disk(11, 0) == 0) {
+            if (--s_tgc_wait == 0) return KEY_ESC;
+        }
+        s_tgc_c2 = bdos_disk(6, 0xFF) & 0xFF;
+        switch (s_tgc_c2) {
         case 'A': return KEY_UP;
         case 'B': return KEY_DOWN;
         case 'C': return KEY_RIGHT;
@@ -386,81 +360,104 @@ int term_getch()
         default:  return KEY_ESC;
         }
     }
-    return c;
+    return s_tgc_c;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Terminal size query                                                 */
 /* ------------------------------------------------------------------ */
 
+/* Statics for term_getsize -- all static so no IX-relative frame is needed
+ * during the BDOS console-status polling loop. */
+static int *s_tgs_rp;       /* cached pointer to caller's rows int */
+static int *s_tgs_cp;       /* cached pointer to caller's cols int */
+static int  s_tgs_r;        /* parsed row count from response       */
+static int  s_tgs_c;        /* parsed col count from response       */
+static int  s_tgs_ch;       /* character read from console          */
+static int  s_tgs_n;        /* digit accumulator                    */
+static int  s_tgs_wait;     /* timeout countdown                    */
+
 /*
- * Query terminal dimensions using the ANSI cursor-position report.
- * See the original comment in the earlier version for the full explanation
- * of the canonical-mode / BIOS-CONIN rationale.
+ * Query terminal dimensions via ANSI cursor-position report.
+ *
+ * Sequence:
+ *   1. ESC[999;999H  -- move cursor to impossibly large position;
+ *                       terminal clamps to last row/col.
+ *   2. ESC[6n        -- report cursor position.
+ *   3. Read ESC[r;cR -- parse rows and cols.
+ *
+ * Uses bdos_disk(2/6/11) exclusively (never BIOS CONIN) to preserve IX
+ * across every I/O call.  Each character read is guarded by a countdown
+ * so that a non-responding terminal falls through to DEF_ROWS/DEF_COLS.
+ *
+ * Digit multiply uses shifts to avoid linking __mulu:
+ *   n * 10  ==  (n << 3) + (n << 1)
  */
 void term_getsize(rows, cols)
 int *rows;
 int *cols;
 {
-    int  c, r, co, state, i, wait, total;
-    char buf[32];
-    char *p;
+    s_tgs_rp = rows;          /* cache params before any BDOS call */
+    s_tgs_cp = cols;
+    s_tgs_r  = DEF_ROWS;     /* default in case of timeout */
+    s_tgs_c  = DEF_COLS;
 
-    *rows = DEF_ROWS;
-    *cols = DEF_COLS;
+    /* Step 1: move cursor to 999;999 */
+    bdos_disk(2, 0x1B); bdos_disk(2, '[');
+    bdos_disk(2, '9'); bdos_disk(2, '9'); bdos_disk(2, '9');
+    bdos_disk(2, ';');
+    bdos_disk(2, '9'); bdos_disk(2, '9'); bdos_disk(2, '9');
+    bdos_disk(2, 'H');
 
-    term_puts("\033[999;999H\033[6n");
-    term_flush();
+    /* Step 2: request cursor position */
+    bdos_disk(2, 0x1B); bdos_disk(2, '[');
+    bdos_disk(2, '6'); bdos_disk(2, 'n');
 
-    wait = 30000;
-    while (bios(2, 0, 0) == 0) {
-        if (--wait == 0) {
-            return;
+    /* Step 3a: wait for ESC */
+    s_tgs_wait = 30000;
+    while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
+    s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
+    if (s_tgs_ch != 0x1B) goto tgs_done;
+
+    /* Step 3b: wait for '[' */
+    s_tgs_wait = 8000;
+    while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
+    s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
+    if (s_tgs_ch != '[') goto tgs_done;
+
+    /* Step 3c: read row digits terminated by ';' */
+    s_tgs_n = 0;
+    for (;;) {
+        s_tgs_wait = 8000;
+        while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
+        s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
+        if (s_tgs_ch >= '0' && s_tgs_ch <= '9') {
+            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
+        } else if (s_tgs_ch == ';') {
+            if (s_tgs_n > 0) s_tgs_r = s_tgs_n;
+            break;
+        } else {
+            goto tgs_done;
         }
     }
 
-    i = 0;
-    state = 0;
-    for (total = 0; total < 48 && i < (int)(sizeof(buf) - 1); total++) {
-        c = (int)(unsigned char)bios(3, 0, 0);
-
-        switch (state) {
-        case 0:
-            if (c == 0x1B) { buf[i++] = (char)c; state = 1; }
+    /* Step 3d: read col digits terminated by 'R' */
+    s_tgs_n = 0;
+    for (;;) {
+        s_tgs_wait = 8000;
+        while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
+        s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
+        if (s_tgs_ch >= '0' && s_tgs_ch <= '9') {
+            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
+        } else if (s_tgs_ch == 'R') {
+            if (s_tgs_n > 0) s_tgs_c = s_tgs_n;
             break;
-        case 1:
-            if (c == '[') {
-                buf[i++] = (char)c; state = 2;
-            } else if (c == 0x1B) {
-                i = 0; buf[i++] = (char)c;
-            } else {
-                i = 0; state = 0;
-            }
-            break;
-        case 2:
-            if (c == 'R') {
-                buf[i++] = (char)c; state = 3;
-            } else if ((c >= '0' && c <= '9') || c == ';') {
-                buf[i++] = (char)c;
-            } else if (c == 0x1B) {
-                i = 0; buf[i++] = (char)c; state = 1;
-            } else {
-                i = 0; state = 0;
-            }
-            break;
+        } else {
+            goto tgs_done;
         }
-
-        if (state == 3) break;
     }
-    buf[i] = '\0';
 
-    if (state == 3) {
-        p = buf;
-        r = co = 0;
-        while (*p && (*p < '0' || *p > '9')) p++;
-        while (*p >= '0' && *p <= '9') r  = r  * 10 + (*p++ - '0');
-        while (*p && (*p < '0' || *p > '9')) p++;
-        while (*p >= '0' && *p <= '9') co = co * 10 + (*p++ - '0');
-        if (r > 0 && co > 0) { *rows = r; *cols = co; }
-    }
+tgs_done:
+    *s_tgs_rp = s_tgs_r;
+    *s_tgs_cp = s_tgs_c;
 }

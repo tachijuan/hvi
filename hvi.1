@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026" "HVI 1.0" "CP/M User Commands"
+.TH HVI 1 "2026-04-26" "HVI 1.3" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -105,17 +105,21 @@ deletes three lines.
 .\"
 .SS Cursor Movement
 .TP
-.B h
+.BR "h" " / left-arrow"
 Move left one character.
 .TP
-.B l
+.BR "l" " / right-arrow"
 Move right one character.
 .TP
-.B j
+.BR "j" " / down-arrow"
 Move down one line.
 .TP
-.B k
+.BR "k" " / up-arrow"
 Move up one line.
+.TP
+.B Enter
+Move to the first non-blank character of the next line.
+Accepts a count prefix to skip multiple lines.
 .TP
 .B w
 Move forward to the start of the next word.
@@ -151,9 +155,15 @@ go to line
 .TP
 .B Ctrl-F
 Scroll forward one page.
+The cursor is placed at the middle row of the new page on the first
+non-blank character.
+If the end of the file is already visible, this command is a no-op.
 .TP
 .B Ctrl-B
 Scroll backward one page.
+The cursor is placed at the middle row of the new page on the first
+non-blank character.
+If the beginning of the file is already displayed, this command is a no-op.
 .TP
 .B Ctrl-D
 Scroll forward half a page.
@@ -340,6 +350,9 @@ Delete the previous word.
 .B Ctrl-U
 Delete to the start of the current line.
 .TP
+.B up-arrow / down-arrow / left-arrow / right-arrow
+Move the cursor without leaving insert mode.
+.TP
 .B ESC
 Return to normal mode.
 .\"
@@ -372,6 +385,17 @@ Write the buffer if it has been modified, then quit.
 .TP
 .B :x!
 Write the buffer and quit (force).
+.TP
+.BI :e " filename"
+Abandon the current buffer and begin editing
+.IR filename .
+Fails if the buffer has unsaved changes; use
+.B :e!
+to override.
+.TP
+.BI :e! " filename"
+Abandon the current buffer (discarding any unsaved changes) and begin editing
+.IR filename .
 .TP
 .BI :r " filename"
 Read
@@ -419,6 +443,13 @@ The
 .B +
 indicates that additional content exists in the file beyond what is
 currently loaded.
+.PP
+Whenever HVI reads the next chunk of a large file from disk, it briefly
+displays
+.B [Loading...]
+on the status line so that the user knows disk I/O is in progress.
+The indicator is replaced by the normal status display as soon as the
+screen is refreshed after the load completes.
 .PP
 While in insert mode the status line shows
 .BR "-- INSERT --" .
@@ -496,6 +527,81 @@ is written as
 per CP/M convention, and the file is terminated with
 .B Ctrl-Z
 (0x1A) per CP/M file format rules.
+.\"
+.\" ----------------------------------------------------------------
+.SH PERFORMANCE
+.\"
+HVI minimises terminal output at every keypress.
+Updates are sized to the smallest region that needs to change:
+.TP
+.B Cursor move only
+.BR h ,
+.BR l ,
+.BR 0 ,
+.BR ^ ,
+.BR $ ,
+.BR f ,
+.BR F ,
+.BR ; ,
+.B ,
+\(em text is unchanged; only the terminal cursor is repositioned.
+.TP
+.B Terminal scroll + one row (or cursor only)
+.BR j ,
+.BR k ,
+Enter,
+.BR w ,
+.BR b ,
+.BR e ,
+.BR / ,
+.BR ? ,
+.BR n ,
+.BR N ,
+.BR gg ,
+.I nG
+\(em when the viewport shifts by exactly one visual row, the terminal
+hardware scroll is used and a single new row is drawn (~53 bytes).
+When no scroll is needed only the cursor is repositioned.
+The status bar is not updated on these keystrokes.
+.TP
+.B Single visual row
+.B r
+\(em character count unchanged; only the row containing the cursor is redrawn.
+.TP
+.B Current logical line
+.BR x ,
+.BR X ,
+.BR D ,
+.BR ~ ,
+.BR s ,
+.BR S ,
+.B C
+\(em change is confined to the current line; only that line's visual rows are redrawn.
+.TP
+.B Cursor row to bottom
+.BR J ,
+.BR o ,
+.BR O ,
+.BR p ,
+.BR P ,
+.BR u ,
+.BR dw ,
+.BR dd ,
+.BR cw ,
+Enter in insert mode
+\(em content above the cursor is unchanged; only rows from the cursor to
+the bottom of the text area are redrawn.
+On a 24-row terminal with the cursor in the middle this sends roughly
+half the bytes of a full refresh (~600 vs ~1200 bytes at 9600 baud).
+.TP
+.B Full screen
+.BR G ,
+.BR Ctrl-F ,
+.BR Ctrl-B ,
+.BR Ctrl-D ,
+.BR Ctrl-U ,
+and ex commands
+\(em viewport jump or file content change requires a complete redraw.
 .\"
 .\" ----------------------------------------------------------------
 .SH LIMITATIONS

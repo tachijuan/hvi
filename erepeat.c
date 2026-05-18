@@ -12,9 +12,6 @@
  *   dot_replay()        - replay the last change (the '.' command)
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "hvi.h"
 
 extern Editor ed;

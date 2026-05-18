@@ -5,11 +5,12 @@
  *
  * Implements normal mode, insert mode, and command-line mode.
  * Operator-motion model: d/c/y + motion applies to a range.
+ *
+ * Division by 2 for half-page scrolling is replaced with right-shift (>> 1)
+ * so the Z80 software-division library routines are not linked.
+ * No standard library headers are included.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "hvi.h"
 
 extern Editor ed;
@@ -17,14 +18,14 @@ extern Editor ed;
 /* ------------------------------------------------------------------ */
 /*  Static state                                                        */
 /* ------------------------------------------------------------------ */
-static int g_op      = 0;  /* pending operator: 'd','c','y', 0=none */
-static int g_count   = 0;  /* digit-prefix accumulator              */
-static int g_hcnt    = 0;  /* non-zero when a count digit was seen  */
-static int g_g       = 0;  /* 'g' prefix pending                    */
-static int g_g_count = 1;  /* count saved when 'g' prefix was typed */
-static int g_find_char = 0; /* last char target for f/F             */
-static int g_find_dir  = 1; /* 1 = forward (f), -1 = backward (F)  */
-static int g_ins_cmd   = 0; /* command that entered insert mode     */
+static int g_op;           /* pending operator: 'd','c','y', 0=none */
+static int g_count;        /* digit-prefix accumulator              */
+static int g_hcnt;         /* non-zero when a count digit was seen  */
+static int g_g;            /* 'g' prefix pending                    */
+static int g_g_count;      /* count saved when 'g' prefix was typed */
+static int g_find_char;    /* last char target for f/F             */
+static int g_find_dir;     /* 1 = forward (f), -1 = backward (F)  */
+static int g_ins_cmd;      /* command that entered insert mode     */
 
 static void normal_cmd();
 /* Return effective count (at least 1), then clear. */
@@ -58,6 +59,7 @@ int  motion_endpoint();
 void apply_op();
 int  read_pattern();
 int  do_search_from();
+int  do_search_full();
 
 /* ------------------------------------------------------------------ */
 /*  Insert mode                                                         */
@@ -188,7 +190,16 @@ int c;
     if (c == '\n') {
         tmp[0] = '\n';
         if (!gb_insert(ed.cur_pos, tmp, 1)) {
-            strcpy(ed.status, "Buffer full");
+            if (!gb_make_room() || !gb_insert(ed.cur_pos, tmp, 1)) {
+                hvi_strcpy(ed.status, "Buffer full");
+                scr_show_status(ed.status);
+                return 0;
+            }
+            ed.cur_pos++;
+            ed.modified = 1;
+            scr_scroll_to_cursor();
+            scr_refresh();
+            scr_show_status(msg_insert);
             return 0;
         }
         ed.cur_pos++;
@@ -204,7 +215,16 @@ int c;
 
     tmp[0] = (char)c;
     if (!gb_insert(ed.cur_pos, tmp, 1)) {
-        strcpy(ed.status, "Buffer full");
+        if (!gb_make_room() || !gb_insert(ed.cur_pos, tmp, 1)) {
+            hvi_strcpy(ed.status, "Buffer full");
+            scr_show_status(ed.status);
+            return 0;
+        }
+        ed.cur_pos++;
+        ed.modified = 1;
+        scr_scroll_to_cursor();
+        scr_refresh();
+        scr_show_status(msg_insert);
         return 0;
     }
     ed.cur_pos++;
@@ -239,10 +259,10 @@ int c;
 /*  Command-line (ex) mode                                              */
 /* ------------------------------------------------------------------ */
 
+static int s_clm_c;  /* static: bios in term_getch may corrupt IX-relative locals */
+
 static void cmdline_mode()
 {
-    int c;
-
     ed.cmdline[0] = '\0';
     ed.cmdlen = 0;
     term_goto(ed.scr_rows - 1, 0);
@@ -250,12 +270,12 @@ static void cmdline_mode()
     term_putch(':');
 
     for (;;) {
-        c = term_getch();
-        if (c == KEY_ESC) {
+        s_clm_c = term_getch();
+        if (s_clm_c == KEY_ESC) {
             scr_clear_status();
             return;
         }
-        if (c == KEY_CR || c == KEY_LF) {
+        if (s_clm_c == KEY_CR || s_clm_c == KEY_LF) {
             ed.cmdline[ed.cmdlen] = '\0';
             if (ed.cmdlen > 0) {
                 if (ex_execute(ed.cmdline)) {
@@ -268,14 +288,14 @@ static void cmdline_mode()
             }
             return;
         }
-        if ((c == KEY_BS || c == KEY_DEL) && ed.cmdlen > 0) {
+        if ((s_clm_c == KEY_BS || s_clm_c == KEY_DEL) && ed.cmdlen > 0) {
             ed.cmdlen--;
             term_putch(KEY_BS); term_putch(' '); term_putch(KEY_BS);
             continue;
         }
-        if (c >= 0x20 && c < 0x7F && ed.cmdlen < CMD_MAX - 1) {
-            ed.cmdline[ed.cmdlen++] = (char)c;
-            term_putch(c);
+        if (s_clm_c >= 0x20 && s_clm_c < 0x7F && ed.cmdlen < CMD_MAX - 1) {
+            ed.cmdline[ed.cmdlen++] = (char)s_clm_c;
+            term_putch(s_clm_c);
         }
     }
 }
@@ -284,8 +304,7 @@ static void cmdline_mode()
 /*  Normal mode dispatcher                                              */
 /* ------------------------------------------------------------------ */
 
-/* Character search on current line: f, F, ;, ,, .
- * Defined before normal_misc_cmd so no forward declaration is needed. */
+/* Character search on current line: f, F, ;, ,, . */
 static void normal_find_cmd(c, count)
 int c, count;
 {
@@ -306,7 +325,7 @@ int c, count;
         }
         break;
 
-    case ';':   /* repeat last f/F in same direction */
+    case ';':
         {
             int old_top = ed.top_pos;
             mv_find(g_find_char, g_find_dir, count);
@@ -315,7 +334,7 @@ int c, count;
         }
         break;
 
-    case ',':   /* repeat last f/F in opposite direction */
+    case ',':
         {
             int old_top = ed.top_pos;
             mv_find(g_find_char, -g_find_dir, count);
@@ -330,27 +349,41 @@ int c, count;
 }
 
 /* Adjust cursor to the insertion point for the original entry command. */
-/* dot_ins_position(), dot_replay_c(), dot_replay() live in erepeat.c */
 void dot_ins_position();
 void dot_replay_c();
 void dot_replay();
 
-/* Statics avoid local-variable IX-frame overhead in do_search_move. */
-static int sm_pos;
-static int sm_top;
+static int  sm_pos;
+static int  sm_top;
+static long sm_win;   /* win_start before search -- detects buffer reload */
 
 /* Shared search-result handler: move to match or report not found. */
 static void do_search_move()
 {
-    sm_pos = do_search_from(ed.cur_pos);
+    sm_win = ed.win_start;
+    sm_pos = do_search_full(ed.cur_pos);
     if (sm_pos >= 0) {
         ed.cur_pos  = sm_pos;
         ed.cur_vrow = -1;
         sm_top = ed.top_pos;
         scr_scroll_to_cursor();
-        scr_update_after_move(sm_top);
+        /* A buffer reload changes win_start; need a full screen redraw. */
+        if (ed.win_start != sm_win) {
+            scr_refresh();
+        } else {
+            scr_update_after_move(sm_top);
+        }
+        if (ed.search_wrapped) {
+            if (ed.search_dir == SEARCH_FWD)
+                hvi_strcpy(ed.status,
+                           "search hit BOTTOM, continuing at TOP");
+            else
+                hvi_strcpy(ed.status,
+                           "search hit TOP, continuing at BOTTOM");
+            scr_show_status(ed.status);
+        }
     } else {
-        strcpy(ed.status, "Pattern not found");
+        hvi_strcpy(ed.status, "Pattern not found");
         scr_show_status(ed.status);
     }
 }
@@ -359,25 +392,23 @@ static void do_search_move()
 static void normal_misc_cmd(c, count, size)
 int c, count, size;
 {
-    int save_len;
+    static int save_len, old_dir;
     switch (c) {
 
     /* --- Yank/Put --- */
-    case 'Y':   /* yank current line (alias for yy) */
+    case 'Y':
         g_op = 'y'; g_count = count; g_hcnt = 1;
         normal_cmd('y');
         break;
 
-    case 'p':   /* put after cursor */
+    case 'p':
         if (ed.yank_len > 0) {
             int ins_pos;
             undo_save_insert(ed.cur_pos, ed.yank_len);
             if (ed.yank_line) {
-                /* linewise: insert below current line */
                 ins_pos = find_eol(ed.cur_pos);
                 if (ins_pos < size) ins_pos++;
                 gb_insert(ins_pos, ed.yank, ed.yank_len);
-                /* ensure trailing newline */
                 if (ed.yank[ed.yank_len - 1] != '\n') {
                     char nl = '\n';
                     gb_insert(ins_pos + ed.yank_len, &nl, 1);
@@ -395,7 +426,7 @@ int c, count, size;
         }
         break;
 
-    case 'P':   /* put before cursor */
+    case 'P':
         if (ed.yank_len > 0) {
             int ins_pos;
             undo_save_insert(ed.cur_pos, ed.yank_len);
@@ -416,35 +447,32 @@ int c, count, size;
         break;
 
     /* --- Search --- */
-    case '/':   /* search forward */
+    case '/':
         ed.search_dir = SEARCH_FWD;
         if (read_pattern('/')) do_search_move();
         else scr_clear_status();
         break;
 
-    case '?':   /* search backward */
+    case '?':
         ed.search_dir = SEARCH_BWD;
         if (read_pattern('?')) do_search_move();
         else scr_clear_status();
         break;
 
-    case 'n':   /* repeat last search */
+    case 'n':
         do_search_move();
         break;
 
-    case 'N':   /* repeat last search in opposite direction */
-        {
-            int old_dir = ed.search_dir;
-            ed.search_dir = -old_dir;
-            do_search_move();
-            ed.search_dir = old_dir;
-        }
+    case 'N':
+        old_dir = ed.search_dir;
+        ed.search_dir = -old_dir;
+        do_search_move();
+        ed.search_dir = old_dir;
         break;
 
     /* --- Undo --- */
     case 'u':
         if (ed.undo.type == UNDO_DELETE) {
-            /* re-insert the deleted text */
             save_len = ed.undo.len;
             if (save_len > UNDO_MAX) save_len = UNDO_MAX;
             gb_insert(ed.undo.pos, ed.undo.text, save_len);
@@ -453,25 +481,24 @@ int c, count, size;
             ed.undo.type = UNDO_NONE;
             scr_after_edit();
         } else if (ed.undo.type == UNDO_INSERT) {
-            /* delete the previously inserted text */
             gb_delete(ed.undo.pos, ed.undo.len);
             ed.cur_pos   = ed.undo.pos;
             ed.modified  = ed.undo.was_clean ? 0 : 1;
             ed.undo.type = UNDO_NONE;
             scr_after_edit();
         } else {
-            strcpy(ed.status, "Nothing to undo");
+            hvi_strcpy(ed.status, "Nothing to undo");
             scr_show_status(ed.status);
         }
         break;
 
     /* --- Screen control --- */
-    case KEY_CTRL_L:   /* redraw */
+    case KEY_CTRL_L:
         {
             char buf[16];
             term_clear();
             /* Re-establish scroll region after term_clear() homes the cursor. */
-            sprintf(buf, "\033[1;%dr", ed.scr_rows - 1);
+            hvi_sprintf(buf, "\033[1;%dr", ed.scr_rows - 1, 0, 0, 0, 0);
             term_puts(buf);
             scr_refresh();
         }
@@ -493,13 +520,11 @@ int c, count, size;
                 if (end_of_line >= sz) break;
                 undo_save_delete(end_of_line, 1);
                 gb_delete(end_of_line, 1); /* remove newline */
-                /* insert space unless next char is space */
                 sz = gb_content_len();
                 if (end_of_line < sz && gb_char_at(end_of_line) != ' ')
                     gb_insert(end_of_line, &sp, 1);
                 ed.modified = 1;
             }
-            /* Cursor stays on current line; content below has shifted up. */
             scr_redraw_from_cur();
             scr_show_status(ed.status);
         }
@@ -545,23 +570,23 @@ int c, count, size;
     case 'c':  g_op = 'c'; g_count = count; g_hcnt = 1; return;
     case 'y':  g_op = 'y'; g_count = count; g_hcnt = 1; return;
 
-    case 'D':   /* delete to end of line */
+    case 'D':
         g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('$');
         break;
 
-    case 'C':   /* change to end of line */
+    case 'C':
         g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('$');
         break;
 
-    case 'x':   /* delete char under cursor */
+    case 'x':
         g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('l');
         break;
 
-    case 'X':   /* delete char before cursor */
+    case 'X':
         g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('h');
         break;
 
-    case 'r':   /* replace single character */
+    case 'r':
         {
             int repl = term_getch();
             if (repl != KEY_ESC && ed.cur_pos < size) {
@@ -591,15 +616,14 @@ int c, count, size;
 {
     switch (c) {
 
-    /* --- Insert mode entry --- */
-    case 'i':   /* insert before cursor */
+    case 'i':
         g_ins_cmd = 'i';
         undo_save_insert(ed.cur_pos, 0);
         ed.mode = MODE_INSERT;
         scr_show_status(msg_insert);
         break;
 
-    case 'a':   /* append after cursor */
+    case 'a':
         if (size > 0 && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
         g_ins_cmd = 'a';
@@ -608,7 +632,7 @@ int c, count, size;
         scr_show_status(msg_insert);
         break;
 
-    case 'I':   /* insert at beginning of line */
+    case 'I':
         mv_bnb();
         g_ins_cmd = 'I';
         undo_save_insert(ed.cur_pos, 0);
@@ -616,7 +640,7 @@ int c, count, size;
         scr_show_status(msg_insert);
         break;
 
-    case 'A':   /* append at end of line */
+    case 'A':
         mv_eol();
         if (size > 0 && ed.cur_pos < size && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
@@ -626,23 +650,21 @@ int c, count, size;
         scr_show_status(msg_insert);
         break;
 
-    case 'o':   /* open line below */
+    case 'o':
         g_ins_cmd = 'o';
         {
             char nl = '\n';
             int  eol = ed.cur_pos;
             int  sz  = gb_content_len();
-            /* find position just after the '\n' at end of current line */
             while (eol < sz && gb_char_at(eol) != '\n') eol++;
-            if (eol < sz) eol++;  /* move past existing '\n' */
-            /* For last line with no trailing newline, insert one first */
+            if (eol < sz) eol++;
             if (eol >= sz && sz > 0 && gb_char_at(sz - 1) != '\n') {
                 gb_insert(sz, &nl, 1);
                 eol = sz + 1;
             }
             undo_save_insert(eol, 0);
-            gb_insert(eol, &nl, 1);  /* the actual new empty line */
-            ed.cur_pos = eol;        /* cursor on the new '\n' line */
+            gb_insert(eol, &nl, 1);
+            ed.cur_pos = eol;
             ed.modified = 1;
             ed.undo.len++;
             scr_adj();
@@ -651,7 +673,7 @@ int c, count, size;
         }
         break;
 
-    case 'O':   /* open line above */
+    case 'O':
         g_ins_cmd = 'O';
         {
             char nl = '\n';
@@ -666,11 +688,11 @@ int c, count, size;
         }
         break;
 
-    case 's':   /* substitute character (delete + insert) */
+    case 's':
         g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('l');
         break;
 
-    case 'S':   /* substitute line */
+    case 'S':
         g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('c');
         break;
 
@@ -681,34 +703,37 @@ int c, count, size;
 }
 
 /*
- * Handle G, Ctrl+F/B/D/U — page and large-motion commands.
- * Split out of normal_cmd to keep the label count under the compiler limit.
+ * Handle G, Ctrl+F/B/D/U -- page and large-motion commands.
+ * Half-page sizes use >> 1 instead of / 2 to avoid the division library.
  */
 static void normal_page_cmd(c, count, had_count)
 int c, count, had_count;
 {
-    int n, top_line, total, line, clen, text_rows, mid, new_top;
-    long new_off;
+    static int n, top_line, total, line, text_rows, mid, new_top;
+    static long new_off;
 
     switch (c) {
 
     case 'G':
-        /* When navigating to a specific line and the head of the file has
-         * been discarded from the buffer, reload from the beginning so that
-         * scr_line_start() is anchored correctly at file line 1. */
-        if (had_count && ed.win_start > 0L)
-            gb_reload_from(0L);
-        if (!had_count) {
-            while (ed.tail_offset > 0L) {
-                clen = gb_content_len();
-                if (clen > 0) ed.cur_pos = clen - 1;
-                if (gb_load_more(LOAD_CHUNK) == 0) break;
-            }
+        if (had_count) {
+            /* nG: navigate to line n, scanning the file if needed. */
+            gb_goto_line(count);
+        } else if (ed.tail_offset > 0L && ed.tail_file[0]) {
+            /* G with no count, large file: jump directly to last line. */
+            new_off = hvi_fsize(ed.tail_file);
+            if (new_off > (long)LOAD_CHUNK)
+                new_off -= (long)LOAD_CHUNK;
+            else
+                new_off = 0L;
+            gb_reload_from(new_off);
+            ed.cur_pos = scr_line_start(scr_line_count() - 1);
+        } else {
+            /* G with no count, small or fully-loaded file: last line. */
+            line = scr_line_count() - 1;
+            if (line < 0) line = 0;
+            ed.cur_pos = scr_line_start(line);
         }
-        line = had_count ? count - 1 : scr_line_count() - 1;
-        if (line < 0) line = 0;
-        if (line >= scr_line_count()) line = scr_line_count() - 1;
-        ed.cur_pos = scr_line_start(line);
+        ed.cur_vrow = -1;
         mv_bnb();
         ed.want_col = scr_pos_col(ed.cur_pos);
         scr_scroll_to_cursor();
@@ -720,16 +745,21 @@ int c, count, had_count;
         n        = count * (text_rows - 2);
         top_line = scr_pos_line(ed.top_pos);
         total    = scr_line_count();
-        if (ed.tail_offset > 0L && top_line + n >= total - 1)
+        /* Load when new screen bottom would exceed buffer: need a full screen
+         * of lines above new_top plus text_rows more for the new viewport. */
+        if (ed.tail_offset > 0L && top_line + n + text_rows > total)
             gb_load_more(LOAD_CHUNK);
-        total   = scr_line_count();
+        /* Recompute: gb_discard_head inside gb_load_more shifts ed.top_pos. */
+        top_line = scr_pos_line(ed.top_pos);
+        total    = scr_line_count();
         new_top = top_line + n;
         if (new_top >= total) new_top = total - 1;
-        if (new_top <= top_line) break;  /* already at end of file */
+        if (new_top <= top_line) break;
         ed.top_pos = scr_line_start(new_top);
-        mid = new_top + (text_rows - 1) / 2;
+        mid = new_top + ((text_rows - 1) >> 1);  /* >> 1 replaces / 2 */
         if (mid >= total) mid = total - 1;
-        ed.cur_pos = scr_line_start(mid);
+        ed.cur_pos  = scr_line_start(mid);
+        ed.cur_vrow = -1;
         mv_bnb();
         ed.want_col = 0;
         scr_refresh();
@@ -738,19 +768,15 @@ int c, count, had_count;
     case KEY_CTRL_B:
         text_rows = ed.scr_rows - 1;
         n        = count * (text_rows - 2);
-        /* If the viewport is at the buffer start but earlier file content
-         * was discarded, reload an earlier window from the file. */
         if (ed.top_pos == 0 && ed.win_start > 0L) {
-            /* Reload a window of content that precedes the current buffer. */
             new_off = ed.win_start - (long)LOAD_CHUNK;
             if (new_off < 0L) new_off = 0L;
             gb_reload_from(new_off);
-            /* After reload cur_pos/top_pos are 0; let the normal path scroll. */
             total   = scr_line_count();
             new_top = total - 1 - n;
             if (new_top < 0) new_top = 0;
             ed.top_pos = scr_line_start(new_top);
-            mid = new_top + (text_rows - 1) / 2;
+            mid = new_top + ((text_rows - 1) >> 1);  /* >> 1 replaces / 2 */
             if (mid >= total) mid = total - 1;
             if (mid < 0)      mid = 0;
             ed.cur_pos  = scr_line_start(mid);
@@ -760,22 +786,23 @@ int c, count, had_count;
             scr_refresh();
             break;
         }
-        if (ed.top_pos == 0) break;  /* already at beginning of file */
+        if (ed.top_pos == 0) break;
         top_line = scr_pos_line(ed.top_pos);
         new_top  = top_line - n;
         if (new_top < 0) new_top = 0;
         ed.top_pos = scr_line_start(new_top);
         total = scr_line_count();
-        mid   = new_top + (text_rows - 1) / 2;
+        mid   = new_top + ((text_rows - 1) >> 1);    /* >> 1 replaces / 2 */
         if (mid >= total) mid = total - 1;
-        ed.cur_pos = scr_line_start(mid);
+        ed.cur_pos  = scr_line_start(mid);
+        ed.cur_vrow = -1;
         mv_bnb();
         ed.want_col = 0;
         scr_refresh();
         break;
 
     case KEY_CTRL_D:
-        n = (ed.scr_rows - 1) / 2;
+        n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
         if (ed.tail_offset > 0L &&
             ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
             gb_load_more(LOAD_CHUNK);
@@ -785,7 +812,7 @@ int c, count, had_count;
         break;
 
     case KEY_CTRL_U:
-        n = (ed.scr_rows - 1) / 2;
+        n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
         mv_up(n * count);
         scr_scroll_to_cursor();
         scr_refresh();
@@ -796,8 +823,11 @@ int c, count, had_count;
 static void normal_cmd(c)
 int c;
 {
-    int  count, size, linewise, endpoint;
-    int  had_count, old_top;
+    static int  count, size, linewise, endpoint;
+    static int  had_count, old_top;
+    static int  op, nc_from, nc_to, nc_total, nc_start_line, nc_end_line;
+    static int  gg_line;
+    static long k_new_off;
 
     /* ---- digit prefix ---- */
     if (c >= '1' && c <= '9' && !g_op) {
@@ -816,26 +846,25 @@ int c;
 
     /* ---- pending operator: expect motion ---- */
     if (g_op) {
-        int op = g_op;
+        op = g_op;
         g_op = 0;
 
         /* doubled operator (dd, cc, yy) = operate on count lines */
         if (c == op) {
-            int start_line = scr_pos_line(ed.cur_pos);
-            int end_line   = start_line + count - 1;
-            int total      = scr_line_count();
-            int from, to;
-            if (end_line >= total) end_line = total - 1;
-            from = scr_line_start(start_line);
-            to   = (end_line + 1 < total)
-                   ? scr_line_start(end_line + 1)
-                   : size;
+            nc_start_line = scr_pos_line(ed.cur_pos);
+            nc_end_line   = nc_start_line + count - 1;
+            nc_total      = scr_line_count();
+            if (nc_end_line >= nc_total) nc_end_line = nc_total - 1;
+            nc_from = scr_line_start(nc_start_line);
+            nc_to   = (nc_end_line + 1 < nc_total)
+                      ? scr_line_start(nc_end_line + 1)
+                      : size;
             if (op != 'y') {
                 ed.dot_cmd = op; ed.dot_motion = op;
                 ed.dot_count = count; ed.dot_arg = 0; ed.dot_len = 0;
             }
             if (op == 'c') g_ins_cmd = 'c';
-            apply_op(op, from, to, 1);
+            apply_op(op, nc_from, nc_to, 1);
             return;
         }
 
@@ -843,7 +872,7 @@ int c;
         linewise = 0;
         endpoint = motion_endpoint(c, count, &linewise);
         if (endpoint < 0) {
-            sprintf(ed.status, "Unknown motion: %c", c);
+            hvi_sprintf(ed.status, "Unknown motion: %c", c, 0, 0, 0, 0);
             scr_show_status(ed.status);
             return;
         }
@@ -860,20 +889,18 @@ int c;
     if (g_g) {
         g_g = 0;
         if (c == 'g') {
-            int line = (g_g_count > 0) ? g_g_count - 1 : 0;
-            if (line >= scr_line_count()) line = scr_line_count() - 1;
-            ed.cur_pos = scr_line_start(line);
+            gg_line = (g_g_count > 0) ? g_g_count : 1;
+            gb_goto_line(gg_line);
+            ed.cur_vrow = -1;
             mv_bnb();
             ed.want_col = 0;
-            old_top = ed.top_pos;
             scr_scroll_to_cursor();
-            scr_update_after_move(old_top);
+            scr_refresh();
         }
         return;
     }
 
-    /* Translate ANSI arrow keys to their hjkl equivalents so the switch
-     * below stays within the ASCII range and compiles efficiently on Z80. */
+    /* Translate ANSI arrow keys to their hjkl equivalents */
     if (c == KEY_UP)    c = 'k';
     if (c == KEY_DOWN)  c = 'j';
     if (c == KEY_LEFT)  c = 'h';
@@ -886,7 +913,7 @@ int c;
     case 'h':  mv_left(count);  scr_update_cursor(); break;
     case 'l':  mv_right(count); scr_update_cursor(); break;
 
-    case KEY_CR:  /* Enter: move to first non-blank of next line */
+    case KEY_CR:
         old_top = ed.top_pos;
         mv_down(count); mv_bnb(); scr_scroll_to_cursor();
         scr_update_after_move(old_top);
@@ -907,6 +934,17 @@ int c;
     case 'k':
         old_top = ed.top_pos;
         mv_up(count); scr_scroll_to_cursor();
+        if (ed.cur_pos == 0 && ed.win_start > 0L) {
+            k_new_off = ed.win_start - (long)LOAD_CHUNK;
+            if (k_new_off < 0L) k_new_off = 0L;
+            gb_reload_from(k_new_off);
+            ed.cur_pos  = scr_line_start(scr_line_count() - 1);
+            ed.cur_vrow = -1;
+            mv_bnb();
+            ed.want_col = 0;
+            scr_refresh();
+            break;
+        }
         scr_update_after_move(old_top);
         break;
 
@@ -957,10 +995,10 @@ int c;
 /*  Main edit loop                                                      */
 /* ------------------------------------------------------------------ */
 
+static int s_er_c;  /* static: bios in term_getch may corrupt IX-relative locals */
+
 void edit_run()
 {
-    int c;
-
     ed.mode    = MODE_NORMAL;
     ed.quit    = 0;
     ed.want_col = 0;
@@ -968,30 +1006,22 @@ void edit_run()
     scr_refresh();
 
     while (!ed.quit) {
-        c = term_getch();
+        s_er_c = term_getch();
 
         if (ed.mode == MODE_INSERT) {
-            /*
-             * If a transient message (e.g. "Buffer full") was shown by the
-             * previous keypress, clear it and restore the mode indicator
-             * before processing the next key.  The mode indicator is shown
-             * once on mode entry and must not be refreshed every keypress.
-             */
             if (ed.status[0]) {
                 ed.status[0] = '\0';
                 scr_show_status(msg_insert);
             }
-            insert_key(c);
-            /* Display any transient message set by insert_key. */
+            insert_key(s_er_c);
             if (ed.mode == MODE_INSERT && ed.status[0])
                 scr_show_status(ed.status);
         } else {
-            /* Normal mode: clear any transient message then process key. */
             if (ed.status[0]) {
                 ed.status[0] = '\0';
                 scr_clear_status();
             }
-            normal_cmd(c);
+            normal_cmd(s_er_c);
         }
     }
 }

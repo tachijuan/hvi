@@ -2,11 +2,12 @@
  * emove.c - Movement, operator application, and search helpers for HVI
  * Author: Juan Orlandini
  * License: MIT
+ *
+ * The modulo wrapping in do_search_from() is replaced with a single
+ * conditional subtraction per iteration, avoiding the Z80 division
+ * library routines.  No standard library headers are included.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "hvi.h"
 
 extern Editor ed;
@@ -97,14 +98,14 @@ int lstart, wantcol;
     return pos;
 }
 
-void mv_bol()   /* beginning of line */
+void mv_bol()
 {
     begin_hmove();
     ed.cur_pos = find_bol(ed.cur_pos);
     end_hmove();
 }
 
-void mv_bnb()   /* first non-blank of line */
+void mv_bnb()
 {
     static int size, c;
     size = gb_content_len();
@@ -118,7 +119,7 @@ void mv_bnb()   /* first non-blank of line */
     end_hmove();
 }
 
-void mv_eol()   /* end of line (last real char) */
+void mv_eol()
 {
     static int size;
     size = gb_content_len();
@@ -156,9 +157,7 @@ int n;
     begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
-        /* can't move if on newline (empty line) */
         if (gb_char_at(ed.cur_pos) == '\n') break;
-        /* can't move if at last byte or if next char is newline */
         if (ed.cur_pos + 1 >= size) break;
         if (gb_char_at(ed.cur_pos + 1) == '\n') break;
         ed.cur_pos++;
@@ -167,16 +166,6 @@ int n;
     end_hmove();
 }
 
-/*
- * mv_up / mv_down scan only the neighbouring lines (O(line_length))
- * instead of calling scr_pos_line() + scr_line_start() which each scan
- * the buffer from position 0 (O(buffer)).  At 4 MHz this matters.
- *
- * They also maintain ed.cur_vrow incrementally so that
- * scr_scroll_to_cursor() can skip its O(text_rows) viewport scan entirely,
- * reducing the per-keypress cost of j/k from O(text_rows * line_len) to
- * O(line_len).  cur_vrow tracks the cursor's visual-row offset from top_pos.
- */
 void mv_up(n)
 int n;
 {
@@ -187,7 +176,7 @@ int n;
         pos--;
         prev_lstart = find_bol(pos);
         target = pos_at_col(prev_lstart, ed.want_col);
-        
+
         if (ed.cur_vrow >= 0) {
             curr_vstart = vrow_start_of(ed.cur_pos);
             target_vstart = vrow_start_of(target);
@@ -210,7 +199,7 @@ int n;
         if (pos >= size) break;
         pos++;
         target = pos_at_col(pos, ed.want_col);
-        
+
         if (ed.cur_vrow >= 0) {
             curr_vstart = vrow_start_of(ed.cur_pos);
             target_vstart = vrow_start_of(target);
@@ -329,12 +318,6 @@ int ch, dir, count;
 /*  Range helpers for operator+motion                                   */
 /* ------------------------------------------------------------------ */
 
-/*
- * Given a motion character and count, compute the endpoint.
- * For character motions: returns [cur_pos, end) (end exclusive).
- * For line motions: sets *linewise=1 and returns line-start/end.
- * Returns -1 if motion is unknown.
- */
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
 int *linewise;
@@ -354,10 +337,9 @@ int *linewise;
     case 'h':
         n = count;
         while (n-- > 0 && pos > 0 && gb_char_at(pos-1) != '\n') pos--;
-        /* apply_op handles from>to ordering */
         return pos;
 
-    case 'w':  /* to start of next word (exclusive) */
+    case 'w':
         n = count;
         while (n-- > 0) {
             int type = iswordch(gb_char_at(pos)) ? 1 :
@@ -368,16 +350,14 @@ int *linewise;
                 if (t2 != type) break;
                 pos++;
             }
-            /* for dw, don't skip to next word - just the word+trailing space */
             while (pos < size && (gb_char_at(pos) == ' ' ||
                                   gb_char_at(pos) == '\t')) pos++;
         }
         return pos;
 
-    case 'b':  /* back one word */
+    case 'b':
         n = count;
         {
-                /* mirror of mv_word_back but just compute endpoint */
             while (n-- > 0) {
                 if (pos == 0) break;
                 pos--;
@@ -393,11 +373,10 @@ int *linewise;
                     }
                 }
             }
-            /* apply_op handles from>to ordering */
         }
         return pos;
 
-    case 'e':  /* end of word (inclusive -> +1 for exclusive) */
+    case 'e':
         n = count;
         while (n-- > 0) {
             int type;
@@ -412,25 +391,25 @@ int *linewise;
                 pos++;
             }
         }
-        return pos + 1; /* inclusive -> exclusive */
+        return pos + 1;
 
-    case '$':  /* to end of line (inclusive -> +1) */
+    case '$':
         while (pos < size && gb_char_at(pos) != '\n') pos++;
         return pos;
 
-    case '0':  /* to start of line */
+    case '0':
         while (pos > 0 && gb_char_at(pos-1) != '\n') pos--;
-        return pos;  /* apply_op handles from>to ordering */
+        return pos;
 
-    case '^':  /* first non-blank */
+    case '^':
         {
             int sol = pos;
             while (sol > 0 && gb_char_at(sol-1) != '\n') sol--;
             while (sol < size && (gb_char_at(sol)==' '||gb_char_at(sol)=='\t')) sol++;
-            return sol; /* apply_op handles from>to ordering */
+            return sol;
         }
 
-    case 'j':  /* next line(s) -- linewise */
+    case 'j':
         *linewise = 1;
         {
             int cur_line = scr_pos_line(pos);
@@ -438,10 +417,10 @@ int *linewise;
             int end_line = cur_line + count;
             if (end_line > last) end_line = last;
             ed.cur_pos = scr_line_start(cur_line);
-            return scr_line_start(end_line + 1); /* exclusive */
+            return scr_line_start(end_line + 1);
         }
 
-    case 'k':  /* prev line(s) -- linewise */
+    case 'k':
         *linewise = 1;
         {
             int cur_line = scr_pos_line(pos);
@@ -451,12 +430,12 @@ int *linewise;
             return scr_line_start(cur_line + 1);
         }
 
-    case 'G':  /* to end of file -- linewise */
+    case 'G':
         *linewise = 1;
         {
             int cur_line = scr_pos_line(pos);
             ed.cur_pos   = scr_line_start(cur_line);
-            return size; /* exclusive end = past last byte */
+            return size;
         }
 
     default:
@@ -468,10 +447,6 @@ int *linewise;
 /*  Operator application                                                */
 /* ------------------------------------------------------------------ */
 
-/*
- * Apply operator op ('d','c','y') to the range [from, to).
- * If linewise, from/to are line-start positions.
- */
 void apply_op(op, from, to, linewise)
 int op, from, to, linewise;
 {
@@ -492,7 +467,8 @@ int op, from, to, linewise;
         ed.yank_line  = linewise;
         ed.cur_pos    = from;
         ed.cur_vrow   = -1;
-        sprintf(ed.status, "%d char%s yanked", save, save == 1 ? "" : "s");
+        hvi_sprintf(ed.status, "%d char%s yanked",
+                    save, (int)(save == 1 ? "" : "s"), 0, 0, 0);
         scr_show_status(ed.status);
         return;
     }
@@ -529,13 +505,15 @@ int op, from, to, linewise;
 /*  Search                                                              */
 /* ------------------------------------------------------------------ */
 
-/*
- * Read a search pattern from the command line.
- * Echoes to the last row as the user types.
- * Returns 1 if Enter pressed with a pattern, 0 if ESC.
- */
+static int to_lower(c)
+int c;
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 'a';
+    return c;
+}
+
 int read_pattern(prompt)
-int prompt;  /* '/' or '?' */
+int prompt;
 {
     static int c, len;
     static char *pat;
@@ -566,31 +544,231 @@ int prompt;  /* '/' or '?' */
 }
 
 /*
- * Simple substring search: look for ed.search in the buffer
- * starting at start_pos in direction ed.search_dir.
- * Wraps around. Returns new position, or -1 if not found.
+ * Case-insensitive substring search from start_pos in direction ed.search_dir.
+ * Wrap-around uses a single conditional subtraction per step rather than
+ * the % operator, avoiding the Z80 division library.
+ * Sets ed.search_wrapped if the match is on the other side of start_pos.
+ * Returns the matching position, or -1 if not found.
  */
 int do_search_from(start_pos)
 int start_pos;
 {
-    static int size, plen, i, j, match, dir, pos;
+    static int size, plen, i, j, match, dir, pos, sp;
     size = gb_content_len();
-    plen = strlen(ed.search);
+    plen = hvi_strlen(ed.search);
     dir  = ed.search_dir;
+    sp   = start_pos;
+    ed.search_wrapped = 0;
 
     if (plen == 0 || size == 0) return -1;
 
     for (i = 1; i <= size; i++) {
-        pos = (dir == SEARCH_FWD)
-              ? (start_pos + i) % size
-              : (start_pos - i + size) % size;
+        if (dir == SEARCH_FWD) {
+            pos = sp + i;
+            if (pos >= size) pos -= size;
+        } else {
+            pos = sp - i + size;
+            if (pos >= size) pos -= size;
+        }
         match = 1;
         for (j = 0; j < plen && match; j++) {
-            if ((pos + j) >= size || gb_char_at(pos + j) != (unsigned char)ed.search[j])
+            if ((pos + j) >= size ||
+                to_lower(gb_char_at(pos + j)) !=
+                    to_lower((unsigned char)ed.search[j]))
                 match = 0;
         }
-        if (match) return pos;
+        if (match) {
+            /* pos == sp means we went all the way around (i == size on the
+             * last iteration); treat it as wrapped just like pos < sp. */
+            if (dir == SEARCH_FWD && pos <= sp) ed.search_wrapped = 1;
+            if (dir != SEARCH_FWD && pos >= sp) ed.search_wrapped = 1;
+            return pos;
+        }
     }
     return -1;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Large-file search: scan unloaded file sections                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Scan tail_file bytes [from_off, to_off) for the current search pattern.
+ * Reads sequentially using hvi_fgetc; CR (0x0D) bytes are skipped.
+ * SEARCH_FWD: returns file offset of the first match.
+ * SEARCH_BWD: scans forward but returns offset of the last match found
+ *             (i.e. the one closest to to_off when going backward).
+ * Returns -1L if the pattern is not found in the range.
+ * All locals static: hvi_fopen / hvi_fseek / hvi_fgetc may corrupt
+ * IX-relative auto vars under HI-TECH C -O register allocation.
+ */
+static HFILE *sif_fp;
+static long   sif_from;
+static long   sif_to;
+static long   sif_pos;
+static long   sif_ms;      /* byte offset of current partial-match start */
+static long   sif_last;    /* last completed match (SEARCH_BWD accumulator) */
+static int    sif_dir;
+static int    sif_plen;
+static int    sif_j;
+static int    sif_c;
+
+static long scan_file_for_match(from_off, to_off, dir)
+long from_off, to_off;
+int  dir;
+{
+    sif_from = from_off;
+    sif_to   = to_off;
+    sif_dir  = dir;
+    sif_plen = hvi_strlen(ed.search);
+
+    if (sif_plen == 0 || !ed.tail_file[0]) return -1L;
+    if (sif_from < 0L)        sif_from = 0L;
+    if (sif_from >= sif_to)   return -1L;
+
+    sif_fp = hvi_fopen(ed.tail_file, "rb");
+    if (!sif_fp) return -1L;
+    if (hvi_fseek(sif_fp, sif_from, 0) != 0) {
+        hvi_fclose(sif_fp);
+        return -1L;
+    }
+
+    sif_last = -1L;
+    sif_pos  = sif_from;
+    sif_j    = 0;
+    sif_ms   = sif_from;
+
+    while (sif_pos < sif_to) {
+        sif_c = hvi_fgetc(sif_fp);
+        if (sif_c == HEOF || sif_c == 0x1A) break;
+        if (sif_c == 0x0D) { sif_pos++; continue; }   /* skip bare CR */
+
+        if (to_lower(sif_c) ==
+                to_lower((unsigned char)ed.search[sif_j])) {
+            if (sif_j == 0) sif_ms = sif_pos;         /* start of match */
+            sif_j++;
+            if (sif_j >= sif_plen) {                   /* full match */
+                if (sif_dir == SEARCH_FWD) {
+                    hvi_fclose(sif_fp);
+                    return sif_ms;                     /* return immediately */
+                }
+                sif_last = sif_ms;                     /* save; keep scanning */
+                sif_j = 0;
+            }
+        } else {
+            if (sif_j > 0) {
+                sif_j = 0;                             /* restart pattern */
+                /* Retry this character as a potential new match start */
+                if (to_lower(sif_c) ==
+                        to_lower((unsigned char)ed.search[0])) {
+                    sif_ms = sif_pos;
+                    sif_j  = 1;
+                }
+            }
+        }
+        sif_pos++;
+    }
+
+    hvi_fclose(sif_fp);
+    return sif_last;
+}
+
+/*
+ * Full-file search from start_pos in ed.search_dir.
+ *
+ * Phase 1 – searches the in-memory gap buffer (do_search_from).
+ * Phase 2 – if the buffer result required a wrap or was not found,
+ *            scans the unloaded head [0, win_start) and/or tail
+ *            [tail_offset, EOF) sections by reading the file directly.
+ *
+ * When a match is found outside the buffer, loads a window around it
+ * via gb_reload_from() and returns the match's position in the new buffer.
+ * Sets ed.search_wrapped if the result is past a file-order wrap point.
+ * Returns -1 if the pattern is not found anywhere in the file.
+ *
+ * All locals static: gb_reload_from / hvi_fopen calls may corrupt
+ * IX-relative auto vars under HI-TECH C -O register allocation.
+ */
+static int    dsf_sp;
+static int    dsf_buf_result;
+static int    dsf_buf_wrapped;
+static long   dsf_file_match;
+static long   dsf_load_from;
+static int    dsf_new_result;
+static int    dsf_file_wrapped; /* 1 if file match is on the "wrap" side */
+
+int do_search_full(start_pos)
+int start_pos;
+{
+    dsf_sp = start_pos;
+
+    /* Phase 1: search current buffer */
+    dsf_buf_result  = do_search_from(dsf_sp);
+    dsf_buf_wrapped = ed.search_wrapped;
+
+    /* No unloaded sections -- return buffer result as-is */
+    if (!ed.tail_file[0] || (ed.win_start == 0L && ed.tail_offset == 0L))
+        return dsf_buf_result;
+
+    /* Found in buffer without wrap: that is the nearest match in file order */
+    if (dsf_buf_result >= 0 && !dsf_buf_wrapped)
+        return dsf_buf_result;
+
+    /* Phase 2: scan unloaded file sections.
+     * File order for FWD from cursor: tail (after buffer) → head (before buffer,
+     * wrapped) → buffer wrap.  Tail hits are NOT a file-level wrap; head hits are.
+     * For BWD: head (before buffer) → tail (after buffer, wrapped). */
+    dsf_file_match  = -1L;
+    dsf_file_wrapped = 0;
+
+    if (ed.search_dir == SEARCH_FWD) {
+        /* First: unloaded tail (after the buffer) — not a wrap */
+        if (ed.tail_offset > 0L)
+            dsf_file_match =
+                scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_FWD);
+        /* Second: unloaded head (before the buffer) — IS a wrap */
+        if (dsf_file_match < 0L && ed.win_start > 0L) {
+            dsf_file_match =
+                scan_file_for_match(0L, ed.win_start, SEARCH_FWD);
+            if (dsf_file_match >= 0L) dsf_file_wrapped = 1;
+        }
+    } else {
+        /* First: unloaded head (before the buffer) — not a wrap */
+        if (ed.win_start > 0L)
+            dsf_file_match =
+                scan_file_for_match(0L, ed.win_start, SEARCH_BWD);
+        /* Second: unloaded tail (after the buffer) — IS a wrap */
+        if (dsf_file_match < 0L && ed.tail_offset > 0L) {
+            dsf_file_match =
+                scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_BWD);
+            if (dsf_file_match >= 0L) dsf_file_wrapped = 1;
+        }
+    }
+
+    if (dsf_file_match < 0L) {
+        /* Not found in file sections; fall back to buffer result */
+        ed.search_wrapped = dsf_buf_wrapped;
+        return dsf_buf_result;
+    }
+
+    /* Found in file: load a window centred on the match */
+    dsf_load_from = dsf_file_match - (long)(LOAD_CHUNK >> 1);
+    if (dsf_load_from < 0L) dsf_load_from = 0L;
+    gb_reload_from(dsf_load_from);
+
+    /*
+     * Search the freshly loaded buffer.
+     * FWD: start from the last buffer position so the scan wraps to 0
+     *      and finds the first (and correct) occurrence.
+     * BWD: start from position 0 so the scan goes backward to the end,
+     *      finding the last occurrence (nearest to the buffer start).
+     */
+    if (ed.search_dir == SEARCH_FWD)
+        dsf_new_result = do_search_from(gb_content_len() - 1);
+    else
+        dsf_new_result = do_search_from(0);
+
+    /* Wrap flag: true only when the match required going past file boundaries */
+    ed.search_wrapped = dsf_file_wrapped;
+    return dsf_new_result;
+}

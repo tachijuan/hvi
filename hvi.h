@@ -4,12 +4,24 @@
  * License: MIT
  *
  * Common definitions, types, and extern declarations.
+ * No standard library headers are included; all I/O and string operations
+ * are provided by util.c (hvi_sprintf, hvi_strcpy, ...) and cpmio.c
+ * (hvi_fopen, hvi_fgetc, hvi_malloc, ...).
  */
 
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "1.4"
+#define HVI_VERSION "2.0"
+
+/*
+ * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
+ * the sector number requested, the return code, and the first 4 bytes of
+ * the buffer.  Output goes directly to the console via BDOS 2; it will be
+ * overwritten when the next scr_refresh() runs.
+ * Uncomment to enable; rebuild all files.
+ */
+/* #define HVI_DEBUG */
 
 /* Terminal defaults */
 #define DEF_COLS    80
@@ -17,7 +29,7 @@
 
 /* Gap buffer limits */
 #define GAP_MIN     256     /* gap reserve kept after each insertion */
-#define BUF_MAX     30000   /* target in-memory content (actual may be less) */
+#define BUF_MAX     24000   /* target in-memory content (actual may be less) */
 #define LOAD_CHUNK  4096    /* chars loaded per page-in from tail */
 
 /* Undo text buffer size */
@@ -85,6 +97,25 @@
 #define SEARCH_FWD   1
 #define SEARCH_BWD  -1
 
+/* End-of-file sentinel returned by hvi_fgetc() (replaces stdio EOF). */
+#define HEOF (-1)
+
+/*
+ * HFILE: CP/M direct-BDOS file handle (replaces stdio FILE).
+ * Each instance carries its own 128-byte sector buffer, which is set as
+ * the BDOS DMA address before every BDOS read/write call.
+ */
+typedef struct {
+    unsigned char fcb[36];  /* CP/M File Control Block              */
+    unsigned char buf[128]; /* 128-byte sector buffer (one CP/M rec) */
+    int  buf_pos;           /* read/write byte offset within buf     */
+    int  buf_valid;         /* bytes valid in buf (read mode)        */
+    long pos;               /* absolute byte position in file        */
+    int  mode;              /* 0=closed  1=read  2=write             */
+    int  dirty;             /* write buffer has unflushed data       */
+    int  at_eof;            /* 1 when BDOS reported end-of-file      */
+} HFILE;
+
 /*
  * Gap buffer: content is split around a gap.
  * [data before gap][  GAP  ][data after gap]
@@ -137,6 +168,7 @@ typedef struct {
     /* Search */
     char    search[SEARCH_MAX];
     int     search_dir;
+    int     search_wrapped;  /* non-zero if last search wrapped around the file */
 
     /* Ex command line */
     char    cmdline[CMD_MAX];
@@ -192,10 +224,33 @@ int  find_bol(/* int pos */);
 int  find_eol(/* int pos */);
 int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);
-int  gb_load(/* char *filename, FILE *fp */); /* fp=NULL -> fopen filename */
+int  gb_load(/* char *filename, HFILE *fp */); /* fp=NULL -> hvi_fopen filename */
 int  gb_save(/* char *filename */);
 int  gb_load_more(/* int n */);
 int  gb_reload_from(/* long offset */);
+int  gb_make_room();
+int  gb_goto_line(/* int n */);
+
+/* ---- util.c ---- */
+void bdos_puts(/* char *s */);
+int  hvi_strlen(/* char *s */);
+void hvi_strcpy(/* char *d, char *s */);
+void hvi_strncpy(/* char *d, char *s, int n */);
+int  hvi_strcmp(/* char *a, char *b */);
+void hvi_sprintf(/* char *buf, char *fmt, int a0, a1, a2, a3, a4 */);
+
+/* ---- cpmio.c ---- */
+char  *hvi_malloc(/* int size */);
+void   hvi_free(/* char *p */);
+HFILE *hvi_fopen(/* char *name, char *mode */);
+void   hvi_fclose(/* HFILE *fp */);
+int    hvi_fgetc(/* HFILE *fp */);
+int    hvi_fputc(/* int c, HFILE *fp */);
+long   hvi_ftell(/* HFILE *fp */);
+int    hvi_fseek(/* HFILE *fp, long offset, int whence */);
+void   hvi_remove(/* char *name */);
+void   hvi_rename(/* char *oldname, char *newname */);
+long   hvi_fsize(/* char *name */);
 
 /* ---- term.c ---- */
 void term_init();

@@ -4,92 +4,97 @@
  * License: MIT
  *
  * Usage: hvi [filename]
+ *
+ * No standard library headers are included.  All string and I/O operations
+ * use the custom routines in util.c and cpmio.c.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "hvi.h"
+
+extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
 
 /* Global editor state -- defined here, externed everywhere else. */
 Editor ed;
 char msg_insert[] = "-- INSERT --";
 
-static void usage()
+/*
+ * cstart.as reads the CP/M command tail from page zero (0x0080/0x0081)
+ * in assembly -- page-zero pointer casts in C generate relocation records
+ * the linker rejects -- and passes the values as normal arguments.
+ */
+main(cmdlen, cmdtail)
+int   cmdlen;
+char *cmdtail;
 {
-    fprintf(stderr, "Usage: hvi [filename]\n");
-    exit(1);
-}
+    char *cmdp;
+    int   i, has_file;
+    int   partial;        /* auto is safe: bdos_disk preserves IX throughout */
 
-main(argc, argv)
-int   argc;
-char *argv[];
-{
-    int   i;
-    int   file_arg;
-    int   partial;
-    FILE *preopen;
+    /* ed is zero-initialised by cstart.as */
+    ed.scr_rows     = DEF_ROWS;
+    ed.scr_cols     = DEF_COLS;
+    ed.search_dir   = SEARCH_FWD;
+    ed.undo.type    = UNDO_NONE;
+    ed.cur_line     = 0;
+    ed.cur_line_pos = -1;  /* force full scan on first scr_cur_line() call */
+    ed.cur_vrow     = -1;  /* force full scan on first scr_scroll_to_cursor() */
 
-    /* --- Zero-initialise editor state --- */
-    memset(&ed, 0, sizeof(ed));
-    ed.scr_rows       = DEF_ROWS;
-    ed.scr_cols       = DEF_COLS;
-    ed.search_dir     = SEARCH_FWD;
-    ed.undo.type      = UNDO_NONE;
-    ed.cur_line       = 0;
-    ed.cur_line_pos   = -1;  /* force full scan on first scr_cur_line() call */
-    ed.cur_vrow       = -1;  /* force full scan on first scr_scroll_to_cursor() */
-
-    file_arg = -1;
-
-    /* --- Parse arguments --- */
-    for (i = 1; i < argc; i++) {
-        if (argv[i][0] == '-') {
-            usage();
-        } else {
-            if (file_arg >= 0) usage();
-            file_arg = i;
+    /* Parse filename from CP/M command tail (supplied by cstart.as).
+     * CP/M implementations differ on whether cmdlen counts the leading
+     * space separator: some include it, some do not.  We skip leading
+     * whitespace by scanning content (not by decrementing cmdlen), then
+     * read until we hit another space, CR, or NUL.  The bound
+     * (cmdp - cmdtail) <= cmdlen works for both conventions:
+     *   - cmdlen includes space (e.g. 11 for " MYFILE.TXT"): CR stops us first.
+     *   - cmdlen excludes space (e.g. 10 for " MYFILE.TXT"): bound allows
+     *     reading up through offset 10 from cmdtail, which is the last char. */
+    has_file = 0;
+    cmdp = cmdtail;
+    while (*cmdp == ' ' || *cmdp == '\t') cmdp++;
+    if (*cmdp && *cmdp != '\r') {
+        if (*cmdp == '-') {
+            bdos_puts("Usage: hvi [filename]\r\n");
+            return 1;
+        }
+        i = 0;
+        while (i < PATH_MAX - 1 && (cmdp - cmdtail) <= cmdlen
+               && *cmdp && *cmdp != ' ' && *cmdp != '\t' && *cmdp != '\r') {
+            ed.filename[i++] = *cmdp++;
+        }
+        ed.filename[i] = '\0';
+        if (i > 0) {
+            /* CP/M filesystems are uppercase-only; fold the name now. */
+            for (i = 0; ed.filename[i]; i++)
+                if (ed.filename[i] >= 'a' && ed.filename[i] <= 'z')
+                    ed.filename[i] = ed.filename[i] - 'a' + 'A';
+            has_file = 1;
         }
     }
 
-    /*
-     * Open the file BEFORE gb_init().  gb_init() allocates nearly the
-     * entire heap, leaving no room for fopen()'s internal I/O buffer.
-     * Opening first guarantees fopen() has the full heap available.
-     */
-    preopen = (FILE *)0;
-    if (file_arg >= 0) {
-        strncpy(ed.filename, argv[file_arg], PATH_MAX - 1);
-        ed.filename[PATH_MAX - 1] = '\0';
-        preopen = fopen(ed.filename, "rb");
-    }
-
-    /* --- Initialise gap buffer (takes most of the heap) --- */
+    /* --- Initialise gap buffer (takes most of the TPA heap) --- */
     if (!gb_init()) {
-        if (preopen) fclose(preopen);
-        fprintf(stderr, "hvi: out of memory\n");
-        exit(1);
+        bdos_puts("hvi: out of memory\r\n");
+        return 1;
     }
-
-    /* --- Load file using the pre-opened handle --- */
-    if (file_arg >= 0) {
-        if (preopen) {
-            partial = gb_load(ed.filename, preopen);
-            if (partial == 2) {
-                sprintf(ed.status,
+    /* --- Load file --- */
+    if (has_file) {
+        bdos_puts("HVI " HVI_VERSION " - Loading file...\r\n");
+        partial = gb_load(ed.filename, (HFILE *)0);
+        if (partial == 2) {
+            hvi_sprintf(ed.status,
                         "\"%s\" [Partial: %d chars, tail preserved]",
-                        ed.filename, gb_content_len());
-            } else {
-                sprintf(ed.status, "\"%s\" %d chars",
-                        ed.filename, gb_content_len());
-            }
+                        (int)ed.filename, gb_content_len(), 0, 0, 0);
+        } else if (partial == 1) {
+            hvi_sprintf(ed.status, "\"%s\" %d chars",
+                        (int)ed.filename, gb_content_len(), 0, 0, 0);
         } else {
             /* File does not exist -- start with empty buffer */
-            sprintf(ed.status, "\"%s\" [New File]", ed.filename);
+            hvi_sprintf(ed.status, "\"%s\" [New File]",
+                        (int)ed.filename, 0, 0, 0, 0);
         }
         ed.modified = 0;
     } else {
-        strcpy(ed.status, "[No Name]");
+        hvi_strcpy(ed.status, "[No Name]");
     }
 
     /* --- Initialise terminal and run editor --- */

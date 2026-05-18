@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 1.4**
+**Version 2.0**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -19,48 +19,55 @@ including the `.` operator for repeat. Also has a single level undo.
 - HI-TECH C Compiler for Z80/CP/M (V3.09 or later)
 - CP/M 2.2 or CP/M 3.0 system with at least 48K TPA
 
+### Source Files
+
+```
+cstart.as  hvi.c  hvi.h  gap.c  term.c  screen.c  emove.c
+edit.c  erepeat.c  ex.c  util.c  cpmio.c
+```
+
 ### Build Steps (on CP/M)
 
-1. Copy all source files to a CP/M disk/drive:
+1. Copy all source files to a CP/M disk/drive.
+
+2. Prepare `LX.LIB` (one-time setup — removes `csv.obj` to avoid symbol conflicts
+   with `cstart.as`):
 
 ```
-HVI.C  GAP.C  TERM.C  SCREEN.C  EMOVE.C  EDIT.C  EREPEAT.C  EX.C  HVI.H
+PIP LX.LIB=LIBC.LIB
+LIBR d LX.LIB csv.obj
 ```
 
-2. Compile each file individually:
+3. Compile all source files:
 
 ```
-C -C HVI.C
-C -C GAP.C
-C -C TERM.C
-C -C SCREEN.C
-C -C EMOVE.C
-C -C EDIT.C
-C -C EREPEAT.C
-C -C EX.C
+C -CPM -O -C cstart.as
+C -CPM -O -C hvi.c gap.c term.c screen.c emove.c edit.c erepeat.c ex.c util.c cpmio.c
 ```
 
-3. Link the object files with `LINQ` to produce `HVI.COM`:
+4. Link (the backslash `\` continues the command past CP/M's 128-character line limit):
 
 ```
-LINQ -Z -N -C100H -OHVI.COM CRTCPM.OBJ HVI.OBJ GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EDIT.OBJ EREPEAT.OBJ EX.OBJ LIBC.LIB
+l
+-Ptext=100H,data,bss -C100H -oh.com CSTART.OBJ CPMIO.OBJ UTIL.OBJ \
+GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EREPEAT.OBJ EX.OBJ EDIT.OBJ HVI.OBJ LX.LIB
 ```
 
-> **Note:** The HI-TECH C linker is named `LINQ`, not `LINK`. Adjust the
-> `-C100H` load address if your TPA starts elsewhere.
+5. Rename the output:
 
+```
+REN HVI.COM=H.COM
+```
 
+> **Note:** The HI-TECH C linker command is `l` (lowercase L). The `-Ptext=100H,data,bss`
+> flag is required to place data and BSS sections correctly. `cstart.as` must be
+> first in the link order; it replaces the standard `CRTCPM.OBJ`.
 
 ### Cross-Compilation (Linux/macOS host)
 
-If using the HI-TECH Z80 cross-compiler on a Unix host:
-
-```
-c -c hvi.c gap.c term.c screen.c emove.c edit.c erepeat.c ex.c
-linq -Z -N -C100H -ohvi.com crtcpm.obj hvi.obj gap.obj term.obj screen.obj emove.obj edit.obj erepeat.obj ex.obj libc.lib
-```
-
-Transfer `hvi.com` to your CP/M system via XMODEM, Z-Modem, or disk image.
+If using the HI-TECH Z80 cross-compiler on a Unix host, use the same flags and
+link order as above, then transfer `hvi.com` to your CP/M system via XMODEM,
+ZMODEM, or disk image.
 
 ---
 
@@ -152,6 +159,12 @@ HVI [filename]
 | `n`  | Repeat last search             |
 | `N`  | Repeat last search in reverse  |
 
+Search is case-insensitive plain substring (no regular expressions). In a large
+file, search scans the entire file — not just the loaded buffer. When the match
+is found in an unloaded section HVI reloads the window around it automatically.
+`search hit BOTTOM, continuing at TOP` (or `TOP … BOTTOM`) is shown only when
+the search genuinely wraps past the end (or beginning) of the file.
+
 ### Normal Mode — Character Search (current line)
 
 | Key      | Action                                              |
@@ -221,54 +234,92 @@ Most commands accept a numeric count prefix:
 The status line shows:
 
 ```
-"filename" [+] L<current>/<total>
+"filename" [+]
 ```
 
 - `[+]` appears when the buffer has unsaved changes
-- `<current>` is the current line number (1-based)
-- `<total>` is the total line count in the loaded buffer
 
-When a file is too large to fit entirely in memory, a `+` is appended to the
-total to indicate that more content exists beyond the loaded window:
-
-```
-"filename" [+] L42/300+
-```
-
-Whenever HVI reads the next chunk of a large file from disk, it briefly shows
-`[Loading...]` on the status line.  The indicator is replaced by the normal
-status display as soon as the screen is refreshed after the load completes.
+Whenever HVI reads a chunk of a large file from disk it briefly shows
+`[Loading...]` on the status line, replaced by the normal display once the
+screen refreshes.
 
 ---
 
 ## Large File Support
 
-HVI can open and edit files larger than available RAM. At startup it allocates
-the largest single block available (up to ~28 KB on a typical CP/M system) and
-loads as much of the file as fits, recording the byte offset where loading
-stopped.
+HVI can open and edit files that are larger than available RAM. The in-memory
+content is a sliding window: only a portion of the file is in memory at any
+time, and the window shifts as you scroll.
 
-As you scroll forward with `j`, `Ctrl-D`, or `Ctrl-F`, HVI automatically loads
-the next chunk from the tail. When the buffer is full, an equal number of bytes
-are silently discarded from the beginning of the buffer to make room. The
-in-memory content is therefore a sliding window over the file.
+### How the window works
 
-On every `:w` save:
+At startup HVI allocates the largest contiguous free block in the TPA (up to
+`BUF_MAX` bytes of content) and loads as much of the file as fits. It records
+where loading stopped (`tail_offset`) and the source filename (`tail_file`).
 
-1. Any bytes scrolled off the front (before the current window) are copied from
-   the original file.
-2. The in-memory (edited) content is written in `CR+LF` format.
-3. The unloaded tail (after the current window) is appended from the original
-   file.
-4. A `Ctrl-Z` (0x1A) terminator is written last.
+As you scroll forward with `j`, `Ctrl-D`, or `Ctrl-F`, HVI loads the next
+4 KB chunk from disk automatically. When the buffer is full, the same number of
+bytes are discarded from the beginning to make room. The discarded content is
+always before the cursor so the cursor is never lost.
 
-When saving to the same filename that holds the tail, HVI writes to a temporary
-file `HVITMP.TMP` first, then replaces the original, so tail data is never
-overwritten before it is read.
+Scrolling backward with `Ctrl-B` reloads a window from an earlier position in
+the file via a direct BDOS seek (no sequential scan needed).
 
-**Limitation:** edits are restricted to the portion of the file currently in
-the buffer. Content that has scrolled off the front or not yet been loaded from
-the tail is preserved unchanged on save.
+### Editing across the window boundary
+
+Before shifting the window in either direction, HVI automatically saves all
+in-memory edits to a swap file (`HVISWP.TMP`). Subsequent reads come from the
+swap file, which contains the complete, up-to-date file content. This means
+edits made at the beginning of a file are never lost when you scroll to the
+end, and vice versa.
+
+If the gap buffer fills up during editing, HVI saves to the swap file and
+reloads a smaller window around the cursor — you can keep typing without
+interruption.
+
+### Searching in a large file
+
+`/pattern` and `?pattern` search the entire file, not just the in-memory window.
+The search proceeds in three phases:
+
+1. Scan the in-memory buffer from the cursor forward (or backward).
+2. If no unwrapped match is found, scan the unloaded file sections sequentially
+   using direct BDOS reads — the tail (bytes after the buffer) for forward
+   search, the head (bytes before the buffer) for backward search.
+3. When a match is found in an unloaded section, HVI reloads the window around
+   it and places the cursor there.
+
+The `search hit BOTTOM, continuing at TOP` message is shown only when the match
+required crossing the true end-of-file boundary, not merely the buffer boundary.
+A match in the unloaded tail of a forward search is reported without any wrap
+message because it is genuinely ahead of the cursor in file order.
+
+### Navigating to a specific line in a large file
+
+`nG` (e.g. `1000G`) works correctly in large files. HVI scans the source file
+from the beginning to locate the byte offset of line N, positions the window
+there, and places the cursor precisely on that line. Navigation speed is
+proportional to the line number, not the file size.
+
+### Saving large files
+
+On every `:w` save, HVI reconstructs the full file:
+
+1. Bytes before the current window (from `tail_file`) are copied verbatim.
+2. The in-memory buffer is written in `CR+LF` format.
+3. Bytes after the current window (from `tail_file`) are appended verbatim.
+4. A `Ctrl-Z` (0x1A) EOF marker is written last.
+
+When saving back to the same file that holds the unloaded portions, HVI writes
+to `HVITMP.TMP` first, then renames, so the source is never overwritten before
+it is fully read.
+
+### Temporary files used
+
+| File | Purpose |
+|------|---------|
+| `HVISWP.TMP` | Swap file written before any window shift or buffer overflow |
+| `HVITMP.TMP` | Intermediate used when saving back to the tail source file |
 
 ---
 
@@ -316,20 +367,19 @@ a 24-row terminal with the cursor near the middle, it sends roughly half the
 bytes of a full screen refresh (~600 bytes vs ~1200 bytes at 9600 baud ≈ 0.5
 seconds saved per keystroke).
 
-The status bar line counter is not refreshed on every `j`/`k`/`Enter`/`nG`
-keypress — it updates on the next edit, search, page scroll, or `Ctrl-L`. The
-total line count is cached after the first computation and invalidated only when
-the buffer changes, so the status bar update itself is cheap when it does occur.
+The status bar is not refreshed on every `j`/`k`/`Enter`/`nG` keypress — it
+updates on the next edit, search, page scroll, or `Ctrl-L`.
 
 ---
 
 ## Known Limitations
 
 - Single-level undo only (`u` undoes the most recent change)
-- Edits to large files are limited to the in-memory window (see Large File Support above)
+- `nG` in a large file scans sequentially from byte 0 — navigating to line 1000 reads the first ~1000 lines from disk (fast); navigating to line 29000 in a 30K-line file reads most of the file (slow)
 - No visual/block selection mode
 - No macro recording/playback
 - No window splitting
+- No regex search — plain substring match only (case-insensitive)
 
 ---
 

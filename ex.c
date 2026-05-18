@@ -6,9 +6,6 @@
  * Handles :q :q! :w :wq :wq! :x :x! :r :e :e! and :N (go to line).
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "hvi.h"
 
 extern Editor ed;
@@ -75,16 +72,16 @@ char *cmd;
 
     /* :r filename -- read file and insert after cursor line */
     if (*p == 'r' && (p[1] == ' ' || p[1] == '\t' || p[1] == '\0')) {
-        char *fname;
-        FILE *f;
-        int   c;
-        char  tmp[2];
-        int   ins_pos, old_len, new_len;
+        char  *fname;
+        HFILE *f;
+        int    c;
+        char   tmp[2];
+        int    ins_pos, old_len, new_len;
 
         p++;
         fname = skip_space(p);
         if (*fname == '\0') {
-            strcpy(ed.status, "Usage: :r filename");
+            hvi_strcpy(ed.status, "Usage: :r filename");
             return 0;
         }
 
@@ -98,22 +95,22 @@ char *cmd;
                 ins_pos++;   /* skip the newline */
         }
 
-        f = fopen(fname, "rb");
+        f = hvi_fopen(fname, "rb");
         if (!f) {
-            sprintf(ed.status, "Cannot open: %s", fname);
+            hvi_sprintf(ed.status, "Cannot open: %s", (int)fname, 0, 0, 0, 0);
             return 0;
         }
         old_len = gb_content_len();
-        while ((c = fgetc(f)) != EOF) {
+        while ((c = hvi_fgetc(f)) != HEOF) {
             if (c == 0x0D) continue;
             if (c == 0x1A) break;   /* CP/M EOF marker */
             tmp[0] = (char)c;
             gb_insert(ins_pos++, tmp, 1);
         }
-        fclose(f);
+        hvi_fclose(f);
         new_len = gb_content_len();
         ed.modified = 1;
-        sprintf(ed.status, "\"%s\" %d chars", fname, new_len - old_len);
+        hvi_sprintf(ed.status, "\"%s\" %d chars", (int)fname, new_len - old_len, 0, 0, 0);
         return 1;
     }
 
@@ -124,11 +121,11 @@ char *cmd;
         force = (*p == '!') ? (p++, 1) : 0;
         fname = skip_space(p);
         if (*fname == '\0') {
-            strcpy(ed.status, "Usage: :e[!] filename");
+            hvi_strcpy(ed.status, "Usage: :e[!] filename");
             return 0;
         }
         if (ed.modified && !force) {
-            strcpy(ed.status, "Modified buffer (use :e! to discard)");
+            hvi_strcpy(ed.status, "Modified buffer (use :e! to discard)");
             return 0;
         }
 
@@ -154,16 +151,16 @@ char *cmd;
         ed.dot_cmd         = 0;
         ed.status[0]       = '\0';
 
-        strncpy(ed.filename, fname, PATH_MAX - 1);
+        hvi_strncpy(ed.filename, fname, PATH_MAX - 1);
         ed.filename[PATH_MAX - 1] = '\0';
 
-        rc = gb_load(fname, (FILE *)0);
+        rc = gb_load(fname, (HFILE *)0);
         if (rc == 0)
-            sprintf(ed.status, "\"%s\" [New File]", fname);
+            hvi_sprintf(ed.status, "\"%s\" [New File]", (int)fname, 0, 0, 0, 0);
         else if (rc == 2)
-            sprintf(ed.status, "\"%s\" (partial load)", fname);
+            hvi_sprintf(ed.status, "\"%s\" (partial load)", (int)fname, 0, 0, 0, 0);
         else
-            sprintf(ed.status, "\"%s\" loaded", fname);
+            hvi_sprintf(ed.status, "\"%s\" loaded", (int)fname, 0, 0, 0, 0);
         return 1;
     }
 
@@ -184,24 +181,24 @@ char *cmd;
         int   ok;
         dest = (*p) ? p : ed.filename;
         if (!dest || !dest[0]) {
-            strcpy(ed.status, "No filename: use :w filename");
+            hvi_strcpy(ed.status, "No filename: use :w filename");
             return 0;
         }
         ok = gb_save(dest);
         if (!ok) {
-            sprintf(ed.status, "Cannot write: %s", dest);
+            hvi_sprintf(ed.status, "Cannot write: %s", (int)dest, 0, 0, 0, 0);
             return 0;
         }
         /* If saved to a new name, record it */
         if (*p)
-            strncpy(ed.filename, p, PATH_MAX - 1);
+            hvi_strncpy(ed.filename, p, PATH_MAX - 1);
         ed.modified = 0;
-        sprintf(ed.status, "\"%s\" written", ed.filename);
+        hvi_sprintf(ed.status, "\"%s\" written", (int)ed.filename, 0, 0, 0, 0);
     }
 
     if (do_quit) {
         if (ed.modified && !force && !do_write) {
-            strcpy(ed.status, "Modified buffer (use :q! to discard)");
+            hvi_strcpy(ed.status, "Modified buffer (use :q! to discard)");
             return 0;
         }
         ed.quit = 1;
@@ -209,7 +206,7 @@ char *cmd;
     }
 
     if (!do_write && !do_quit) {
-        sprintf(ed.status, "Unknown command: %s", cmd);
+        hvi_sprintf(ed.status, "Unknown command: %s", (int)cmd, 0, 0, 0, 0);
     }
     return 0;
 }
