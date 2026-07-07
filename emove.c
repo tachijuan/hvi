@@ -318,6 +318,11 @@ int ch, dir, count;
 /*  Range helpers for operator+motion                                   */
 /* ------------------------------------------------------------------ */
 
+/* Set to 1 before motion_endpoint('w') so the endpoint stops at the end
+ * of the last word instead of consuming its trailing blanks: vi's cw
+ * changes the word only, while dw deletes through the following spaces. */
+int me_cw;
+
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
 int *linewise;
@@ -325,6 +330,10 @@ int *linewise;
     int pos  = ed.cur_pos;
     int size = gb_content_len();
     int n;
+    int cw;
+
+    cw = me_cw;
+    me_cw = 0;
 
     *linewise = 0;
 
@@ -350,8 +359,9 @@ int *linewise;
                 if (t2 != type) break;
                 pos++;
             }
-            while (pos < size && (gb_char_at(pos) == ' ' ||
-                                  gb_char_at(pos) == '\t')) pos++;
+            if (!cw || n > 0)
+                while (pos < size && (gb_char_at(pos) == ' ' ||
+                                      gb_char_at(pos) == '\t')) pos++;
         }
         return pos;
 
@@ -454,7 +464,7 @@ int op, from, to, linewise;
 
     if (from > to) { t = from; from = to; to = t; }
     len = to - from;
-    if (len <= 0) return;
+    if (len <= 0 && op != 'c') return;
 
     if (op == 'y') {
         save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
@@ -473,24 +483,30 @@ int op, from, to, linewise;
         return;
     }
 
-    undo_save_delete(from, len);
-    save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
-    for (i = 0; i < save; i++) {
-        c = gb_char_at(from + i);
-        ed.yank[i] = (c < 0) ? 0 : (char)c;
+    if (len > 0) {
+        undo_save_delete(from, len);
+        save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
+        for (i = 0; i < save; i++) {
+            c = gb_char_at(from + i);
+            ed.yank[i] = (c < 0) ? 0 : (char)c;
+        }
+        ed.yank[save] = '\0';
+        ed.yank_len   = save;
+        ed.yank_line  = linewise;
+        gb_delete(from, len);
+        ed.modified = 1;
     }
-    ed.yank[save] = '\0';
-    ed.yank_len   = save;
-    ed.yank_line  = linewise;
-    gb_delete(from, len);
-    ed.modified = 1;
 
     size = gb_content_len();
     ed.cur_pos = from;
-    if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
-    if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n')
-        if (gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
+    /* 'd' pulls the cursor back off a trailing newline; 'c' must insert
+     * exactly where the text was removed (before the newline). */
+    if (op != 'c') {
+        if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
+        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n')
+            if (gb_char_at(ed.cur_pos - 1) != '\n')
+                ed.cur_pos--;
+    }
 
     scr_after_edit();
 

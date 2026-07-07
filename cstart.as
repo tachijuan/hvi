@@ -61,7 +61,7 @@
     GLOBAL  start, _main, __Hbss, bss_begin, _bdos_base, _heap_base
     GLOBAL  csv, cret, ncsv, indir
     GLOBAL  _bdos_disk, _bdos_disk_ix
-    GLOBAL  _bios_conin, _bios_conin_addr
+    GLOBAL  _gb_memmove
 
 start:
     ; --- Stack setup -------------------------------------------------
@@ -180,49 +180,52 @@ call_main:
     ; cret: restores SP from IX (discarding locals), pops IX, returns.
 
 csv:
-    ; HI-TECH C V3.09 standard csv frame layout (verified from compiled output):
-    ;   [IX+0] = func_body_ptr  (pushed last, so at top of IX frame)
-    ;   [IX+2] = caller's IX
+    ; HI-TECH C V3.09 csv frame layout (matches compiled code, which reads
+    ; the first argument at IX+6 and expects SP == IX at body entry):
+    ;   [IX+0] = caller's IX
+    ;   [IX+2] = caller's IY
     ;   [IX+4] = return address to caller
     ;   [IX+6] = first argument  (left-most in source)
     ;
-    ; The compiler emits CALL csv immediately before the function body.
-    ; The return address popped here IS the function body entry.
-    ; RET re-pops func_body_ptr into PC, entering the function body.
+    ; SP == IX at body entry is CRITICAL: functions with small frames follow
+    ; CALL csv with one PUSH HL per two bytes of locals, and the compiler
+    ; addresses those locals at IX-1 downward.  If csv left SP above IX
+    ; (as an earlier version of this file did, by pushing a body pointer
+    ; that RET later consumed), the deepest local bytes would sit BELOW SP
+    ; and be silently overwritten by the next argument push -- e.g. the
+    ; 'r' command inserted NUL instead of the replacement character.
     pop     hl              ; HL = func_body entry (return addr from CALL csv)
-    push    ix              ; [SP] = caller's IX
-    push    hl              ; [SP] = func_body_ptr  → IX+0 after add ix,sp
+    push    iy              ; [IX+2] caller's IY
+    push    ix              ; [IX+0] caller's IX
     ld      ix,0
-    add     ix,sp           ; IX = SP: IX+0=func_body, IX+2=old_IX, IX+4=ret, IX+6=first_arg
-    ret                     ; pops func_body_ptr into PC → enters function body
+    add     ix,sp           ; IX = frame base; SP == IX
+    jp      (hl)            ; enter function body
 
 cret:
-    ; Mirrors csv frame: IX+0=func_body_ptr, IX+2=old_IX.
-    ; IMPORTANT: use pop bc (not pop hl) to discard func_body_ptr so that
-    ; the return value already in HL is preserved for the caller.
+    ; Mirrors csv/ncsv frame: IX+0=old_IX, IX+2=old_IY.
+    ; Must NOT clobber HL (function return value).
     ld      sp,ix           ; restore SP to frame base (discards locals)
-    pop     bc              ; discard func_body_ptr at IX+0 (must NOT clobber HL)
-    pop     ix              ; restore caller's IX from IX+2
+    pop     ix              ; restore caller's IX
+    pop     iy              ; restore caller's IY
     ret                     ; return to caller with HL = return value
 
     ; ncsv: optimiser-emitted variant.  Follows CALL ncsv with DW -N (locals).
-    ; Produces the same IX frame layout as csv so cret works for both.
+    ; Produces the same frame layout as csv (SP = IX - N after allocation)
+    ; so cret works for both.
 ncsv:
     pop     hl              ; HL = ptr to DW -N (return addr from CALL ncsv)
-    ld      c,(hl)
+    ld      e,(hl)
     inc     hl
-    ld      b,(hl)          ; BC = -N (signed, so BC is negative)
+    ld      d,(hl)          ; DE = -N (negative local size)
     inc     hl              ; HL = function body (first real instruction)
-    push    ix              ; save caller's IX
-    push    hl              ; save func_body_ptr → IX+0 after add ix,sp
+    push    iy              ; [IX+2] caller's IY
+    push    ix              ; [IX+0] caller's IX
     ld      ix,0
-    add     ix,sp           ; IX = SP: IX+0=func_body, IX+2=old_IX, IX+4=ret, IX+6=first_arg
-    ld      hl,0
-    add     hl,sp
-    add     hl,bc           ; HL = SP - N  (allocate locals)
+    add     ix,sp           ; IX = frame base
+    ex      de,hl           ; HL = -N, DE = body
+    add     hl,sp           ; HL = SP - N  (allocate locals)
     ld      sp,hl
-    ld      l,(ix+0)        ; reload func_body_ptr from frame
-    ld      h,(ix+1)
+    ex      de,hl           ; HL = body
     jp      (hl)            ; jump to function body
 
     ; indir: indirect call through a function pointer.
@@ -264,52 +267,56 @@ _bdos_disk:
     pop     ix                  ; (4) restore caller's IX from stack
     ret
 
-    ; --- bios_conin: BIOS CONIN call that preserves IX ---------------
+    ; --- gb_memmove: overlap-safe block move using LDIR/LDDR ---------
     ;
-    ; BIOS CONIN (function 3) is at BIOS_base + 9.
-    ; BIOS_base = warmboot_addr - 3 = [0x0001] - 3.
-    ; So CONIN = [0x0001] + 6 (warmboot + 6).
+    ; void gb_memmove(char *dst, char *src, int len)
     ;
-    ; No arguments.  Returns character in HL (H=0, L=char).
-    ; Reuses _bdos_disk_ix as the IX save slot.
+    ; The gap buffer moves up to BUF_MAX bytes every time the gap jumps
+    ; to a distant cursor position.  LDIR moves a byte in 21 T-states;
+    ; the equivalent compiled C loop needs well over 100, so this is the
+    ; single biggest CPU win for editing large files on a 4 MHz Z80.
     ;
-_bios_conin:
+    ; cdecl frame after push ix / add ix,sp:
+    ;   IX+4 = dst   IX+6 = src   IX+8 = len
+    ;
+_gb_memmove:
     push    ix
     ld      ix,0
     add     ix,sp
-    ld      (_bdos_disk_ix),ix   ; save frame ptr (reuse disk save slot)
-
-    ; Compute CONIN address = warmboot + 6
-    ld      hl,1                  ; 0x0001 -- pure immediate, no reloc
-    ld      e,(hl)                ; E = lo(warmboot)
-    inc     hl
-    ld      d,(hl)                ; D = hi(warmboot)  → DE = warmboot = BIOS+3
-    ld      hl,6
-    add     hl,de                 ; HL = BIOS+9 = CONIN vector address
-    ld      (_bios_conin_addr),hl ; save for trampoline
-
-    call    _bios_jmp             ; "call (HL)" via trampoline; char returned in A
-    ld      l,a
-    ld      h,0                   ; HL = char (return value, H=0)
-
-    ld      ix,(_bdos_disk_ix)   ; restore frame ptr
-    pop     ix                    ; restore caller's IX
+    ld      e,(ix+4)        ; DE = dst
+    ld      d,(ix+5)
+    ld      l,(ix+6)        ; HL = src
+    ld      h,(ix+7)
+    ld      c,(ix+8)        ; BC = len
+    ld      b,(ix+9)
+    ld      a,b
+    or      c
+    jp      z,gmm_done      ; len == 0
+    ld      a,l             ; unsigned compare src - dst
+    sub     e
+    ld      a,h
+    sbc     a,d             ; carry set when src < dst
+    jp      c,gmm_back
+    ldir                    ; dst <= src: forward copy is overlap-safe
+    jp      gmm_done
+gmm_back:
+    add     hl,bc
+    dec     hl              ; HL = src + len - 1
+    ex      de,hl
+    add     hl,bc
+    dec     hl              ; HL = dst + len - 1
+    ex      de,hl
+    lddr                    ; dst > src: backward copy
+gmm_done:
+    pop     ix
     ret
-
-    ; Trampoline: load saved CONIN address into HL and JP (HL).
-    ; The CALL from _bios_conin leaves a return address on the stack, so
-    ; CONIN's RET comes back here to the instruction after CALL _bios_jmp.
-_bios_jmp:
-    ld      hl,(_bios_conin_addr)
-    jp      (hl)
 
     ; --- BSS section marker ------------------------------------------
     ; bss_begin must be in the BSS psect so the linker places it at
     ; the correct address (after text+data, not at 0x0000).
     PSECT   bss
 bss_begin:
-_bdos_disk_ix:  defs    2       ; save slot: IX value across CALL 5 / BIOS call
-_bios_conin_addr: defs  2       ; CONIN vector address for _bios_jmp trampoline
+_bdos_disk_ix:  defs    2       ; save slot: IX value across CALL 5
 
     END     start           ; declare entry point -- without this the linker
                             ; defaults to 0, which is < 0x100 and triggers

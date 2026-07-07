@@ -18,19 +18,9 @@
 extern Editor ed;
 extern int bdos_disk();
 
-/* HI-TECH C V3.09 does not include memmove -- provide our own. */
-static void gb_memmove(dst, src, len)
-char *dst;
-char *src;
-int   len;
-{
-    if (dst < src) {
-        while (len-- > 0) *dst++ = *src++;
-    } else if (dst > src) {
-        dst += len; src += len;
-        while (len-- > 0) *--dst = *--src;
-    }
-}
+/* Overlap-safe block move; LDIR/LDDR assembly in cstart.as (~7x faster
+ * than the compiled loop -- this runs on every gap move). */
+extern void gb_memmove(/* char *dst, char *src, int len */);
 
 /*
  * Initialise an empty gap buffer.
@@ -76,16 +66,23 @@ int gb_content_len()
 /*
  * Return the character at logical position pos.
  * Returns -1 if pos is out of range.
+ *
+ * This is the hottest function in the editor -- every scanner calls it
+ * once per character -- so it must not call gb_content_len(): the bounds
+ * check is done inline on the raw buffer index instead (pos >= content
+ * length is equivalent to the gap-adjusted index reaching ed.gb.size).
  */
 int gb_char_at(pos)
 int pos;
 {
-    int len = gb_content_len();
-    if (pos < 0 || pos >= len)
+    if (pos < 0)
         return -1;
     if (pos < ed.gb.gstart)
         return (unsigned char)ed.gb.buf[pos];
-    return (unsigned char)ed.gb.buf[ed.gb.gend + (pos - ed.gb.gstart)];
+    pos += ed.gb.gend - ed.gb.gstart;
+    if (pos >= ed.gb.size)
+        return -1;
+    return (unsigned char)ed.gb.buf[pos];
 }
 
 /*
@@ -549,13 +546,24 @@ HFILE *f;
 static char  *gsv_fn;          /* cache param: BDOS trashes HL which may hold filename */
 static HFILE *gsv_f;
 static int    gsv_using_tmp;
+static int    gsv_len;
 static long   gsv_new_tail;
 static char   gsv_tmp_name[16];
+static char   gsv_nl[1];
 
 int gb_save(filename)
 char *filename;
 {
     gsv_fn = filename;     /* cache before any BDOS call */
+    /* vi convention: a text file ends with a newline.  Append one to the
+     * buffer when the buffer holds the end of the file and lacks it. */
+    if (ed.tail_offset == 0L) {
+        gsv_len = gb_content_len();
+        if (gsv_len > 0 && gb_char_at(gsv_len - 1) != '\n') {
+            gsv_nl[0] = '\n';
+            gb_insert(gsv_len, gsv_nl, 1);
+        }
+    }
     gsv_using_tmp = 0;
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {

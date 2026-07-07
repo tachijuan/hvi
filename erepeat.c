@@ -22,6 +22,7 @@ void undo_save_insert();
 void mv_bnb();
 void mv_eol();
 int  motion_endpoint();
+extern int me_cw;
 void apply_op();
 
 /* ------------------------------------------------------------------ */
@@ -71,6 +72,7 @@ int n;
         from = find_bol(ed.cur_pos);
         to = find_eol(from);
     } else {
+        if (ed.dot_motion == 'w') me_cw = 1;
         endpoint = motion_endpoint(ed.dot_motion, n, &linewise);
         if (endpoint < 0) return;
         from = (ed.cur_pos < endpoint) ? ed.cur_pos : endpoint;

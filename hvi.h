@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.0"
+#define HVI_VERSION "2.1"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing

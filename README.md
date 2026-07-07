@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.0**
+**Version 2.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -375,11 +375,66 @@ updates on the next edit, search, page scroll, or `Ctrl-L`.
 ## Known Limitations
 
 - Single-level undo only (`u` undoes the most recent change)
+- Saving appends a final newline (vi convention) when the buffer does not end with one
 - `nG` in a large file scans sequentially from byte 0 — navigating to line 1000 reads the first ~1000 lines from disk (fast); navigating to line 29000 in a 30K-line file reads most of the file (slow)
 - No visual/block selection mode
 - No macro recording/playback
 - No window splitting
 - No regex search — plain substring match only (case-insensitive)
+
+---
+
+## Changes
+
+### 2.0 → 2.1
+
+Bug fixes (all found by the automated test suite in `tests/`):
+
+- **Fixed the C runtime stack frame in `cstart.as`.** The custom `csv`/`ncsv`
+  prologues left SP two bytes above the frame base, so the deepest auto
+  (local) variable of small functions sat below the stack pointer and was
+  overwritten by the next argument push. Visible symptom: `r` replaced the
+  character under the cursor with a NUL (0x00) byte instead of the typed
+  character. This was also the root cause of the long-standing
+  "HI-TECH C `-O` corrupts IX-relative locals" behaviour that forced the
+  static-local workarounds throughout the code — auto variables are fully
+  reliable now. The corrected frame matches the real HI-TECH `csv`, which
+  saves both IX and IY (arguments at IX+6, SP == IX at function entry).
+- **`c$` / `C` inserted at the wrong position.** The change operator applied
+  the delete-style cursor back-off before entering insert mode, so the typed
+  replacement landed one character to the left (`2lc$XY` on `abcdef` gave
+  `aXYb` instead of `abXY`). Change now inserts exactly where the text was
+  removed.
+- **`cc` / `S` deleted the line's newline**, merging the replacement text
+  with the following line (`ccnew` on `foo`/`bar` gave `newbar`). The
+  linewise change now keeps the newline, and `cc` on an empty line enters
+  insert mode instead of joining lines.
+- **`cw` deleted the word's trailing spaces** (`cwqux` on `foo bar` gave
+  `quxbar`). `cw` now changes the word only, matching vi; `dw` still deletes
+  through the following whitespace. `.` repeat of `cw` uses the same rule.
+- **A key typed quickly after `ESC` was swallowed** by the arrow-key
+  disambiguation in `term_getch()`. The byte is now pushed back and processed
+  as the next command.
+- **Files are saved with a final newline** (vi convention) when the buffer
+  does not already end with one.
+
+Performance (targeting 4 MHz Z80):
+
+- **`gb_memmove` rewritten in assembly using LDIR/LDDR** (`cstart.as`),
+  about 7x faster than the compiled loop. This runs on every gap move, i.e.
+  whenever an edit happens away from the previous edit point, and is ~90
+  bytes smaller than the compiled version.
+- **`gb_char_at` no longer calls `gb_content_len()` per character** — the
+  bounds check is done inline on the gap-adjusted index. Every scanner
+  (line counting, drawing, search) calls this once per character, so
+  full-buffer scans are roughly twice as fast.
+- Removed the unused `_bios_conin` routine from `cstart.as`.
+
+Binary size is unchanged: 245 CP/M records (~31K).
+
+Also new in 2.1: an automated test harness under `tests/` (91 functional
+tests plus 13 large-file tests) that builds HVI with HI-TECH C V3.09 inside
+RunCPM and drives it through a pseudo-terminal; see `tests/README.md`.
 
 ---
 

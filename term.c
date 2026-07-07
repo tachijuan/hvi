@@ -325,13 +325,18 @@ void term_clear()
 /*  Input                                                               */
 /* ------------------------------------------------------------------ */
 
-/* c, c2, wait are static: bios(3,0,0) may not preserve IX on CP/M,
- * so IX-relative locals would be corrupted after the BIOS CONIN call. */
 static int s_tgc_c, s_tgc_c2, s_tgc_wait;
+static int s_tgc_pend;   /* pushback: key typed quickly after a bare ESC */
 
 int term_getch()
 {
     term_flush();
+
+    if (s_tgc_pend) {
+        s_tgc_c = s_tgc_pend;
+        s_tgc_pend = 0;
+        return s_tgc_c;
+    }
 
     /* BDOS 6, 0xFF = Direct Console Input (no echo, non-blocking).
      * Poll via BDOS 11 (Console Status) first to reduce spin time, then read.
@@ -345,7 +350,12 @@ int term_getch()
             if (--s_tgc_wait == 0) return KEY_ESC;
         }
         s_tgc_c2 = bdos_disk(6, 0xFF) & 0xFF;
-        if (s_tgc_c2 != '[') return KEY_ESC;
+        if (s_tgc_c2 != '[') {
+            /* Not an arrow sequence: the byte is the NEXT keystroke typed
+             * quickly after ESC.  Push it back instead of swallowing it. */
+            s_tgc_pend = s_tgc_c2;
+            return KEY_ESC;
+        }
 
         s_tgc_wait = 8000;
         while (bdos_disk(11, 0) == 0) {

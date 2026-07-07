@@ -56,6 +56,7 @@ void mv_word_back();
 void mv_word_end();
 void mv_find();
 int  motion_endpoint();
+extern int me_cw;
 void apply_op();
 int  read_pattern();
 int  do_search_from();
@@ -859,6 +860,9 @@ int c;
             nc_to   = (nc_end_line + 1 < nc_total)
                       ? scr_line_start(nc_end_line + 1)
                       : size;
+            /* cc/S replace the line's text but keep its newline */
+            if (op == 'c' && nc_to > nc_from && gb_char_at(nc_to - 1) == '\n')
+                nc_to--;
             if (op != 'y') {
                 ed.dot_cmd = op; ed.dot_motion = op;
                 ed.dot_count = count; ed.dot_arg = 0; ed.dot_len = 0;
@@ -870,6 +874,7 @@ int c;
 
         /* motion character */
         linewise = 0;
+        if (op == 'c' && c == 'w') me_cw = 1;
         endpoint = motion_endpoint(c, count, &linewise);
         if (endpoint < 0) {
             hvi_sprintf(ed.status, "Unknown motion: %c", c, 0, 0, 0, 0);
