@@ -42,9 +42,7 @@ extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
 static char s_outbuf[OUT_BUF_SZ];
 static int  s_outpos;
 static int  s_flush_i;  /* loop counter for term_flush -- static to avoid IX-relative locals */
-static int  s_rn_i, s_rn_d;        /* raw_num statics */
-static int  s_rn_pows[5];          /* powers table -- static so no IX-frame overhead */
-static int  s_rn_started;
+static char s_rn_buf[8];           /* raw_num scratch for fmt_int */
 static int  s_tg_dr, s_tg_i;       /* term_goto statics -- avoid IX-relative locals */
 
 /* Tracked terminal cursor position (-1 = unknown, set by term_init). */
@@ -67,25 +65,15 @@ int c;
 
 
 /* Output the decimal representation of n (>= 0) via raw_byte.
- * Uses only static variables so no IX-relative locals are needed. */
+ * Formatting is shared with util.c fmt_int to avoid a second converter. */
+static char *s_rn_p, *s_rn_end;
+
 static void raw_num(n)
 int n;
 {
-    s_rn_pows[0] = 10000;
-    s_rn_pows[1] =  1000;
-    s_rn_pows[2] =   100;
-    s_rn_pows[3] =    10;
-    s_rn_pows[4] =     1;
-    if (n <= 0) { raw_byte('0'); return; }
-    s_rn_started = 0;
-    for (s_rn_i = 0; s_rn_i < 5; s_rn_i++) {
-        s_rn_d = 0;
-        while (n >= s_rn_pows[s_rn_i]) { n -= s_rn_pows[s_rn_i]; s_rn_d++; }
-        if (s_rn_d || s_rn_started) {
-            raw_byte('0' + s_rn_d);
-            s_rn_started = 1;
-        }
-    }
+    s_rn_end = fmt_int(s_rn_buf, n);
+    for (s_rn_p = s_rn_buf; s_rn_p < s_rn_end; s_rn_p++)
+        raw_byte(*s_rn_p);
 }
 
 /*
@@ -150,12 +138,6 @@ char *s;
 void term_clreol()
 {
     raw_byte(0x1B); raw_byte('['); raw_byte('K');
-}
-
-/* Set bold video attribute (cursor doesn't move). */
-void term_bold()
-{
-    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte('m');
 }
 
 /* Set reverse video attribute (cursor doesn't move). */

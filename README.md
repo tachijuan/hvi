@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.1**
+**Version 2.1.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -386,6 +386,32 @@ updates on the next edit, search, page scroll, or `Ctrl-L`.
 
 ## Changes
 
+### 2.1 → 2.1.1
+
+Size reductions (no functionality or speed lost):
+
+- Removed the unused `term_bold()` routine.
+- `raw_num` (terminal escape numbers) now shares `fmt_int` from util.c
+  instead of carrying a second decimal converter.
+- The `w`/`b`/`e` word motions delegate to `motion_endpoint()`, which
+  implemented the identical scans for the `d`/`c`/`y` operators.
+- `J` and `~` share one implementation with their `.`-repeat handlers in
+  erepeat.c. As a side effect `~` now honors a count prefix (`3~` toggles
+  three characters), matching vi.
+- The `x`/`X`/`s`/`S`/`D`/`C`/`Y` aliases expand through one small helper.
+- `scr_redraw_cur_line()` / `scr_redraw_from_cur()` share their
+  row-locating preamble.
+
+Bug fix:
+
+- **`J` follows vi's spacing rules**: leading whitespace of the joined line
+  is removed and exactly one separating space is inserted — none when the
+  current line already ends in a blank or either side of the join is empty.
+  (Previously `one ` joined with `two` produced a double space, and leading
+  indentation of the next line was kept.)
+
+Binary size: 236 CP/M records (~30K), down from 245 in 2.0/2.1.
+
 ### 2.0 → 2.1
 
 Bug fixes (all found by the automated test suite in `tests/`):
@@ -429,8 +455,6 @@ Performance (targeting 4 MHz Z80):
   (line counting, drawing, search) calls this once per character, so
   full-buffer scans are roughly twice as fast.
 - Removed the unused `_bios_conin` routine from `cstart.as`.
-
-Binary size is unchanged: 245 CP/M records (~31K).
 
 Also new in 2.1: an automated test harness under `tests/` (91 functional
 tests plus 13 large-file tests) that builds HVI with HI-TECH C V3.09 inside

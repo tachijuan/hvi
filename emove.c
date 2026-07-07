@@ -12,6 +12,8 @@
 
 extern Editor ed;
 
+int motion_endpoint();   /* fwd decl: used by the word motions below */
+
 /* ------------------------------------------------------------------ */
 /*  Character classification                                            */
 /* ------------------------------------------------------------------ */
@@ -212,27 +214,19 @@ int n;
     }
 }
 
+/*
+ * Word motions delegate to motion_endpoint(), which implements the exact
+ * same scans for the d/c/y operators -- one copy of the logic instead of
+ * two.  'e' returns an exclusive endpoint, hence the -1.
+ */
+static int mw_lw;   /* dummy linewise out-param */
+
 /* Forward to start of next word. */
 void mv_word_fwd(n)
 int n;
 {
-    static int size, type, t2;
-    size = gb_content_len();
     begin_hmove();
-    while (n-- > 0) {
-        if (ed.cur_pos >= size) break;
-        type = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
-               isspacech(gb_char_at(ed.cur_pos)) ? 0 : 2;
-        while (ed.cur_pos < size) {
-            t2 = iswordch(gb_char_at(ed.cur_pos)) ? 1 :
-                 isspacech(gb_char_at(ed.cur_pos)) ? 0 : 2;
-            if (t2 != type) break;
-            ed.cur_pos++;
-        }
-        while (ed.cur_pos < size && isspacech(gb_char_at(ed.cur_pos))
-               && gb_char_at(ed.cur_pos) != '\n')
-            ed.cur_pos++;
-    }
+    ed.cur_pos = motion_endpoint('w', n, &mw_lw);
     end_hmove();
 }
 
@@ -240,22 +234,8 @@ int n;
 void mv_word_back(n)
 int n;
 {
-    static int type, t2;
     begin_hmove();
-    while (n-- > 0) {
-        if (ed.cur_pos == 0) break;
-        ed.cur_pos--;
-        while (ed.cur_pos > 0 && isspacech(gb_char_at(ed.cur_pos)))
-            ed.cur_pos--;
-        if (ed.cur_pos == 0) break;
-        type = iswordch(gb_char_at(ed.cur_pos)) ? 1 : 2;
-        while (ed.cur_pos > 0) {
-            t2 = iswordch(gb_char_at(ed.cur_pos - 1)) ? 1 :
-                 isspacech(gb_char_at(ed.cur_pos - 1)) ? 0 : 2;
-            if (t2 != type) break;
-            ed.cur_pos--;
-        }
-    }
+    ed.cur_pos = motion_endpoint('b', n, &mw_lw);
     end_hmove();
 }
 
@@ -263,22 +243,9 @@ int n;
 void mv_word_end(n)
 int n;
 {
-    static int size, type, t2;
-    size = gb_content_len();
     begin_hmove();
-    while (n-- > 0) {
-        if (ed.cur_pos >= size - 1) break;
-        ed.cur_pos++;
-        while (ed.cur_pos < size && isspacech(gb_char_at(ed.cur_pos)))
-            ed.cur_pos++;
-        type = iswordch(gb_char_at(ed.cur_pos)) ? 1 : 2;
-        while (ed.cur_pos < size - 1) {
-            t2 = iswordch(gb_char_at(ed.cur_pos + 1)) ? 1 :
-                 isspacech(gb_char_at(ed.cur_pos + 1)) ? 0 : 2;
-            if (t2 != type) break;
-            ed.cur_pos++;
-        }
-    }
+    ed.cur_pos = motion_endpoint('e', n, &mw_lw) - 1;
+    if (ed.cur_pos < 0) ed.cur_pos = 0;
     end_hmove();
 }
 

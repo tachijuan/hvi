@@ -37,6 +37,14 @@ static int get_count()
     return n;
 }
 
+/* Alias commands (x, X, s, S, D, C, Y) expand to operator + motion. */
+static void op_motion(op, count, motion)
+int op, count, motion;
+{
+    g_op = op; g_count = count; g_hcnt = 1;
+    normal_cmd(motion);
+}
+
 
 
 /* Functions defined in emove.c */
@@ -398,8 +406,7 @@ int c, count, size;
 
     /* --- Yank/Put --- */
     case 'Y':
-        g_op = 'y'; g_count = count; g_hcnt = 1;
-        normal_cmd('y');
+        op_motion('y', count, 'y');
         break;
 
     case 'p':
@@ -508,49 +515,14 @@ int c, count, size;
     /* --- Ex command line --- */
     case ':':   cmdline_mode(); break;
 
-    /* --- Join lines --- */
+    /* --- Join lines / toggle case ---
+     * Same implementation as their '.' replay: record the dot state and
+     * run the shared handler in erepeat.c (one copy of the logic). */
     case 'J':
-        ed.dot_cmd = 'J'; ed.dot_count = count;
-        ed.dot_motion = 0; ed.dot_arg = 0;
-        {
-            int n = (count > 1) ? count - 1 : 1;
-            while (n-- > 0) {
-                int sz = gb_content_len();
-                int end_of_line = find_eol(ed.cur_pos);
-                char sp = ' ';
-                if (end_of_line >= sz) break;
-                undo_save_delete(end_of_line, 1);
-                gb_delete(end_of_line, 1); /* remove newline */
-                sz = gb_content_len();
-                if (end_of_line < sz && gb_char_at(end_of_line) != ' ')
-                    gb_insert(end_of_line, &sp, 1);
-                ed.modified = 1;
-            }
-            scr_redraw_from_cur();
-            scr_show_status(ed.status);
-        }
-        break;
-
-    /* --- Tilde: toggle case --- */
     case '~':
-        ed.dot_cmd = '~'; ed.dot_count = count;
+        ed.dot_cmd = c; ed.dot_count = count;
         ed.dot_motion = 0; ed.dot_arg = 0;
-        {
-            int sz = gb_content_len();
-            if (ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n') {
-                int ch = gb_char_at(ed.cur_pos);
-                char repl_ch[1];
-                if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
-                else if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
-                repl_ch[0] = (char)ch;
-                undo_save_delete(ed.cur_pos, 1);
-                gb_delete(ed.cur_pos, 1);
-                gb_insert(ed.cur_pos, repl_ch, 1);
-                ed.modified = 1;
-                mv_right(1);
-                scr_redraw_cur_line();
-            }
-        }
+        dot_replay(count);
         break;
 
     /* Ignore unknown commands silently */
@@ -571,21 +543,10 @@ int c, count, size;
     case 'c':  g_op = 'c'; g_count = count; g_hcnt = 1; return;
     case 'y':  g_op = 'y'; g_count = count; g_hcnt = 1; return;
 
-    case 'D':
-        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('$');
-        break;
-
-    case 'C':
-        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('$');
-        break;
-
-    case 'x':
-        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('l');
-        break;
-
-    case 'X':
-        g_op = 'd'; g_count = count; g_hcnt = 1; normal_cmd('h');
-        break;
+    case 'D':  op_motion('d', count, '$'); break;
+    case 'C':  op_motion('c', count, '$'); break;
+    case 'x':  op_motion('d', count, 'l'); break;
+    case 'X':  op_motion('d', count, 'h'); break;
 
     case 'r':
         {
@@ -689,13 +650,8 @@ int c, count, size;
         }
         break;
 
-    case 's':
-        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('l');
-        break;
-
-    case 'S':
-        g_op = 'c'; g_count = count; g_hcnt = 1; normal_cmd('c');
-        break;
+    case 's':  op_motion('c', count, 'l'); break;
+    case 'S':  op_motion('c', count, 'c'); break;
 
     default:
         normal_delchg_cmd(c, count, size);

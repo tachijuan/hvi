@@ -353,35 +353,48 @@ void scr_refresh()
     scr_show_status(ed.status);
 }
 
-static int rcl_p, rcl_vstart, rcl_scr_row, rcl_text_rows, rcl_row, rcl_next, rcl_size;
+/*
+ * Locate the screen row of the cursor's visual row and its buffer start.
+ * Sets lcr_vstart / lcr_row.  Shared by scr_redraw_cur_line() and
+ * scr_redraw_from_cur().
+ */
+static int lcr_vstart, lcr_row, lcr_p, lcr_next;
+
+static void locate_cur_row()
+{
+    lcr_vstart = vrow_start_of(ed.cur_pos);
+
+    if (ed.cur_vrow >= 0) {
+        lcr_p   = lcr_vstart;
+        lcr_row = ed.cur_vrow;
+        while (lcr_p < ed.cur_pos) {
+            lcr_next = next_vrow(lcr_p);
+            if (lcr_next <= lcr_p || lcr_next > ed.cur_pos) break;
+            lcr_p = lcr_next;
+            lcr_row--;
+        }
+    } else {
+        lcr_p   = ed.top_pos;
+        lcr_row = 0;
+        while (lcr_p < lcr_vstart) {
+            lcr_next = next_vrow(lcr_p);
+            if (lcr_next <= lcr_p) break;
+            lcr_p = lcr_next;
+            lcr_row++;
+        }
+    }
+}
+
+static int rcl_p, rcl_scr_row, rcl_text_rows, rcl_row, rcl_next, rcl_size;
 
 void scr_redraw_cur_line()
 {
-    rcl_vstart    = vrow_start_of(ed.cur_pos);
     rcl_text_rows = ed.scr_rows - 1;
     rcl_size      = gb_content_len();
 
-    if (ed.cur_vrow >= 0) {
-        rcl_p = rcl_vstart;
-        rcl_scr_row = ed.cur_vrow;
-        while (rcl_p < ed.cur_pos) {
-            rcl_next = next_vrow(rcl_p);
-            if (rcl_next <= rcl_p || rcl_next > ed.cur_pos) break;
-            rcl_p = rcl_next;
-            rcl_scr_row--;
-        }
-    } else {
-        rcl_p = ed.top_pos;
-        rcl_scr_row = 0;
-        while (rcl_p < rcl_vstart) {
-            rcl_next = next_vrow(rcl_p);
-            if (rcl_next <= rcl_p) break;
-            rcl_p = rcl_next;
-            rcl_scr_row++;
-        }
-    }
-
-    rcl_p   = rcl_vstart;
+    locate_cur_row();
+    rcl_scr_row = lcr_row;
+    rcl_p   = lcr_vstart;
     rcl_row = rcl_scr_row;
     for (;;) {
         if (rcl_row >= rcl_text_rows) break;
@@ -400,33 +413,15 @@ void scr_redraw_cur_line()
     scr_update_cursor();
 }
 
-static int rfc_vstart, rfc_p, rfc_scr_row, rfc_next, rfc_text_rows, rfc_row;
+static int rfc_p, rfc_scr_row, rfc_next, rfc_text_rows, rfc_row;
 
 void scr_redraw_from_cur()
 {
     rfc_text_rows = ed.scr_rows - 1;
-    rfc_vstart    = vrow_start_of(ed.cur_pos);
 
-    if (ed.cur_vrow >= 0) {
-        rfc_p = rfc_vstart;
-        rfc_scr_row = ed.cur_vrow;
-        while (rfc_p < ed.cur_pos) {
-            rfc_next = next_vrow(rfc_p);
-            if (rfc_next <= rfc_p || rfc_next > ed.cur_pos) break;
-            rfc_p = rfc_next;
-            rfc_scr_row--;
-        }
-        rfc_p = rfc_vstart;
-    } else {
-        rfc_p = ed.top_pos;
-        rfc_scr_row = 0;
-        while (rfc_p < rfc_vstart) {
-            rfc_next = next_vrow(rfc_p);
-            if (rfc_next <= rfc_p) break;
-            rfc_p = rfc_next;
-            rfc_scr_row++;
-        }
-    }
+    locate_cur_row();
+    rfc_scr_row = lcr_row;
+    rfc_p       = lcr_vstart;
 
     /* rfc_p is now the vrow-start for rfc_scr_row; thread it through the loop. */
     for (rfc_row = rfc_scr_row; rfc_row < rfc_text_rows; rfc_row++) {

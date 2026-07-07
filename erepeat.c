@@ -104,7 +104,7 @@ void dot_replay(count)
 int count;
 {
     int  n, sz, k, linewise, endpoint;
-    int  from, to, ins_pos, ch, eol;
+    int  from, to, ins_pos, ch, eol, del;
     int  start_line, end_line, total;
     int  has_nl, ki;
     char tmp_c[1];
@@ -187,6 +187,11 @@ int count;
             ed.cur_pos++;
             ed.modified = 1;
         }
+        /* don't leave the cursor on the newline / past the end */
+        if (ed.cur_pos > 0 &&
+            (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') &&
+            gb_char_at(ed.cur_pos - 1) != '\n')
+            ed.cur_pos--;
         scr_redraw_cur_line();
         break;
 
@@ -196,10 +201,18 @@ int count;
             sz = gb_content_len();
             eol = find_eol(ed.cur_pos);
             if (eol >= sz) break;
-            undo_save_delete(eol, 1);
-            gb_delete(eol, 1);
+            /* remove the newline plus the joined line's leading blanks */
+            del = 1;
+            while ((ch = gb_char_at(eol + del)) == ' ' || ch == '\t')
+                del++;
+            undo_save_delete(eol, del);
+            gb_delete(eol, del);
             sz = gb_content_len();
-            if (eol < sz && gb_char_at(eol) != ' ')
+            /* single separating space -- unless this line already ends in
+             * a blank, or either side of the join is empty (vi rules) */
+            ch = (eol > 0) ? gb_char_at(eol - 1) : '\n';
+            if (eol < sz && gb_char_at(eol) != '\n' &&
+                ch != ' ' && ch != '\t' && ch != '\n')
                 gb_insert(eol, &sp, 1);
             ed.modified = 1;
         }

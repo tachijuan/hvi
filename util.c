@@ -69,8 +69,9 @@ char *a, *b;
  * Returns a pointer to the byte just past the last digit written.
  * Handles values -32768..32767 (int range on Z80).
  * Maximum output length: 6 bytes ("-32768").
+ * Public: term.c uses it for ANSI escape-sequence numbers.
  */
-static char *fmt_int(buf, n)
+char *fmt_int(buf, n)
 char *buf;
 int   n;
 {
