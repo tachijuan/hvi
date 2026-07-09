@@ -626,7 +626,7 @@ char *msg;
     if (msg && *msg) {
         sss_p = msg;
     } else {
-        hvi_sprintf(lineno, "\"%s\"%s",
+        hvi_sprintf(lineno, 48, "\"%s\"%s",
             (int)(ed.filename[0] ? ed.filename : "[No Name]"),
             (int)(ed.modified ? " [+]" : ""),
             0, 0, 0);

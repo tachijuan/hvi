@@ -108,35 +108,36 @@ int   n;
  * ints are both 16 bits; char * arguments are safely passed as int and
  * cast back.  Callers must not supply more than 2 format specifiers.
  */
-void hvi_sprintf(buf, fmt, a0, a1)
+void hvi_sprintf(buf, size, fmt, a0, a1)
 char *buf, *fmt;
-int   a0, a1;
+int   size, a0, a1;
 {
-    char *out, *fp, *s;
+    char *out, *end, *fp, *s;
     int   args[2], ai;
 
     out = buf;
+    end = buf + size - 1;
     fp  = fmt;
     args[0] = a0; args[1] = a1;
     ai = 0;
 
     while (*fp) {
-        if (*fp != '%') { *out++ = *fp++; continue; }
+        if (*fp != '%') { if (out < end) *out++ = *fp++; else fp++; continue; }
         fp++;
         switch (*fp++) {
         case 's':
             s = (ai < 2) ? (char *)args[ai++] : (char *)0;
             if (!s) s = "";
-            while (*s) *out++ = *s++;
+            while (*s && out < end) *out++ = *s++;
             break;
         case 'd':
-            out = fmt_int(out, (ai < 2) ? args[ai++] : 0);
+            if (out + 6 <= end) out = fmt_int(out, (ai < 2) ? args[ai++] : 0);
             break;
         case 'c':
-            *out++ = (char)((ai < 2) ? args[ai++] : 0);
+            if (out < end) *out++ = (char)((ai < 2) ? args[ai++] : 0);
             break;
         case '%':
-            *out++ = '%';
+            if (out < end) *out++ = '%';
             break;
         default:
             break;

@@ -402,7 +402,7 @@ static void do_search_move()
             scr_update_after_move(sm_top);
         }
         if (ed.search_wrapped) {
-            hvi_sprintf(ed.status, "search hit %s, continuing at %s",
+            hvi_sprintf(ed.status, STATUS_MAX, "search hit %s, continuing at %s",
                 (int)(ed.search_dir == SEARCH_FWD ? "BOTTOM" : "TOP"),
                 (int)(ed.search_dir == SEARCH_FWD ? "TOP" : "BOTTOM"));
             scr_show_status(ed.status);
@@ -549,7 +549,7 @@ int c, count, size;
             term_clear();
             scr_status_invalidate();    /* status row was just erased */
             /* Re-establish scroll region after term_clear() homes the cursor. */
-            hvi_sprintf(buf, "\033[1;%dr", ed.scr_rows - 1, 0);
+            hvi_sprintf(buf, 16, "\033[1;%dr", ed.scr_rows - 1, 0);
             term_puts(buf);
             scr_refresh();
         }
@@ -877,7 +877,7 @@ int c;
         if (op == 'c' && c == 'w') me_cw = 1;
         endpoint = motion_endpoint(c, count, &linewise);
         if (endpoint < 0) {
-            hvi_sprintf(ed.status, "Unknown motion: %c", c, 0);
+            hvi_sprintf(ed.status, STATUS_MAX, "Unknown motion: %c", c, 0);
             scr_show_status(ed.status);
             return;
         }

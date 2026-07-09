@@ -237,7 +237,7 @@ void hvi_strcpy(/* char *d, char *s */);
 void hvi_strncpy(/* char *d, char *s, int n */);
 int  hvi_strcmp(/* char *a, char *b */);
 char *fmt_int(/* char *buf, int n -- returns ptr past last digit */);
-void hvi_sprintf(/* char *buf, char *fmt, int a0, a1 -- max 2 args */);
+void hvi_sprintf(/* char *buf, int size, char *fmt, int a0, a1 -- max 2 args */);
 
 /* ---- cpmio.c ---- */
 char  *hvi_malloc(/* int size */);

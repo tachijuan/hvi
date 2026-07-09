@@ -81,15 +81,15 @@ char *cmdtail;
         bdos_puts("HVI " HVI_VERSION " - Loading file...\r\n");
         partial = gb_load(ed.filename, (HFILE *)0);
         if (partial == 2) {
-            hvi_sprintf(ed.status,
+            hvi_sprintf(ed.status, STATUS_MAX,
                         "\"%s\" [Partial: %d chars, tail preserved]",
                         (int)ed.filename, gb_content_len());
         } else if (partial == 1) {
-            hvi_sprintf(ed.status, "\"%s\" %d chars",
+            hvi_sprintf(ed.status, STATUS_MAX, "\"%s\" %d chars",
                         (int)ed.filename, gb_content_len());
         } else {
             /* File does not exist -- start with empty buffer */
-            hvi_sprintf(ed.status, "\"%s\" [New File]",
+            hvi_sprintf(ed.status, STATUS_MAX, "\"%s\" [New File]",
                         (int)ed.filename, 0);
         }
         ed.modified = 0;

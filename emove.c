@@ -442,7 +442,7 @@ int op, from, to, linewise;
         save = yank_range(from, len, linewise);
         ed.cur_pos  = from;
         ed.cur_vrow = -1;
-        hvi_sprintf(ed.status, "%d char%s yanked",
+        hvi_sprintf(ed.status, STATUS_MAX, "%d char%s yanked",
                     save, (int)(save == 1 ? "" : "s"));
         scr_show_status(ed.status);
         return;
