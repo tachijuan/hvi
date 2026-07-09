@@ -422,35 +422,51 @@ static int yank_has_nl()
 /*
  * Shared put: after != 0 is 'p' (below the line / after the cursor),
  * 0 is 'P' (above the line / at the cursor).
+ * The undo record covers exactly the bytes inserted, including any
+ * newline added around the yank (py_start / py_total).
  */
-static int  py_pos, py_light;
+static int  py_pos, py_light, py_start, py_total;
 static char py_nl[1];
 
 static void put_yank(after)
 int after;
 {
     if (ed.yank_len <= 0) return;
-    undo_save_insert(ed.cur_pos, ed.yank_len);
     py_light = 0;
+    py_nl[0] = '\n';
+    py_total = ed.yank_len;
     if (ed.yank_line) {
         if (after) {
             py_pos = find_eol(ed.cur_pos);
             if (py_pos < gb_content_len()) py_pos++;
+            py_start = py_pos;
+            if (py_pos >= gb_content_len() && py_pos > 0 &&
+                gb_char_at(py_pos - 1) != '\n') {
+                /* Pasting below a last line that lacks its newline:
+                 * add one first so the yank starts on a fresh line
+                 * instead of being glued onto this one. */
+                gb_insert(py_pos, py_nl, 1);
+                py_pos++;
+                py_total++;
+            }
         } else {
             py_pos = find_bol(ed.cur_pos);
+            py_start = py_pos;
         }
         gb_insert(py_pos, ed.yank, ed.yank_len);
         if (ed.yank[ed.yank_len - 1] != '\n') {
-            py_nl[0] = '\n';
             gb_insert(py_pos + ed.yank_len, py_nl, 1);
+            py_total++;
         }
     } else {
         py_light = scr_line_is_1row(ed.cur_pos) && !yank_has_nl();
         py_pos = ed.cur_pos;
         if (after && py_pos < gb_content_len() && gb_char_at(py_pos) != '\n')
             py_pos++;
+        py_start = py_pos;
         gb_insert(py_pos, ed.yank, ed.yank_len);
     }
+    undo_save_insert(py_start, py_total);
     ed.cur_pos = py_pos;
     ed.modified = 1;
     scr_edit_end(py_light);

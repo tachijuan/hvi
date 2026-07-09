@@ -391,9 +391,9 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 
 ### 2.1.1 → 2.2
 
-Performance release (targeting 4 MHz Z80). No new commands; all 107 + 13
+Performance release (targeting 4 MHz Z80). No new commands; all 111 + 13
 tests in `tests/` pass (16 screen-scrape tests were added for the new
-minimal-redraw paths).
+minimal-redraw paths, plus 4 put/undo regression tests).
 
 The theme of this release is removing per-character function-call overhead:
 a compiled call on HI-TECH C costs ~150-200 T-states before any work is done,
@@ -465,6 +465,18 @@ the terminal, which dominate at 9600 baud):
 - **`:N` / `:$` skip the full-screen redraw** when the target line is
   already inside the viewport.
 
+Editing bug fixes:
+
+- **Linewise `p` below a final line that lacks its newline** glued the
+  pasted text onto that line (`ddp` on the last two lines of a file
+  without a trailing newline produced `threetwo`).  A newline is now
+  inserted first so the paste starts on a fresh line.
+- **`u` after `p`/`P` removed the wrong bytes.**  The undo record was
+  written before the insert position was known, so it pointed at the
+  cursor instead of the actual paste (which for linewise `p` starts on
+  the next line, and may include an added newline).  The record now
+  covers exactly the inserted span.
+
 Screen bug fixes (both caught by the 16 new screen-scrape tests):
 
 - **`:N` and `:$` left the cursor-row cache stale**, so the terminal cursor
@@ -497,8 +509,8 @@ work added; every byte saved also enlarges the gap buffer, since
   (`search hit …`, the two `Modified buffer` hints); the temp-file name
   literals are stored once.
 
-Binary size: 242 CP/M records (~31K) — the speed and redraw work above
-plus 16 new tests cost a net 6 records over 2.1.1's 236.
+Binary size: 243 CP/M records (~31K) — the speed and redraw work above
+cost a net 7 records over 2.1.1's 236.
 
 ### 2.1 → 2.1.1
 

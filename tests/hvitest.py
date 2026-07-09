@@ -348,6 +348,18 @@ def main():
     rm_file("T4.TXT")
     sess.close(); sess = Session()
 
+    # ---------- put/undo regressions ----------
+    # linewise p below a last line that lacks its trailing newline must
+    # start a new line, not glue onto the last one
+    file_test(sess, "ddp at EOF no trailing NL", "one\ntwo\nthree", "jddp",
+              "one\nthree\ntwo\n")
+    file_test(sess, "ddp with trailing NL", "one\ntwo\nthree\n", "jddp",
+              "one\nthree\ntwo\n")
+    # undo of a put must remove exactly the pasted bytes
+    file_test(sess, "undo linewise p", "one\ntwo\nthree\n", "jddpu",
+              "one\nthree\n")
+    file_test(sess, "undo charwise p", "abcdef\n", "2ylpu", "abcdef\n")
+
     # ---------- screen checks ----------
     rm_file("T.TXT"); put_file("T.TXT", BASIC)
     sess.start_hvi("T.TXT")
