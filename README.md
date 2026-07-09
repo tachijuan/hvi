@@ -410,8 +410,8 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 
 ### 2.2 → 2.3
 
-Feature release: **marks**. All 125 + 13 tests in `tests/` pass (9 mark
-tests were added).
+Feature release: **marks**. All 128 + 13 tests in `tests/` pass (9 mark
+tests and 3 status-overflow regression tests were added).
 
 - **New commands `m{a-z}`, `` `{a-z} `` and `` `` ``.** `m` sets one of 26
   named marks at the cursor; backtick jumps back to the exact position
@@ -445,8 +445,19 @@ non-hot path):
   recording, and the status-row clear; duplicate status format strings
   were merged across modules.
 
-Binary size: 238 CP/M records (~30K) — the mark feature cost 4 records
-over 2.2's 240, and the size pass bought back 6.
+Security/robustness fix (found in code review): status messages that
+echo ex-command input (`Unknown command: %s`, `Cannot open: %s`,
+`"%s" [New File]`, ...) could overflow the 128-byte status buffer into
+the adjacent editor state when given a 120+ character command or
+filename, corrupting cursor and dot-repeat state. `hvi_sprintf` now
+caps each `%s` expansion so the longest fixed prefix plus one
+user-supplied string always fits `STATUS_MAX`; real CP/M filenames
+(~14 chars) are never affected — only the on-screen echo of
+over-long junk input is truncated.
+
+Binary size: 239 CP/M records (~30K) — the mark feature cost 4 records
+over 2.2's 240, the size pass bought back 6, and the `%s` bounds check
+cost 1.
 
 ### 2.1.1 → 2.2
 

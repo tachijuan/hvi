@@ -546,6 +546,30 @@ def main():
     check("file EOF append", ok and get_file("T.TXT") == "one\ntwo\nthreeXY\n",
           "got %r" % get_file("T.TXT"))
 
+    # a longer-than-STATUS_MAX message must not overflow ed.status into
+    # the adjacent editor state (hvi_sprintf caps each %s expansion).
+    # Pre-fix, the overflow corrupted want_col, so the trailing j landed
+    # at the wrong column instead of column 0.
+    rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\n")
+    sess.start_hvi("T.TXT")
+    # (the >80-char echo and message wrap the emulated screen, so the
+    #  message may land on any row -- search them all)
+    sess.keys(":" + "z" * 120 + "\r")      # "Unknown command: zzz..."
+    lines = sess.screen_lines()
+    check("screen long ex command",
+          any("Unknown command:" in (l or "") for l in lines),
+          "rows=%r" % lines[20:])
+    sess.keys(":r " + "y" * 120 + "\r")    # "Cannot open: yyy..."
+    lines = sess.screen_lines()
+    check("screen long :r filename",
+          any("Cannot open:" in (l or "") for l in lines),
+          "rows=%r" % lines[20:])
+    sess.keys("jrX")                       # want_col must still be 0
+    ok = sess.quit_expect_prompt(":wq\r")
+    check("file after long ex command",
+          ok and get_file("T.TXT") == "one\nXwo\n",
+          "got %r" % get_file("T.TXT"))
+
     # marks: jumping to a deleted or never-set mark reports an error
     rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\nthree\n")
     sess.start_hvi("T.TXT")

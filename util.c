@@ -107,13 +107,24 @@ int   n;
  * costs a push at all ~17 call sites).  On Z80/HI-TECH C, pointers and
  * ints are both 16 bits; char * arguments are safely passed as int and
  * cast back.  Callers must not supply more than 2 format specifiers.
+ *
+ * Each %s expansion is capped at SPRINTF_SMAX bytes: %s arguments can
+ * come from the ex command line (up to CMD_MAX-1 = 127 chars -- long
+ * filenames, unknown commands) while the destination is usually the
+ * STATUS_MAX (128) byte ed.status buffer, so an unbounded copy could
+ * run past it into the adjacent editor state.  The cap keeps the
+ * longest fixed prefix ("Unknown command: ", 17 chars) plus one %s
+ * plus the NUL inside STATUS_MAX.  Real CP/M filenames are ~14 chars,
+ * so the cap only ever truncates the on-screen echo of junk input.
  */
+#define SPRINTF_SMAX (STATUS_MAX - 28)
+
 void hvi_sprintf(buf, fmt, a0, a1)
 char *buf, *fmt;
 int   a0, a1;
 {
     char *out, *fp, *s;
-    int   args[2], ai;
+    int   args[2], ai, sn;
 
     out = buf;
     fp  = fmt;
@@ -127,7 +138,8 @@ int   a0, a1;
         case 's':
             s = (ai < 2) ? (char *)args[ai++] : (char *)0;
             if (!s) s = "";
-            while (*s) *out++ = *s++;
+            sn = SPRINTF_SMAX;
+            while (*s && sn-- > 0) *out++ = *s++;
             break;
         case 'd':
             out = fmt_int(out, (ai < 2) ? args[ai++] : 0);
