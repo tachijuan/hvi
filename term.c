@@ -33,6 +33,7 @@
 extern Editor ed;
 
 extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
+extern void con_write();  /* block console output via BDOS 6 (cstart.as) */
 
 /* ------------------------------------------------------------------ */
 /*  Output buffer                                                       */
@@ -41,7 +42,6 @@ extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
 #define OUT_BUF_SZ  256
 static char s_outbuf[OUT_BUF_SZ];
 static int  s_outpos;
-static int  s_flush_i;  /* loop counter for term_flush -- static to avoid IX-relative locals */
 static char s_rn_buf[8];           /* raw_num scratch for fmt_int */
 static int  s_tg_dr, s_tg_i;       /* term_goto statics -- avoid IX-relative locals */
 
@@ -80,15 +80,13 @@ int n;
  * Flush the output buffer to stdout.
  * Called by term_getch() before blocking; also exported so callers can
  * flush at logical checkpoints.
+ * con_write (cstart.as) loops CALL 5 in assembly using BDOS function 6,
+ * replacing one C-level bdos_disk(2,c) call per byte.
  */
 void term_flush()
 {
     if (s_outpos > 0) {
-        s_flush_i = 0;
-        while (s_flush_i < s_outpos) {
-            bdos_disk(2, (int)(unsigned char)s_outbuf[s_flush_i]);
-            s_flush_i++;
-        }
+        con_write(s_outbuf, s_outpos);
         s_outpos = 0;
     }
 }
@@ -394,16 +392,10 @@ int *cols;
     s_tgs_r  = DEF_ROWS;     /* default in case of timeout */
     s_tgs_c  = DEF_COLS;
 
-    /* Step 1: move cursor to 999;999 */
-    bdos_disk(2, 0x1B); bdos_disk(2, '[');
-    bdos_disk(2, '9'); bdos_disk(2, '9'); bdos_disk(2, '9');
-    bdos_disk(2, ';');
-    bdos_disk(2, '9'); bdos_disk(2, '9'); bdos_disk(2, '9');
-    bdos_disk(2, 'H');
-
-    /* Step 2: request cursor position */
-    bdos_disk(2, 0x1B); bdos_disk(2, '[');
-    bdos_disk(2, '6'); bdos_disk(2, 'n');
+    /* Steps 1+2: park the cursor at the extreme corner (the terminal
+     * clamps to its real size), then request a cursor-position report.
+     * One block write replaces 13 individual BDOS calls. */
+    con_write("\033[999;999H\033[6n", 14);
 
     /* Step 3a: wait for ESC */
     s_tgs_wait = 30000;

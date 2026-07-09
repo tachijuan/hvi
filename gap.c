@@ -22,6 +22,14 @@ extern int bdos_disk();
  * than the compiled loop -- this runs on every gap move). */
 extern void gb_memmove(/* char *dst, char *src, int len */);
 
+/* CPIR newline counter over a raw memory range; assembly in cstart.as
+ * (~8x faster than a gb_char_at loop -- backs gb_count_nl below). */
+extern int gb_cntnl(/* char *p, int len */);
+
+/* Temp-file names: one copy of each literal, passed around directly. */
+static char swp_name[] = "HVISWP.TMP";
+static char tmp_name[] = "HVITMP.TMP";
+
 /*
  * Initialise an empty gap buffer.
  *
@@ -116,7 +124,12 @@ int pos;
 
 /*
  * Insert len bytes from text at logical position pos.
- * Returns 1 on success, 0 if the buffer is full (gap exhausted).
+ * Returns 1 on success, 0 if the buffer is full (gap too small);
+ * on failure nothing is inserted (all-or-nothing).
+ *
+ * Bulk operation: one gap move plus one LDIR block copy, instead of a
+ * gb_move_gap call per character (a 1 KB paste previously made ~3000
+ * function calls).
  *
  * All locals static: gb_move_gap is a function call that may corrupt
  * IX-relative auto variables under HI-TECH C -O.
@@ -129,6 +142,10 @@ int   pos;
 char *text;
 int   len;
 {
+    if (len <= 0) return 1;
+    if (ed.gb.gend - ed.gb.gstart < len)
+        return 0;   /* buffer is pre-allocated; cannot grow */
+
     gbi_nl_added = 0;
     for (gbi_i = 0; gbi_i < len; gbi_i++) {
         if (text[gbi_i] == '\n') gbi_nl_added++;
@@ -147,24 +164,75 @@ int   len;
         ed.cur_vrow = -1;
     }
 
-    for (gbi_i = 0; gbi_i < len; gbi_i++) {
-        if (ed.gb.gend - ed.gb.gstart < 1)
-            return 0;   /* buffer is pre-allocated; cannot grow */
-        gb_move_gap(pos + gbi_i);
-        ed.gb.buf[ed.gb.gstart] = text[gbi_i];
-        ed.gb.gstart++;
-    }
+    gb_move_gap(pos);
+    gb_memmove(ed.gb.buf + ed.gb.gstart, text, len);
+    ed.gb.gstart += len;
     return 1;
+}
+
+/*
+ * Copy len bytes of logical content starting at pos into dst.
+ * Bulk replacement for per-character gb_char_at loops (yank, undo and
+ * dot-text capture): at most two LDIR block copies, one per gap side.
+ * The range is clamped to the buffer content.
+ */
+static int gco_seg;
+
+void gb_copy_out(dst, pos, len)
+char *dst;
+int   pos, len;
+{
+    gco_seg = gb_content_len();
+    if (pos < 0 || pos >= gco_seg || len <= 0) return;
+    if (pos + len > gco_seg) len = gco_seg - pos;
+
+    if (pos < ed.gb.gstart) {
+        gco_seg = ed.gb.gstart - pos;
+        if (gco_seg > len) gco_seg = len;
+        gb_memmove(dst, ed.gb.buf + pos, gco_seg);
+        dst += gco_seg;
+        pos += gco_seg;
+        len -= gco_seg;
+    }
+    if (len > 0)
+        gb_memmove(dst, ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos, len);
+}
+
+/*
+ * Count '\n' characters in the logical range [pos, pos+len).
+ * Splits the range at the gap and runs the CPIR scanner from cstart.as
+ * on each raw segment.  The range is clamped to the buffer content.
+ */
+static int cnl_n, cnl_seg;
+
+int gb_count_nl(pos, len)
+int pos, len;
+{
+    cnl_n = gb_content_len();
+    if (pos < 0) { len += pos; pos = 0; }
+    if (pos >= cnl_n || len <= 0) return 0;
+    if (pos + len > cnl_n) len = cnl_n - pos;
+
+    cnl_n = 0;
+    if (pos < ed.gb.gstart) {
+        cnl_seg = ed.gb.gstart - pos;
+        if (cnl_seg > len) cnl_seg = len;
+        cnl_n = gb_cntnl(ed.gb.buf + pos, cnl_seg);
+        pos += cnl_seg;
+        len -= cnl_seg;
+    }
+    if (len > 0)
+        cnl_n += gb_cntnl(ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos, len);
+    return cnl_n;
 }
 
 /*
  * Delete len bytes starting at logical position pos.
  * Returns 1 on success.
  *
- * All locals static: gb_char_at/gb_move_gap are function calls that may
+ * All locals static: gb_count_nl/gb_move_gap are function calls that may
  * corrupt IX-relative auto variables under HI-TECH C -O.
  */
-static int gbd_i;
 static int gbd_clen;
 static int gbd_nl_del;
 
@@ -172,16 +240,13 @@ int gb_delete(pos, len)
 int pos;
 int len;
 {
-    gbd_nl_del = 0;
     gbd_clen = gb_content_len();
     if (pos < 0 || pos >= gbd_clen)
         return 0;
     if (pos + len > gbd_clen)
         len = gbd_clen - pos;
 
-    for (gbd_i = 0; gbd_i < len; gbd_i++) {
-        if (gb_char_at(pos + gbd_i) == '\n') gbd_nl_del++;
-    }
+    gbd_nl_del = gb_count_nl(pos, len);
 
     if (ed.line_cnt_cached > 0) ed.line_cnt_cached -= gbd_nl_del;
 
@@ -210,6 +275,7 @@ int len;
  */
 static void show_loading()
 {
+    scr_status_invalidate();
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
     term_reverse();
@@ -229,9 +295,8 @@ static void show_loading()
  * (BDOS functions 15/20/26 do not guarantee IX preservation on CP/M). */
 static HFILE *s_gbf_f;
 static char  *s_gbf_fn;
-static int    gbf_c, gbf_prev_cr, gbf_full;
+static int    gbf_c, gbf_prev_cr, gbf_limit;
 static long   gbf_pos;
-static char   gbf_tmp[1];
 
 static int gb_fill(f, filename)
 HFILE *f;
@@ -239,12 +304,23 @@ char  *filename;
 {
     s_gbf_f  = f;
     s_gbf_fn = filename;
+
+    /* Direct append: both callers reset the buffer first, so the gap
+     * spans [gstart, size) throughout the fill and content length equals
+     * gstart.  Each byte is stored with one array write instead of a
+     * gb_insert call per character (which cost ~6 function calls/byte).
+     * The display caches gb_insert would have maintained are simply
+     * invalidated up front. */
+    ed.cur_vrow        = -1;
+    ed.cur_line_pos    = -1;
+    ed.line_cnt_cached = 0;
+    gbf_limit = ed.gb.size - GAP_MIN;
+
     gbf_prev_cr = 0;
     while ((gbf_c = hvi_fgetc(s_gbf_f)) != HEOF) {
         if (gbf_c == 0x0D) { gbf_prev_cr = 1; continue; }
         if (gbf_c == 0x1A) break;
-        gbf_full = (gb_content_len() >= ed.gb.size - GAP_MIN);
-        if (gbf_full) {
+        if (ed.gb.gstart >= gbf_limit) {
             gbf_pos = hvi_ftell(s_gbf_f) - 1L;
             if (gbf_c == 0x0A && gbf_prev_cr) gbf_pos -= 1L;
             ed.tail_offset = gbf_pos;
@@ -256,8 +332,7 @@ char  *filename;
             return 2;
         }
         gbf_prev_cr = 0;
-        gbf_tmp[0] = (char)gbf_c;
-        gb_insert(gb_content_len(), gbf_tmp, 1);
+        ed.gb.buf[ed.gb.gstart++] = (char)gbf_c;
     }
     hvi_fclose(s_gbf_f);
     return 1;
@@ -303,8 +378,6 @@ HFILE *fp;
  * All locals static: gb_char_at/gb_delete are function calls and may
  * corrupt IX-relative auto variables under HI-TECH C -O.
  */
-static int  gdh_i;
-static int  gdh_c;
 static int  gdh_discard;
 static long gdh_new_win;
 
@@ -318,11 +391,8 @@ int n;
 
     /* Each '\n' in the buffer was '\r\n' in the file, so count extra bytes */
     gdh_new_win = ed.win_start;
-    for (gdh_i = 0; gdh_i < gdh_discard; gdh_i++) {
-        gdh_c = gb_char_at(gdh_i);
-        if (gdh_c == '\n') gdh_new_win++;
-        gdh_new_win++;
-    }
+    gdh_new_win += (long)gdh_discard;
+    gdh_new_win += (long)gb_count_nl(0, gdh_discard);
     gb_delete(0, gdh_discard);
     ed.win_start = gdh_new_win;
     ed.cur_pos  -= gdh_discard;
@@ -345,7 +415,8 @@ static int    glm_n;       /* cache param: BDOS trashes HL which may hold n */
 static int    glm_c;
 static int    glm_loaded;
 static int    glm_need;
-static char   glm_tmp[1];
+static int    glm_limit;
+static int    glm_nl;
 
 int gb_load_more(n)
 int n;
@@ -364,14 +435,24 @@ int n;
     if (!glm_f) return 0;
     if (hvi_fseek(glm_f, ed.tail_offset, 0) != 0) { hvi_fclose(glm_f); return 0; }
 
+    /* Move the gap to the content end once, then append bytes directly
+     * (content length == gstart while the gap sits at the end); newlines
+     * are tallied so the line-count cache stays valid. */
+    gb_move_gap(gb_content_len());
+    glm_limit  = ed.gb.size - GAP_MIN;
     glm_loaded = 0;
-    while (glm_loaded < glm_n && gb_content_len() < ed.gb.size - GAP_MIN) {
+    glm_nl     = 0;
+    while (glm_loaded < glm_n && ed.gb.gstart < glm_limit) {
         glm_c = hvi_fgetc(glm_f);
         if (glm_c == HEOF || glm_c == 0x1A) { ed.tail_offset = 0L; break; }
         if (glm_c == 0x0D) continue;
-        glm_tmp[0] = (char)glm_c;
-        if (!gb_insert(gb_content_len(), glm_tmp, 1)) break;
+        if (glm_c == '\n') glm_nl++;
+        ed.gb.buf[ed.gb.gstart++] = (char)glm_c;
         glm_loaded++;
+    }
+    if (glm_loaded > 0) {
+        if (ed.line_cnt_cached > 0) ed.line_cnt_cached += glm_nl;
+        ed.cur_vrow = -1;
     }
     if (ed.tail_offset != 0L)
         ed.tail_offset = hvi_ftell(glm_f);
@@ -396,7 +477,6 @@ int n;
  */
 static int   s_reload_skip_flush;
 static HFILE *grf_f;
-static char   grf_swp[12];
 static long   grf_offset;   /* cache param: BDOS (fopen/save) trashes HL:DE */
 
 int gb_reload_from(offset)
@@ -409,8 +489,7 @@ long offset;
 
     /* Flush unsaved edits before discarding the buffer. */
     if (ed.modified && !s_reload_skip_flush) {
-        hvi_strcpy(grf_swp, "HVISWP.TMP");
-        if (!gb_save(grf_swp)) { s_reload_skip_flush = 0; return 0; }
+        if (!gb_save(swp_name)) { s_reload_skip_flush = 0; return 0; }
     }
     s_reload_skip_flush = 0;
 
@@ -490,26 +569,36 @@ HFILE *f;
 
 /*
  * Write in-memory buffer to f (LF -> CR+LF); return byte count written.
- * All locals static: gb_char_at/hvi_fputc are function calls.
+ * Walks the two raw gap-buffer segments with a pointer instead of one
+ * gb_char_at call per byte -- halves the per-byte call count on :w.
+ * All locals static: hvi_fputc is a function call (BDOS inside).
  */
 static HFILE *gwb_f;       /* cache param: BDOS trashes HL which may hold f */
 static long   gwb_written;
-static int    gwb_i;
-static int    gwb_len;
 static int    gwb_c;
+static char  *gwb_p, *gwb_end;
+
+static void gwb_seg(p, end)
+char *p, *end;
+{
+    gwb_p   = p;           /* cache params before any BDOS call */
+    gwb_end = end;
+    while (gwb_p < gwb_end) {
+        gwb_c = (int)(unsigned char)*gwb_p;
+        if (gwb_c == '\n') { hvi_fputc(0x0D, gwb_f); gwb_written++; }
+        hvi_fputc(gwb_c, gwb_f);
+        gwb_written++;
+        gwb_p++;
+    }
+}
 
 static long gb_write_buf(f)
 HFILE *f;
 {
     gwb_f = f;             /* cache before any BDOS call */
     gwb_written = ed.win_start;
-    gwb_len = gb_content_len();
-    for (gwb_i = 0; gwb_i < gwb_len; gwb_i++) {
-        gwb_c = gb_char_at(gwb_i);
-        if (gwb_c == '\n') { hvi_fputc(0x0D, gwb_f); gwb_written++; }
-        hvi_fputc(gwb_c, gwb_f);
-        gwb_written++;
-    }
+    gwb_seg(ed.gb.buf, ed.gb.buf + ed.gb.gstart);
+    gwb_seg(ed.gb.buf + ed.gb.gend, ed.gb.buf + ed.gb.size);
     return gwb_written;
 }
 
@@ -548,7 +637,6 @@ static HFILE *gsv_f;
 static int    gsv_using_tmp;
 static int    gsv_len;
 static long   gsv_new_tail;
-static char   gsv_tmp_name[16];
 static char   gsv_nl[1];
 
 int gb_save(filename)
@@ -567,8 +655,7 @@ char *filename;
     gsv_using_tmp = 0;
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {
-        hvi_strcpy(gsv_tmp_name, "HVITMP.TMP");
-        gsv_f = hvi_fopen(gsv_tmp_name, "wb");
+        gsv_f = hvi_fopen(tmp_name, "wb");
         gsv_using_tmp = 1;
     } else {
         gsv_f = hvi_fopen(gsv_fn, "wb");
@@ -583,7 +670,7 @@ char *filename;
 
     if (gsv_using_tmp) {
         hvi_remove(gsv_fn);
-        hvi_rename(gsv_tmp_name, gsv_fn);
+        hvi_rename(tmp_name, gsv_fn);
     }
 
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L)) {
@@ -604,15 +691,12 @@ char *filename;
  * All locals static to survive BDOS/function calls under HI-TECH C -O.
  */
 static long gmr_cursor_fp;
-static int  gmr_i;
 
 static long gb_cursor_file_pos()
 {
     gmr_cursor_fp = ed.win_start;
-    for (gmr_i = 0; gmr_i < ed.cur_pos; gmr_i++) {
-        if (gb_char_at(gmr_i) == '\n') gmr_cursor_fp++;
-        gmr_cursor_fp++;
-    }
+    gmr_cursor_fp += (long)ed.cur_pos;
+    gmr_cursor_fp += (long)gb_count_nl(0, ed.cur_pos);
     return gmr_cursor_fp;
 }
 
@@ -633,18 +717,16 @@ static long gmr_counted;
 static int  gmr_p;
 static int  gmr_len;
 static int  gmr_c2;
-static char gmr_swp[12];
 
 int gb_make_room()
 {
     gmr_cfp = gb_cursor_file_pos();
 
     /* Save the complete file to the swap. */
-    hvi_strcpy(gmr_swp, "HVISWP.TMP");
-    if (!gb_save(gmr_swp)) return 0;
+    if (!gb_save(swp_name)) return 0;
 
     /* Make the swap the source for subsequent head/tail reads. */
-    hvi_strcpy(ed.tail_file, gmr_swp);
+    hvi_strcpy(ed.tail_file, swp_name);
     ed.win_start   = 0L;
     ed.tail_offset = 0L;
 
@@ -793,7 +875,7 @@ int n;
         else
             gg_win_off = 0L;
         gb_reload_from(gg_win_off);
-        ed.cur_pos = scr_line_start(scr_line_count() - 1);
+        ed.cur_pos = scr_last_line_start();
         return 0;
     }
 

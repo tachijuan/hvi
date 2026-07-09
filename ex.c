@@ -37,6 +37,7 @@ char *cmd;
     /* :N  -- go to line N */
     if (*p >= '0' && *p <= '9') {
         int lnum = 0;
+        int old_top;
         while (*p >= '0' && *p <= '9')
             lnum = lnum * 10 + (*p++ - '0');
         if (lnum < 1) lnum = 1;
@@ -47,22 +48,30 @@ char *cmd;
             ed.cur_pos = scr_line_start(lnum);
             ed.want_col = 0;
         }
+        ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
+        old_top = ed.top_pos;
         scr_scroll_to_cursor();
+        if (ed.top_pos == old_top)
+            return 0;       /* viewport unchanged: no text redraw needed */
         return 1;
     }
 
     /* :$ -- go to last line (loads entire tail for large files) */
     if (*p == '$') {
-        int total, clen;
+        int clen;
+        int old_top;
         while (ed.tail_offset > 0L) {
             clen = gb_content_len();
             if (clen > 0) ed.cur_pos = clen - 1;
             if (gb_load_more(LOAD_CHUNK) == 0) break;
         }
-        total = scr_line_count();
-        ed.cur_pos = scr_line_start(total - 1);
+        ed.cur_pos = scr_last_line_start();
         ed.want_col = 0;
+        ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
+        old_top = ed.top_pos;
         scr_scroll_to_cursor();
+        if (ed.top_pos == old_top && ed.win_start == 0L && ed.tail_offset == 0L)
+            return 0;       /* viewport unchanged: no text redraw needed */
         return 1;
     }
 
@@ -97,7 +106,7 @@ char *cmd;
 
         f = hvi_fopen(fname, "rb");
         if (!f) {
-            hvi_sprintf(ed.status, "Cannot open: %s", (int)fname, 0, 0, 0, 0);
+            hvi_sprintf(ed.status, "Cannot open: %s", (int)fname, 0);
             return 0;
         }
         old_len = gb_content_len();
@@ -110,7 +119,7 @@ char *cmd;
         hvi_fclose(f);
         new_len = gb_content_len();
         ed.modified = 1;
-        hvi_sprintf(ed.status, "\"%s\" %d chars", (int)fname, new_len - old_len, 0, 0, 0);
+        hvi_sprintf(ed.status, "\"%s\" %d chars", (int)fname, new_len - old_len);
         return 1;
     }
 
@@ -125,7 +134,8 @@ char *cmd;
             return 0;
         }
         if (ed.modified && !force) {
-            hvi_strcpy(ed.status, "Modified buffer (use :e! to discard)");
+            hvi_sprintf(ed.status, "Modified buffer (use :%c! to discard)",
+                        'e', 0);
             return 0;
         }
 
@@ -156,11 +166,11 @@ char *cmd;
 
         rc = gb_load(fname, (HFILE *)0);
         if (rc == 0)
-            hvi_sprintf(ed.status, "\"%s\" [New File]", (int)fname, 0, 0, 0, 0);
+            hvi_sprintf(ed.status, "\"%s\" [New File]", (int)fname, 0);
         else if (rc == 2)
-            hvi_sprintf(ed.status, "\"%s\" (partial load)", (int)fname, 0, 0, 0, 0);
+            hvi_sprintf(ed.status, "\"%s\" (partial load)", (int)fname, 0);
         else
-            hvi_sprintf(ed.status, "\"%s\" loaded", (int)fname, 0, 0, 0, 0);
+            hvi_sprintf(ed.status, "\"%s\" loaded", (int)fname, 0);
         return 1;
     }
 
@@ -186,19 +196,20 @@ char *cmd;
         }
         ok = gb_save(dest);
         if (!ok) {
-            hvi_sprintf(ed.status, "Cannot write: %s", (int)dest, 0, 0, 0, 0);
+            hvi_sprintf(ed.status, "Cannot write: %s", (int)dest, 0);
             return 0;
         }
         /* If saved to a new name, record it */
         if (*p)
             hvi_strncpy(ed.filename, p, PATH_MAX - 1);
         ed.modified = 0;
-        hvi_sprintf(ed.status, "\"%s\" written", (int)ed.filename, 0, 0, 0, 0);
+        hvi_sprintf(ed.status, "\"%s\" written", (int)ed.filename, 0);
     }
 
     if (do_quit) {
         if (ed.modified && !force && !do_write) {
-            hvi_strcpy(ed.status, "Modified buffer (use :q! to discard)");
+            hvi_sprintf(ed.status, "Modified buffer (use :%c! to discard)",
+                        'q', 0);
             return 0;
         }
         ed.quit = 1;
@@ -206,7 +217,7 @@ char *cmd;
     }
 
     if (!do_write && !do_quit) {
-        hvi_sprintf(ed.status, "Unknown command: %s", (int)cmd, 0, 0, 0, 0);
+        hvi_sprintf(ed.status, "Unknown command: %s", (int)cmd, 0);
     }
     return 0;
 }

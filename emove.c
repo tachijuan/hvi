@@ -40,16 +40,13 @@ int c;
 void undo_save_delete(pos, len)
 int pos, len;
 {
-    static int i, save, c;
+    static int save;
     save = (len > UNDO_MAX) ? UNDO_MAX : len;
     ed.undo.type      = UNDO_DELETE;
     ed.undo.pos       = pos;
     ed.undo.len       = len;
     ed.undo.was_clean = !ed.modified;
-    for (i = 0; i < save; i++) {
-        c = gb_char_at(pos + i);
-        ed.undo.text[i] = (c < 0) ? 0 : (char)c;
-    }
+    gb_copy_out(ed.undo.text, pos, save);
     if (save < UNDO_MAX)
         ed.undo.text[save] = '\0';
 }
@@ -386,34 +383,39 @@ int *linewise;
             return sol;
         }
 
+    /* Linewise motions walk with find_bol/find_eol -- O(range covered)
+     * instead of the old O(buffer) scr_pos_line/scr_line_start scans. */
     case 'j':
         *linewise = 1;
         {
-            int cur_line = scr_pos_line(pos);
-            int last     = scr_line_count() - 1;
-            int end_line = cur_line + count;
-            if (end_line > last) end_line = last;
-            ed.cur_pos = scr_line_start(cur_line);
-            return scr_line_start(end_line + 1);
+            int to = pos;
+            n = count + 1;      /* this line plus count lines below */
+            while (n-- > 0) {
+                to = find_eol(to);
+                if (to >= size) break;
+                to++;           /* include the newline */
+            }
+            ed.cur_pos = find_bol(pos);
+            return to;
         }
 
     case 'k':
         *linewise = 1;
         {
-            int cur_line = scr_pos_line(pos);
-            int start_line = cur_line - count;
-            if (start_line < 0) start_line = 0;
-            ed.cur_pos = scr_line_start(start_line);
-            return scr_line_start(cur_line + 1);
+            int from = find_bol(pos);
+            int to   = find_eol(pos);
+            if (to < size) to++;
+            n = count;
+            while (n-- > 0 && from > 0)
+                from = find_bol(from - 1);
+            ed.cur_pos = from;
+            return to;
         }
 
     case 'G':
         *linewise = 1;
-        {
-            int cur_line = scr_pos_line(pos);
-            ed.cur_pos   = scr_line_start(cur_line);
-            return size;
-        }
+        ed.cur_pos = find_bol(pos);
+        return size;
 
     default:
         return -1;
@@ -424,42 +426,47 @@ int *linewise;
 /*  Operator application                                                */
 /* ------------------------------------------------------------------ */
 
+/* Copy [from, from+len) into the yank buffer (clamped); returns count. */
+static int yr_save;
+
+static int yank_range(from, len, linewise)
+int from, len, linewise;
+{
+    yr_save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
+    gb_copy_out(ed.yank, from, yr_save);
+    ed.yank[yr_save] = '\0';
+    ed.yank_len  = yr_save;
+    ed.yank_line = linewise;
+    return yr_save;
+}
+
 void apply_op(op, from, to, linewise)
 int op, from, to, linewise;
 {
-    static int len, i, save, c, t, size;
+    static int len, save, t, size, light;
 
     if (from > to) { t = from; from = to; to = t; }
     len = to - from;
     if (len <= 0 && op != 'c') return;
 
+    /* Charwise edit confined to a single-row line: repaint one row
+     * instead of cursor-to-bottom (checked before the delete). */
+    light = !linewise && scr_line_is_1row(from) &&
+            gb_count_nl(from, len) == 0;
+
     if (op == 'y') {
-        save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
-        for (i = 0; i < save; i++) {
-            c = gb_char_at(from + i);
-            ed.yank[i] = (c < 0) ? 0 : (char)c;
-        }
-        ed.yank[save] = '\0';
-        ed.yank_len   = save;
-        ed.yank_line  = linewise;
-        ed.cur_pos    = from;
-        ed.cur_vrow   = -1;
+        save = yank_range(from, len, linewise);
+        ed.cur_pos  = from;
+        ed.cur_vrow = -1;
         hvi_sprintf(ed.status, "%d char%s yanked",
-                    save, (int)(save == 1 ? "" : "s"), 0, 0, 0);
+                    save, (int)(save == 1 ? "" : "s"));
         scr_show_status(ed.status);
         return;
     }
 
     if (len > 0) {
         undo_save_delete(from, len);
-        save = (len >= YANK_MAX) ? YANK_MAX - 1 : len;
-        for (i = 0; i < save; i++) {
-            c = gb_char_at(from + i);
-            ed.yank[i] = (c < 0) ? 0 : (char)c;
-        }
-        ed.yank[save] = '\0';
-        ed.yank_len   = save;
-        ed.yank_line  = linewise;
+        yank_range(from, len, linewise);
         gb_delete(from, len);
         ed.modified = 1;
     }
@@ -475,7 +482,7 @@ int op, from, to, linewise;
                 ed.cur_pos--;
     }
 
-    scr_after_edit();
+    scr_edit_end(light);
 
     if (op == 'c') {
         undo_save_insert(ed.cur_pos, 0);
@@ -488,13 +495,6 @@ int op, from, to, linewise;
 /*  Search                                                              */
 /* ------------------------------------------------------------------ */
 
-static int to_lower(c)
-int c;
-{
-    if (c >= 'A' && c <= 'Z') return c - 'A' + 'a';
-    return c;
-}
-
 int read_pattern(prompt)
 int prompt;
 {
@@ -502,6 +502,7 @@ int prompt;
     static char *pat;
     pat = ed.search;
 
+    scr_status_invalidate();
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
     term_putch(prompt);
@@ -520,7 +521,9 @@ int prompt;
             continue;
         }
         if (c >= 0x20 && c < 0x7F && len < SEARCH_MAX - 1) {
-            pat[len++] = (char)c;
+            /* Store pre-lowered: the search is case-insensitive, so the
+             * inner loops need no per-comparison pattern lowering. */
+            pat[len++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
             term_putch(c);
         }
     }
@@ -536,7 +539,7 @@ int prompt;
 int do_search_from(start_pos)
 int start_pos;
 {
-    static int size, plen, i, j, match, dir, pos, sp;
+    static int size, plen, i, j, match, dir, pos, sp, mc;
     size = gb_content_len();
     plen = hvi_strlen(ed.search);
     dir  = ed.search_dir;
@@ -553,12 +556,14 @@ int start_pos;
             pos = sp - i + size;
             if (pos >= size) pos -= size;
         }
+        /* Pattern is stored pre-lowered (read_pattern); lower the buffer
+         * character inline -- no function calls in the compare. */
         match = 1;
-        for (j = 0; j < plen && match; j++) {
-            if ((pos + j) >= size ||
-                to_lower(gb_char_at(pos + j)) !=
-                    to_lower((unsigned char)ed.search[j]))
-                match = 0;
+        for (j = 0; j < plen; j++) {
+            if (pos + j >= size) { match = 0; break; }
+            mc = gb_char_at(pos + j);
+            if (mc >= 'A' && mc <= 'Z') mc += 32;
+            if (mc != (int)(unsigned char)ed.search[j]) { match = 0; break; }
         }
         if (match) {
             /* pos == sp means we went all the way around (i == size on the
@@ -595,6 +600,7 @@ static int    sif_dir;
 static int    sif_plen;
 static int    sif_j;
 static int    sif_c;
+static int    sif_cl;      /* current char, lowered */
 
 static long scan_file_for_match(from_off, to_off, dir)
 long from_off, to_off;
@@ -626,8 +632,11 @@ int  dir;
         if (sif_c == HEOF || sif_c == 0x1A) break;
         if (sif_c == 0x0D) { sif_pos++; continue; }   /* skip bare CR */
 
-        if (to_lower(sif_c) ==
-                to_lower((unsigned char)ed.search[sif_j])) {
+        /* Pattern is stored pre-lowered (read_pattern). */
+        sif_cl = sif_c;
+        if (sif_cl >= 'A' && sif_cl <= 'Z') sif_cl += 32;
+
+        if (sif_cl == (int)(unsigned char)ed.search[sif_j]) {
             if (sif_j == 0) sif_ms = sif_pos;         /* start of match */
             sif_j++;
             if (sif_j >= sif_plen) {                   /* full match */
@@ -642,8 +651,7 @@ int  dir;
             if (sif_j > 0) {
                 sif_j = 0;                             /* restart pattern */
                 /* Retry this character as a potential new match start */
-                if (to_lower(sif_c) ==
-                        to_lower((unsigned char)ed.search[0])) {
+                if (sif_cl == (int)(unsigned char)ed.search[0]) {
                     sif_ms = sif_pos;
                     sif_j  = 1;
                 }

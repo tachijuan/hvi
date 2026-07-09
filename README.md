@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.1.1**
+**Version 2.2**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -356,19 +356,22 @@ the minimum needed for the operation:
 | Operation | Output sent |
 |-----------|-------------|
 | `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` | Cursor reposition only — no text redrawn, no status bar update |
-| `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` | Terminal scroll + one new line (~53 bytes) when viewport shifts by one row, or cursor reposition only when no scroll needed — status bar not updated |
-| `r` replace character | Single visual row redrawn |
-| `x`, `X`, `D`, `~`, `s`, `S`, `C` | Current logical line redrawn |
-| `J`, `o`, `O`, `p`, `P`, `u`, `dw`, `dd`, `cw`, Enter in insert mode | Rows from cursor to bottom redrawn (rows above cursor skipped) |
-| `G`, `Ctrl-F`, `Ctrl-B`, `Ctrl-D`, `Ctrl-U`, `:` commands | Full screen redrawn |
+| `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` | Terminal scroll + only the rows that came into view, or cursor reposition only when no scroll needed |
+| `r` replace character | The replaced cell only (2–4 bytes); falls back to a row redraw around tabs or the last column |
+| `~` | The toggled characters emitted in place |
+| `x`, `X`, `s`, `D`, `C`, `dw`, `cw`, `d$`, charwise `p`/`P`, `u` | One screen row (the edited line) — when the line does not wrap |
+| `ESC` leaving insert mode | Status bar only (insert mode keeps the text current as you type) |
+| `J`, `o`, `O`, `dd`, linewise `p`/`P`, Enter in insert mode | Rows from cursor to bottom redrawn (rows above cursor skipped) |
+| `Ctrl-D`, `Ctrl-U` | Terminal scroll + only the ~11 rows that came into view; cursor reposition only while the cursor stays in view |
+| `G`, `Ctrl-F`, `Ctrl-B`, `:e`, `:r` | Full screen redrawn |
 
-The "cursor to bottom" tier is the key optimization for editing operations: on
-a 24-row terminal with the cursor near the middle, it sends roughly half the
-bytes of a full screen refresh (~600 bytes vs ~1200 bytes at 9600 baud ≈ 0.5
-seconds saved per keystroke).
+Edits that stay on one unwrapped logical line repaint exactly one screen row;
+anything that inserts or removes newlines repaints from the cursor down.  On a
+24-row terminal that is ~80 bytes instead of ~600–1200 per keystroke (at 9600
+baud, ~0.5–1 second saved per edit).
 
-The status bar is not refreshed on every `j`/`k`/`Enter`/`nG` keypress — it
-updates on the next edit, search, page scroll, or `Ctrl-L`.
+The status bar is rewritten only when its text actually changes; movement
+keys never touch it, and repeated edits reuse the bar already on screen.
 
 ---
 
@@ -385,6 +388,117 @@ updates on the next edit, search, page scroll, or `Ctrl-L`.
 ---
 
 ## Changes
+
+### 2.1.1 → 2.2
+
+Performance release (targeting 4 MHz Z80). No new commands; all 107 + 13
+tests in `tests/` pass (16 screen-scrape tests were added for the new
+minimal-redraw paths).
+
+The theme of this release is removing per-character function-call overhead:
+a compiled call on HI-TECH C costs ~150-200 T-states before any work is done,
+so loops that funnel every byte through `gb_char_at()` or `bdos()` were paying
+roughly ten times the cost of the actual work.
+
+- **Linewise operators no longer scan the whole buffer.** `dd`, `cc`, `yy`,
+  `dj`, `dk`, `dG` (and the `.` replay of `dd`) used to convert between line
+  numbers and buffer positions with up to three full-buffer scans — deleting
+  one line near the end of a full 24 KB buffer cost 2-3 seconds at 4 MHz.
+  They now walk only the affected lines with `find_bol`/`find_eol`:
+  effectively instant.
+- **New CPIR newline scanner in assembly** (`gb_cntnl` in `cstart.as`, used
+  via `gb_count_nl()`). Line counting and line-number scans (`G`, `nG`, `:N`,
+  `Ctrl-F`/`Ctrl-B`, delete bookkeeping, line-count cache rebuilds) run at
+  21 T-states/byte instead of ~150+ — a full-buffer line count drops from
+  over a second to ~0.13 s at 4 MHz.
+- **`gb_insert` is now a bulk operation**: one gap move plus one LDIR block
+  copy instead of a gap-move function call per character. A 1 KB paste
+  previously made ~3000 calls. Insertion is also all-or-nothing when the
+  buffer is nearly full (previously a too-large paste could be inserted
+  partially).
+- **Yank, undo capture, and dot-repeat capture use `gb_copy_out()`** — at
+  most two LDIR block copies instead of one `gb_char_at()` call per byte.
+- **File loading appends directly into the gap.** The initial load, window
+  reloads, and forward window shifts (`gb_fill`, `gb_load_more`) previously
+  went through ~6 function calls per byte; the `[Loading...]` pause when
+  paging through a large file is several times shorter.
+- **`:w` walks the two raw gap segments** with a pointer instead of calling
+  `gb_char_at()` for every byte written.
+- **Search inner loops make no function calls per comparison.** The pattern
+  is stored pre-lowered when typed (search was already case-insensitive) and
+  the buffer-side case folding is inlined, in both the in-memory search and
+  the large-file disk scan — roughly 2-3x faster `/`, `?`, `n`.
+- **Terminal output is flushed by `con_write`** (`cstart.as`): the output
+  buffer is written by an assembly loop around `CALL 5` using BDOS function 6
+  (direct console output), replacing one C-level BDOS-2 call per byte. A
+  full-screen repaint saves ~1200 call round-trips, and function 6 skips
+  function 2's `Ctrl-S`/`Ctrl-P` status polling.
+
+Behaviour note: because output now uses BDOS function 6, the BDOS no longer
+pauses output on `Ctrl-S` mid-redraw (real terminals handle flow control in
+hardware; full-screen editors conventionally use direct console I/O).
+
+**Screen redraw** (second pass in this release — minimising bytes sent to
+the terminal, which dominate at 9600 baud):
+
+- **Single-line edits repaint one screen row.** `x`, `X`, `s`, `D`, `C`,
+  `dw`, `cw`, `d$`, charwise `p`/`P`, `u`, and their `.` replays used to
+  repaint from the cursor to the bottom of the screen (~600–1200 bytes);
+  when the edit adds/removes no newline and the line does not wrap, they
+  now repaint only the edited row (~80 bytes).
+- **`r` emits just the replaced cell** (2–4 bytes) and **`~` emits only
+  the toggled characters in place**, instead of redrawing the logical line.
+- **Leaving insert mode sends only the status bar.** Insert mode keeps the
+  text display current as you type, so the old whole-line redraw on `ESC`
+  was almost always redundant.  A dirty flag preserves the redraw when the
+  session touched a wrapped line (where the incremental byte-level updates
+  can leave a stale row).
+- **The one-row scroll optimisation now handles N rows.** Any movement that
+  shifts the viewport by fewer than a screenful (`Ctrl-D`, `Ctrl-U`, counted
+  `j`/`k`, nearby searches) scrolls the region and repaints only the rows
+  that came into view; `Ctrl-D`/`Ctrl-U` previously always repainted the
+  full screen — and when the cursor stays inside the viewport they now send
+  only a cursor reposition.
+- **The status bar is rewritten only when its text changes.** The filename
+  bar and `-- INSERT --` indicator were retransmitted (~40 bytes) on every
+  edit and insert keystroke.
+- **`:N` / `:$` skip the full-screen redraw** when the target line is
+  already inside the viewport.
+
+Screen bug fixes (both caught by the 16 new screen-scrape tests):
+
+- **`:N` and `:$` left the cursor-row cache stale**, so the terminal cursor
+  could be placed on the wrong screen row after a line jump (buffer edits
+  still landed correctly, but `r`/`~` then repainted the wrong row).
+- **Typing across the wrap boundary painted the continuation row at the
+  top of the screen**: the cursor-row cache was not invalidated when an
+  inserted character pushed the cursor onto the next visual row.
+
+**Size** (third pass in this release — clawing back the bytes the speed
+work added; every byte saved also enlarges the gap buffer, since
+`gb_init()` takes the largest free TPA block left after the code):
+
+- Removed ~110 lines of unreachable `.`-repeat code: `x`, `X`, `D`, `C`
+  never occur as a recorded dot command — they expand through the
+  operator path and replay as `d`/`c` plus a motion.
+- `hvi_sprintf` accepts 2 format arguments instead of 5.  No HVI message
+  uses more, and every unused slot cost an argument push at all ~17 call
+  sites.
+- Deduplicated code paths: `p`/`P` share one put routine; the `G`, `gg`,
+  `Ctrl-F`, `Ctrl-B` and window-reload handlers share their cursor-
+  placement and repaint tails; `f`/`F`/`;`/`,` share one movement tail;
+  the two buffer-full retry blocks in insert mode are one helper; the
+  scroll-up and scroll-down halves of the smart scroller are merged; the
+  yank-copy block, the one-row/full refresh dispatch (`scr_edit_end`),
+  and the last-line computation each exist exactly once.
+- The terminal-size probe is one 14-byte `con_write` block instead of 13
+  separate BDOS calls.
+- Mirror-image message strings merged into single format strings
+  (`search hit …`, the two `Modified buffer` hints); the temp-file name
+  literals are stored once.
+
+Binary size: 242 CP/M records (~31K) — the speed and redraw work above
+plus 16 new tests cost a net 6 records over 2.1.1's 236.
 
 ### 2.1 → 2.1.1
 

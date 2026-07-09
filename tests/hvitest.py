@@ -384,6 +384,108 @@ def main():
     sess.quit_expect_prompt(":q\r")
     sess.close()
 
+    # ---------- screen checks: minimal-redraw paths ----------
+    sess = Session()
+
+    # x / u / dw / P / r / ~ repaint only the edited row (or cell)
+    rm_file("T.TXT"); put_file("T.TXT", BASIC)
+    sess.start_hvi("T.TXT")
+    sess.keys("jwx")                       # delete 'e' of 'echo' on row 1
+    lines = sess.screen_lines()
+    check("screen x one row",
+          lines[1] == "delta cho foxtrot" and
+          lines[0] == "alpha bravo charlie" and
+          lines[2] == "golf hotel india",
+          "rows=%r" % lines[:3])
+    sess.keys("u")
+    lines = sess.screen_lines()
+    check("screen undo x", lines[1] == "delta echo foxtrot",
+          "row1=%r" % lines[1])
+    sess.keys("dw")                        # delete 'echo '
+    lines = sess.screen_lines()
+    check("screen dw", lines[1] == "delta foxtrot", "row1=%r" % lines[1])
+    sess.keys("u")                         # restore 'echo '
+    sess.keys("ywP")                       # yank + put: duplicate word
+    lines = sess.screen_lines()
+    check("screen P charwise", lines[1] == "delta echo echo foxtrot",
+          "row1=%r" % lines[1])
+    sess.keys("rE")                        # in-place single-cell replace
+    lines = sess.screen_lines()
+    check("screen r in place", lines[1] == "delta Echo echo foxtrot",
+          "row1=%r" % lines[1])
+    sess.keys("3~")                        # in-place span toggle: Ech -> eCH
+    lines = sess.screen_lines()
+    check("screen ~ span", lines[1] == "delta eCHo echo foxtrot",
+          "row1=%r" % lines[1])
+    sess.keys("A tail\x1b")                # append + fast insert-exit
+    lines = sess.screen_lines()
+    check("screen insert-exit row", lines[1].endswith("foxtrot tail"),
+          "row1=%r" % lines[1])
+    check("screen insert-exit status", "T.TXT" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.quit_expect_prompt(":q!\r")
+
+    # :N must place the terminal cursor on the target row
+    rm_file("T.TXT"); put_file("T.TXT", BASIC)
+    sess.start_hvi("T.TXT")
+    sess.keys(":4\r")
+    sess.feed_screen()
+    check("screen :N cursor row", sess.screen.cursor.y == 3,
+          "cursor.y=%d" % sess.screen.cursor.y)
+    sess.quit_expect_prompt(":q\r")
+
+    # J and dd repaint the shifted rows below the cursor
+    rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\nthree\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("J")
+    lines = sess.screen_lines()
+    check("screen J", lines[0] == "one two" and lines[1] == "three"
+          and lines[2] == "~", "rows=%r" % lines[:3])
+    sess.keys("dd")
+    lines = sess.screen_lines()
+    check("screen dd", lines[0] == "three" and lines[1] == "~",
+          "rows=%r" % lines[:2])
+    sess.quit_expect_prompt(":q!\r")
+
+    # Ctrl-D / Ctrl-U scroll the region instead of repainting everything
+    rm_file("T.TXT")
+    put_file("T.TXT", "".join("line %02d\n" % i for i in range(1, 41)))
+    sess.start_hvi("T.TXT")
+    sess.keys("\x04\x04\x04")              # 3 half-pages down: top -> line 12
+    lines = sess.screen_lines()
+    check("screen ^D scroll", lines[0] == "line 12" and lines[22] == "line 34",
+          "row0=%r row22=%r" % (lines[0], lines[22]))
+    sess.keys("\x15")                      # back: cursor stays in view
+    lines = sess.screen_lines()
+    check("screen ^U stable", lines[0] == "line 12", "row0=%r" % lines[0])
+    sess.keys("\x15\x15")                  # scrolls back to the top
+    lines = sess.screen_lines()
+    check("screen ^U scroll", lines[0] == "line 01" and lines[22] == "line 23",
+          "row0=%r row22=%r" % (lines[0], lines[22]))
+    sess.quit_expect_prompt(":q\r")
+
+    # growing a line across the wrap boundary during insert
+    rm_file("T.TXT"); put_file("T.TXT", "b" * 79 + "\nsecond\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("AXY\x1b")                   # 79 -> 81 chars: line wraps
+    lines = sess.screen_lines()
+    check("screen wrap grow",
+          lines[0] == "b" * 79 + "X" and lines[1] == "Y"
+          and lines[2] == "second",
+          "rows=%r" % [lines[0][-3:], lines[1], lines[2]])
+    sess.quit_expect_prompt(":q!\r")
+
+    # shrinking a line back across the wrap boundary (dirty-flag path)
+    rm_file("T.TXT"); put_file("T.TXT", "c" * 81 + "\nsecond\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("A\x08\x08\x1b")             # 81 -> 79 chars: line unwraps
+    lines = sess.screen_lines()
+    check("screen wrap shrink",
+          lines[0] == "c" * 79 and lines[1] == "second",
+          "rows=%r" % [lines[0][-3:], lines[1]])
+    sess.quit_expect_prompt(":q!\r")
+    sess.close()
+
     # ---------- summary ----------
     print("\n---- %d tests, %d failed ----" %
           (len(RESULTS), sum(1 for _, ok, _ in RESULTS if not ok)))

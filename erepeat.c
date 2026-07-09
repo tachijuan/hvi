@@ -67,8 +67,9 @@ void dot_replay_c(n)
 int n;
 {
     int from, to, ins_pos, linewise, endpoint;
+    int light, i;
     linewise = 0;
-    if (ed.dot_cmd == 'C' || ed.dot_motion == 'c') {
+    if (ed.dot_motion == 'c') {          /* cc / S: whole-line change */
         from = find_bol(ed.cur_pos);
         to = find_eol(from);
     } else {
@@ -78,6 +79,11 @@ int n;
         from = (ed.cur_pos < endpoint) ? ed.cur_pos : endpoint;
         to   = (ed.cur_pos < endpoint) ? endpoint   : ed.cur_pos;
     }
+    /* One-row repaint when the whole change stays on a single-row line. */
+    light = !linewise && scr_line_is_1row(from) &&
+            gb_count_nl(from, to - from) == 0;
+    for (i = 0; i < ed.dot_len && light; i++)
+        if (ed.dot_text[i] == '\n') light = 0;
     ins_pos = from;
     if (to > from) {
         undo_save_delete(from, to - from);
@@ -93,7 +99,7 @@ int n;
             ed.cur_pos--;
         if (ed.cur_pos < 0) ed.cur_pos = 0;
     }
-    scr_after_edit();
+    scr_edit_end(light);
 }
 
 /*
@@ -105,7 +111,6 @@ int count;
 {
     int  n, sz, k, linewise, endpoint;
     int  from, to, ins_pos, ch, eol, del;
-    int  start_line, end_line, total;
     int  has_nl, ki;
     char tmp_c[1];
     char sp;
@@ -114,67 +119,27 @@ int count;
     n  = (count > 0) ? count : ed.dot_count;
     sp = ' ';
 
+    /* Note: x, X, D, C, s, S never appear as dot_cmd -- they expand
+     * through op_motion() and replay as 'd' or 'c' with a motion. */
     switch (ed.dot_cmd) {
-
-    case 'x':
-        k = n;
-        while (k-- > 0 && ed.cur_pos < gb_content_len() &&
-               gb_char_at(ed.cur_pos) != '\n') {
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            ed.modified = 1;
-        }
-        sz = gb_content_len();
-        if (ed.cur_pos >= sz) ed.cur_pos = (sz > 0) ? sz - 1 : 0;
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n' &&
-            gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
-        scr_redraw_cur_line();
-        break;
-
-    case 'X':
-        k = n;
-        while (k-- > 0 && ed.cur_pos > 0 &&
-               gb_char_at(ed.cur_pos - 1) != '\n') {
-            ed.cur_pos--;
-            undo_save_delete(ed.cur_pos, 1);
-            gb_delete(ed.cur_pos, 1);
-            ed.modified = 1;
-        }
-        scr_redraw_cur_line();
-        break;
 
     case 'r':
         sz = gb_content_len();
         if (ed.cur_pos < sz) {
+            ch = gb_char_at(ed.cur_pos);
             undo_save_delete(ed.cur_pos, 1);
             gb_delete(ed.cur_pos, 1);
             tmp_c[0] = (char)ed.dot_arg;
             gb_insert(ed.cur_pos, tmp_c, 1);
             ed.modified = 1;
             if (ed.dot_arg == '\n') scr_refresh();
-            else scr_redraw_cur_line();
+            else scr_fix_char(ch, ed.dot_arg);
         }
-        break;
-
-    case 'D':
-        sz = gb_content_len();
-        to = find_eol(ed.cur_pos);
-        if (to > ed.cur_pos) {
-            undo_save_delete(ed.cur_pos, to - ed.cur_pos);
-            gb_delete(ed.cur_pos, to - ed.cur_pos);
-            ed.modified = 1;
-            sz = gb_content_len();
-            if (ed.cur_pos > 0 && (ed.cur_pos >= sz ||
-                gb_char_at(ed.cur_pos) == '\n'))
-                if (gb_char_at(ed.cur_pos - 1) != '\n')
-                    ed.cur_pos--;
-        }
-        scr_redraw_cur_line();
         break;
 
     case '~':
         sz = gb_content_len();
+        from = ed.cur_pos;
         for (k = 0; k < n; k++) {
             if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') break;
             ch = gb_char_at(ed.cur_pos);
@@ -187,12 +152,13 @@ int count;
             ed.cur_pos++;
             ed.modified = 1;
         }
+        to = ed.cur_pos;
         /* don't leave the cursor on the newline / past the end */
         if (ed.cur_pos > 0 &&
             (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') &&
             gb_char_at(ed.cur_pos - 1) != '\n')
             ed.cur_pos--;
-        scr_redraw_cur_line();
+        scr_fix_span(from, to);   /* in-place emit, or line redraw */
         break;
 
     case 'J':
@@ -222,13 +188,15 @@ int count;
 
     case 'd':
         if (ed.dot_motion == 'd') {
-            start_line = scr_pos_line(ed.cur_pos);
-            end_line = start_line + ed.dot_count - 1;
-            total = scr_line_count();
-            if (end_line >= total) end_line = total - 1;
-            from = scr_line_start(start_line);
-            to = (end_line + 1 < total)
-                 ? scr_line_start(end_line + 1) : gb_content_len();
+            /* Same find_bol/find_eol walk as dd in edit.c -- O(range). */
+            sz   = gb_content_len();
+            from = find_bol(ed.cur_pos);
+            to   = from;
+            for (k = ed.dot_count; k > 0; k--) {
+                to = find_eol(to);
+                if (to >= sz) break;
+                to++;       /* include the newline */
+            }
             apply_op('d', from, to, 1);
         } else {
             linewise = 0;
@@ -239,7 +207,6 @@ int count;
         break;
 
     case 'c':
-    case 'C':
         dot_replay_c(n);
         break;
 
@@ -247,16 +214,17 @@ int count;
         if (ed.dot_len > 0) {
             dot_ins_position();
             ins_pos = ed.cur_pos;
+            /* Check if inserted text crosses a line boundary. */
+            has_nl = 0;
+            for (ki = 0; ki < ed.dot_len; ki++)
+                if (ed.dot_text[ki] == '\n') { has_nl = 1; break; }
+            del = !has_nl && scr_line_is_1row(ins_pos);   /* light path */
             undo_save_insert(ins_pos, ed.dot_len);
             gb_insert(ins_pos, ed.dot_text, ed.dot_len);
             ed.cur_pos = ins_pos + ed.dot_len;
             if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
                 ed.cur_pos--;
             ed.modified = 1;
-            /* Check if inserted text crosses a line boundary. */
-            has_nl = 0;
-            for (ki = 0; ki < ed.dot_len; ki++)
-                if (ed.dot_text[ki] == '\n') { has_nl = 1; break; }
             if (has_nl) {
                 /* Multi-line insert: redraw from insertion point. */
                 ed.cur_pos = ins_pos;
@@ -264,10 +232,13 @@ int count;
                 ed.cur_pos = ins_pos + ed.dot_len;
                 if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
                     ed.cur_pos--;
+                scr_show_status(ed.status);
+            } else if (del) {
+                scr_edit_end(1);
             } else {
                 scr_adj();
+                scr_show_status(ed.status);
             }
-            scr_show_status(ed.status);
         }
         break;
     }

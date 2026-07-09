@@ -102,22 +102,22 @@ int   n;
 
 /*
  * Format string into buf.  Supports %s (char * cast as int), %d (int),
- * and %c (int).  Up to 5 format arguments accepted as plain ints so no
- * varargs library is needed.  On Z80/HI-TECH C, pointers and ints are
- * both 16 bits; char * arguments are safely passed as int and cast back.
- * Callers must not supply more than 5 format specifiers.
+ * and %c (int).  Up to 2 format arguments accepted as plain ints so no
+ * varargs library is needed (no HVI message uses more; every extra slot
+ * costs a push at all ~17 call sites).  On Z80/HI-TECH C, pointers and
+ * ints are both 16 bits; char * arguments are safely passed as int and
+ * cast back.  Callers must not supply more than 2 format specifiers.
  */
-void hvi_sprintf(buf, fmt, a0, a1, a2, a3, a4)
+void hvi_sprintf(buf, fmt, a0, a1)
 char *buf, *fmt;
-int   a0, a1, a2, a3, a4;
+int   a0, a1;
 {
     char *out, *fp, *s;
-    int   args[5], ai;
+    int   args[2], ai;
 
     out = buf;
     fp  = fmt;
-    args[0] = a0; args[1] = a1; args[2] = a2;
-    args[3] = a3; args[4] = a4;
+    args[0] = a0; args[1] = a1;
     ai = 0;
 
     while (*fp) {
@@ -125,15 +125,15 @@ int   a0, a1, a2, a3, a4;
         fp++;
         switch (*fp++) {
         case 's':
-            s = (ai < 5) ? (char *)args[ai++] : (char *)0;
+            s = (ai < 2) ? (char *)args[ai++] : (char *)0;
             if (!s) s = "";
             while (*s) *out++ = *s++;
             break;
         case 'd':
-            out = fmt_int(out, (ai < 5) ? args[ai++] : 0);
+            out = fmt_int(out, (ai < 2) ? args[ai++] : 0);
             break;
         case 'c':
-            *out++ = (char)((ai < 5) ? args[ai++] : 0);
+            *out++ = (char)((ai < 2) ? args[ai++] : 0);
             break;
         case '%':
             *out++ = '%';

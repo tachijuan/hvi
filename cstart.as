@@ -62,6 +62,7 @@
     GLOBAL  csv, cret, ncsv, indir
     GLOBAL  _bdos_disk, _bdos_disk_ix
     GLOBAL  _gb_memmove
+    GLOBAL  _con_write, _gb_cntnl
 
 start:
     ; --- Stack setup -------------------------------------------------
@@ -311,12 +312,92 @@ gmm_done:
     pop     ix
     ret
 
+    ; --- con_write: block console output via BDOS 6 -------------------
+    ;
+    ; void con_write(char *buf, int len)
+    ;
+    ; Writes len bytes with BDOS function 6 (Direct Console I/O; E < FFh
+    ; means output).  Replaces one C-level bdos_disk(2,c) call per byte
+    ; in term_flush: the per-character argument pushes, csv frame, and
+    ; IX save/restore are gone, and fn 6 also skips fn 2's ^S/^P status
+    ; polling.  IX is saved once around the whole loop.  BDOS preserves
+    ; no registers, so the walking pointer and count live in BSS slots.
+    ;
+    ; cdecl frame after push ix / add ix,sp:
+    ;   IX+4 = buf   IX+6 = len
+    ;
+_con_write:
+    push    ix
+    ld      ix,0
+    add     ix,sp
+    ld      l,(ix+4)            ; HL = buf
+    ld      h,(ix+5)
+    ld      c,(ix+6)            ; BC = len
+    ld      b,(ix+7)
+cw_loop:
+    ld      a,b
+    or      c
+    jp      z,cw_done
+    dec     bc
+    ld      (cw_cnt),bc
+    ld      e,(hl)              ; E = next byte (never FFh: HVI emits
+    inc     hl                  ;     ASCII + ESC sequences only)
+    ld      (cw_ptr),hl
+    ld      c,6                 ; BDOS 6: direct console I/O (output)
+    call    5
+    ld      hl,(cw_ptr)
+    ld      bc,(cw_cnt)
+    jp      cw_loop
+cw_done:
+    pop     ix
+    ret
+
+    ; --- gb_cntnl: count 0Ah bytes in a raw memory range --------------
+    ;
+    ; int gb_cntnl(char *p, int len)
+    ;
+    ; CPIR scans at 21 T-states/byte versus ~150+ for a compiled
+    ; gb_char_at() loop, so full-buffer line counting drops from seconds
+    ; to ~0.13s at 4 MHz.  Backs gb_count_nl() in gap.c (line counting,
+    ; scr_pos_line, delete/discard newline bookkeeping).  No BDOS calls,
+    ; so registers only; IX is preserved for the caller.
+    ;
+    ; cdecl frame after push ix / add ix,sp:
+    ;   IX+4 = p   IX+6 = len
+    ;
+_gb_cntnl:
+    push    ix
+    ld      ix,0
+    add     ix,sp
+    ld      l,(ix+4)            ; HL = p
+    ld      h,(ix+5)
+    ld      c,(ix+6)            ; BC = len
+    ld      b,(ix+7)
+    ld      de,0                ; DE = newline count
+    ld      a,b
+    or      c
+    jp      z,cnl_done
+cnl_scan:
+    ld      a,0ah               ; scan target: LF (reload every pass --
+    cpir                        ;   the BC!=0 test below clobbers A)
+    jp      nz,cnl_done         ; range exhausted, last byte not LF
+    inc     de                  ; counted one newline
+    ld      a,b
+    or      c
+    jp      nz,cnl_scan
+cnl_done:
+    ex      de,hl               ; return count in HL
+    pop     ix
+    ret
+
     ; --- BSS section marker ------------------------------------------
     ; bss_begin must be in the BSS psect so the linker places it at
     ; the correct address (after text+data, not at 0x0000).
     PSECT   bss
 bss_begin:
 _bdos_disk_ix:  defs    2       ; save slot: IX value across CALL 5
+cw_ptr:         defs    2       ; con_write: walking buffer pointer
+cw_cnt:         defs    2       ; con_write: remaining byte count
 
     END     start           ; declare entry point -- without this the linker
                             ; defaults to 0, which is < 0x100 and triggers

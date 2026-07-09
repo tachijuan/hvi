@@ -94,24 +94,19 @@ int pos;
 
 /*
  * Return the line number (0-based) of buffer position pos.
- * O(pos) scan -- use scr_cur_line() for the current cursor position.
+ * O(pos), but via the CPIR scanner (gb_count_nl) rather than one
+ * gb_char_at call per byte -- use scr_cur_line() for the cursor.
  */
-static int spl_i, spl_line; /* scr_pos_line statics */
-
 int scr_pos_line(pos)
 int pos;
 {
-    spl_line = 0;
-    for (spl_i = 0; spl_i < pos; spl_i++)
-        if (gb_char_at(spl_i) == '\n')
-            spl_line++;
-    return spl_line;
+    return gb_count_nl(0, pos);
 }
 
 /*
  * Cached, incremental line number for ed.cur_pos.
  */
-static int scl_pos, scl_old_pos, scl_old_line, scl_i; /* scr_cur_line statics */
+static int scl_pos, scl_old_pos, scl_old_line; /* scr_cur_line statics */
 
 int scr_cur_line()
 {
@@ -121,11 +116,9 @@ int scr_cur_line()
     scl_old_line = ed.cur_line;
     if (scl_old_pos >= 0 && scl_old_line >= 0) {
         if (scl_pos > scl_old_pos) {
-            for (scl_i = scl_old_pos; scl_i < scl_pos; scl_i++)
-                if (gb_char_at(scl_i) == '\n') scl_old_line++;
+            scl_old_line += gb_count_nl(scl_old_pos, scl_pos - scl_old_pos);
         } else {
-            for (scl_i = scl_pos; scl_i < scl_old_pos; scl_i++)
-                if (gb_char_at(scl_i) == '\n') scl_old_line--;
+            scl_old_line -= gb_count_nl(scl_pos, scl_old_pos - scl_pos);
             if (scl_old_line < 0) scl_old_line = 0;
         }
         ed.cur_line = scl_old_line;
@@ -156,6 +149,12 @@ int pos;
     return spc_col;
 }
 
+/* Buffer position of the first character of the last line. */
+int scr_last_line_start()
+{
+    return scr_line_start(scr_line_count() - 1);
+}
+
 static int sls_pos, sls_line, sls_size; /* scr_line_start statics */
 
 int scr_line_start(linenum)
@@ -176,17 +175,14 @@ int linenum;
  * Return total number of logical lines in the buffer.
  * Result is cached in ed.line_cnt_cached.
  */
-static int slc_i, slc_size, slc_lines; /* scr_line_count statics */
+static int slc_size, slc_lines; /* scr_line_count statics */
 
 int scr_line_count()
 {
     if (ed.line_cnt_cached > 0) return ed.line_cnt_cached;
     slc_size = gb_content_len();
     if (slc_size == 0) { ed.line_cnt_cached = 1; return 1; }
-    slc_lines = 0;
-    for (slc_i = 0; slc_i < slc_size; slc_i++)
-        if (gb_char_at(slc_i) == '\n')
-            slc_lines++;
+    slc_lines = gb_count_nl(0, slc_size);
     if (gb_char_at(slc_size - 1) != '\n')
         slc_lines++;
     slc_lines = (slc_lines > 0) ? slc_lines : 1;
@@ -435,13 +431,111 @@ void scr_redraw_from_cur()
 }
 
 /* ------------------------------------------------------------------ */
+/*  Single-line edit refresh                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Non-zero when the logical line containing pos occupies one visual row.
+ */
+static int sl1_bol;
+
+int scr_line_is_1row(pos)
+int pos;
+{
+    sl1_bol = find_bol(pos);
+    return next_vrow(sl1_bol) >= find_eol(pos);
+}
+
+/*
+ * Refresh after an edit.  When light is non-zero the edit added or
+ * removed no newlines and its line occupied a single visual row BEFORE
+ * the edit (callers verify both): repaint exactly one screen row plus
+ * the status bar instead of the cursor-to-bottom redraw.  Falls back
+ * to the full scr_after_edit() when light is zero, the line now wraps
+ * (an insert grew it), or the cursor is outside the viewport.
+ */
+void scr_edit_end(light)
+int light;
+{
+    if (light && ed.cur_pos >= ed.top_pos && scr_line_is_1row(ed.cur_pos)) {
+        locate_cur_row();
+        if (lcr_row < ed.scr_rows - 1) {
+            draw_row_at(lcr_row, lcr_vstart);
+            ed.cur_vrow = lcr_row;
+            scr_show_status(ed.status);
+            return;
+        }
+    }
+    scr_after_edit();
+}
+
+/*
+ * Repaint after the character under the cursor was replaced (r).
+ * When both old and new characters are one-column printables and the
+ * cell is not in the last screen column, emit the new character in
+ * place (2-4 bytes); otherwise redraw the logical line.
+ */
+static int sfc_col;
+
+void scr_fix_char(oldc, newc)
+int oldc, newc;
+{
+    if (oldc >= 0x20 && oldc != 0x7F && newc >= 0x20 && newc < 0x7F) {
+        sfc_col = scr_vrow_col(ed.cur_pos);
+        if (sfc_col < ed.scr_cols - 1) {
+            scr_update_cursor();
+            term_putch(newc);
+            scr_update_cursor();
+            return;
+        }
+    }
+    scr_redraw_cur_line();
+}
+
+/*
+ * Repaint after characters in [from, to) were replaced in place by
+ * same-width characters (the ~ command).  Emits the span when it holds
+ * no tabs and stays left of the last column of one screen row (span+2
+ * bytes vs a whole-line redraw); otherwise redraws the logical line.
+ */
+static int sfs_i, sfs_save, sfs_ok;
+
+void scr_fix_span(from, to)
+int from, to;
+{
+    sfs_ok = 1;
+    for (sfs_i = from; sfs_i < to; sfs_i++)
+        if (gb_char_at(sfs_i) == '\t') { sfs_ok = 0; break; }
+    if (sfs_ok && scr_vrow_col(from) + (to - from) <= ed.scr_cols - 1) {
+        sfs_save = ed.cur_pos;
+        ed.cur_pos = from;
+        scr_update_cursor();
+        for (sfs_i = from; sfs_i < to; sfs_i++)
+            term_putch(gb_char_at(sfs_i));
+        ed.cur_pos = sfs_save;
+        scr_update_cursor();
+    } else {
+        ed.cur_vrow = -1;   /* span may have crossed a row boundary */
+        scr_redraw_cur_line();
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Smart scroll after cursor movement                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * The viewport moved by uam_delta visual rows with (text_rows - delta)
+ * rows still on screen: scroll the region and repaint only the rows
+ * that came into view.  Used by every movement command, including
+ * Ctrl-D/Ctrl-U half-page scrolls (delta ~11 rows: roughly half the
+ * output of a full refresh; the status bar is left untouched).
+ */
 void scr_update_after_move(old_top)
 int old_top;
 {
-    static int uam_tr, uam_p, uam_new_top, uam_delta, uam_nx;
+    static int uam_tr, uam_p, uam_new_top, uam_delta, uam_nx, uam_i;
+    static int uam_down, uam_from, uam_to;
 
     uam_tr      = ed.scr_rows - 1;
     uam_new_top = ed.top_pos;
@@ -451,63 +545,88 @@ int old_top;
         return;
     }
 
+    /* Count vrows between the nearer and farther of the two tops. */
+    uam_down = (uam_new_top > old_top);
+    uam_p    = uam_down ? old_top : uam_new_top;
+    uam_to   = uam_down ? uam_new_top : old_top;
     uam_delta = 0;
-    if (uam_new_top > old_top) {
-        uam_p = old_top;
-        while (uam_p < uam_new_top && uam_delta < 2) {
-            uam_nx = next_vrow(uam_p);
-            if (uam_nx <= uam_p) break;
-            uam_p = uam_nx;
-            uam_delta++;
-        }
-        if (uam_delta == 1 && uam_p == uam_new_top) {
-            term_scroll_up();
-            draw_row_at(uam_tr - 1, vrow_start_of(ed.cur_pos));
-            scr_update_cursor();
-            return;
-        }
-    } else {
-        uam_p = uam_new_top;
-        while (uam_p < old_top && uam_delta < 2) {
-            uam_nx = next_vrow(uam_p);
-            if (uam_nx <= uam_p) break;
-            uam_p = uam_nx;
-            uam_delta++;
-        }
-        if (uam_delta == 1 && uam_p == old_top) {
-            term_scroll_dn();
-            scr_redraw_line(0);
-            scr_update_cursor();
-            return;
-        }
+    while (uam_p < uam_to && uam_delta < uam_tr) {
+        uam_nx = next_vrow(uam_p);
+        if (uam_nx <= uam_p) break;
+        uam_p = uam_nx;
+        uam_delta++;
+    }
+    if (uam_p != uam_to || uam_delta >= uam_tr) {
+        scr_refresh();
+        return;
     }
 
-    scr_refresh();
+    /* Scroll the region, then repaint only the rows that came into
+     * view: the bottom uam_delta rows going down, the top ones going up. */
+    for (uam_i = 0; uam_i < uam_delta; uam_i++) {
+        if (uam_down) term_scroll_up();
+        else          term_scroll_dn();
+    }
+    uam_from = uam_down ? uam_tr - uam_delta : 0;
+    uam_to   = uam_down ? uam_tr : uam_delta;
+    uam_p    = uam_new_top;
+    for (uam_i = 0; uam_i < uam_from; uam_i++) {
+        uam_nx = next_vrow(uam_p);
+        if (uam_nx <= uam_p) break;
+        uam_p = uam_nx;
+    }
+    for (uam_i = uam_from; uam_i < uam_to; uam_i++) {
+        draw_row_at(uam_i, uam_p);
+        uam_nx = next_vrow(uam_p);
+        if (uam_nx > uam_p) uam_p = uam_nx;
+    }
+    scr_update_cursor();
 }
 
 /* ------------------------------------------------------------------ */
 /*  Status line                                                         */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Cache of the text currently on the status row.  scr_show_status()
+ * skips the repaint (goto + clreol + attributes + text, 30-50 bytes)
+ * when it would rewrite the identical string -- which is the common
+ * case for the filename bar on every edit and the -- INSERT --
+ * indicator on every insert-mode keypress.  Anything else that writes
+ * to the status row (command line, search prompt, [Loading...]) must
+ * call scr_status_invalidate().
+ */
+static char sss_last[STATUS_MAX];
+
+void scr_status_invalidate()
+{
+    sss_last[0] = '\0';
+}
+
+static char *sss_p;
+
 void scr_show_status(msg)
 char *msg;
 {
     static char lineno[48];
 
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
-
     if (msg && *msg) {
-        term_reverse();
-        term_puts(msg);
-        term_normal();
+        sss_p = msg;
     } else {
         hvi_sprintf(lineno, "\"%s\"%s",
             (int)(ed.filename[0] ? ed.filename : "[No Name]"),
             (int)(ed.modified ? " [+]" : ""),
             0, 0, 0);
+        sss_p = lineno;
+    }
+
+    if (hvi_strcmp(sss_p, sss_last) != 0) {
+        hvi_strncpy(sss_last, sss_p, STATUS_MAX - 1);
+        sss_last[STATUS_MAX - 1] = '\0';
+        term_goto(ed.scr_rows - 1, 0);
+        term_clreol();
         term_reverse();
-        term_puts(lineno);
+        term_puts(sss_p);
         term_normal();
     }
     scr_update_cursor();
@@ -517,6 +636,7 @@ char *msg;
 void scr_clear_status()
 {
     ed.status[0] = '\0';
+    sss_last[0] = '\0';
     term_goto(ed.scr_rows - 1, 0);
     term_clreol();
     scr_update_cursor();

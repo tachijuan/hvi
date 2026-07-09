@@ -83,14 +83,14 @@ char *cmdtail;
         if (partial == 2) {
             hvi_sprintf(ed.status,
                         "\"%s\" [Partial: %d chars, tail preserved]",
-                        (int)ed.filename, gb_content_len(), 0, 0, 0);
+                        (int)ed.filename, gb_content_len());
         } else if (partial == 1) {
             hvi_sprintf(ed.status, "\"%s\" %d chars",
-                        (int)ed.filename, gb_content_len(), 0, 0, 0);
+                        (int)ed.filename, gb_content_len());
         } else {
             /* File does not exist -- start with empty buffer */
             hvi_sprintf(ed.status, "\"%s\" [New File]",
-                        (int)ed.filename, 0, 0, 0, 0);
+                        (int)ed.filename, 0);
         }
         ed.modified = 0;
     } else {
