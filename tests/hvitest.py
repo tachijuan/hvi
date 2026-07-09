@@ -487,6 +487,23 @@ def main():
           "rows=%r" % [lines[0][-3:], lines[1], lines[2]])
     sess.quit_expect_prompt(":q!\r")
 
+    # append at the true end of buffer (no trailing newline): the cursor
+    # must sit after the last char, and typed text must append in place
+    rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\nthree")
+    sess.start_hvi("T.TXT")
+    sess.keys("G$a")
+    sess.feed_screen()
+    check("screen EOF append cursor",
+          sess.screen.cursor.y == 2 and sess.screen.cursor.x == 5,
+          "cursor=(%d,%d)" % (sess.screen.cursor.y, sess.screen.cursor.x))
+    sess.keys("XY\x1b")
+    lines = sess.screen_lines()
+    check("screen EOF append text", lines[2] == "threeXY",
+          "row2=%r" % lines[2])
+    ok = sess.quit_expect_prompt(":wq\r")
+    check("file EOF append", ok and get_file("T.TXT") == "one\ntwo\nthreeXY\n",
+          "got %r" % get_file("T.TXT"))
+
     # shrinking a line back across the wrap boundary (dirty-flag path)
     rm_file("T.TXT"); put_file("T.TXT", "c" * 81 + "\nsecond\n")
     sess.start_hvi("T.TXT")

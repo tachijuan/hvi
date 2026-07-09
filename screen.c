@@ -42,6 +42,21 @@ extern Editor ed;
 static int nvr_col, nvr_c, nvr_nc, nvr_size; /* next_vrow statics */
 static int nvs_p, nvs_next;                  /* vrow_start_of statics */
 
+/*
+ * Return the buffer position where the visual row after the one
+ * starting at `from` begins: past a newline, at a wrap point, or
+ * content-length + 1 when the text ends without a newline (meaning no
+ * vrow starts at or beyond there).
+ *
+ * That +1 matters: with no trailing newline, "content length" is a
+ * position INSIDE the last vrow (the append point of `a`/`A` at the
+ * end of the buffer), not the start of a new one.  Returning size
+ * here made vrow_start_of()/scr_update_cursor() treat the append
+ * point as a phantom row at column 0, so `a` on the last line sent
+ * the cursor to the start of the line and typing painted over it.
+ * When the buffer does end with '\n', position size is genuinely a
+ * new empty line and is returned via the from+1 path as before.
+ */
 int next_vrow(from)
 int from;
 {
@@ -55,7 +70,7 @@ int from;
         nvr_col = nvr_nc;
         from++;
     }
-    return from;
+    return from + 1;
 }
 
 int vrow_start_of(pos)

@@ -391,8 +391,8 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 
 ### 2.1.1 → 2.2
 
-Performance release (targeting 4 MHz Z80). No new commands; all 111 + 13
-tests in `tests/` pass (16 screen-scrape tests were added for the new
+Performance release (targeting 4 MHz Z80). No new commands; all 114 + 13
+tests in `tests/` pass (19 screen-scrape tests were added for the new
 minimal-redraw paths, plus 4 put/undo regression tests).
 
 The theme of this release is removing per-character function-call overhead:
@@ -476,6 +476,15 @@ Editing bug fixes:
   cursor instead of the actual paste (which for linewise `p` starts on
   the next line, and may include an added newline).  The record now
   covers exactly the inserted span.
+- **`a`/`A` at the true end of the buffer painted at column 0.**  With
+  no trailing newline, the append position equals the content length,
+  and `next_vrow()` returned that same value for "line ends at the
+  buffer end" — so the cursor-placement code took the append point for
+  a phantom new row starting at column 0 and typing visually overwrote
+  the line start (the buffer itself was updated correctly; `Ctrl-L`
+  repainted the truth).  `next_vrow()` now returns content length + 1
+  in that case, which also corrects the same off-by-one-row miscount in
+  the scroll and row-location walks.
 
 Screen bug fixes (both caught by the 16 new screen-scrape tests):
 
