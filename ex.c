@@ -10,12 +10,29 @@
 
 extern Editor ed;
 
+/* Shared with hvi.c (one copy of each literal). */
+extern char fmt_newfile[];   /* "\"%s\" [New File]" */
+extern char fmt_chars[];     /* "\"%s\" %d chars"   */
+
 /* Skip leading whitespace in s; returns pointer to first non-space. */
 static char *skip_space(s)
 char *s;
 {
     while (*s == ' ' || *s == '\t') s++;
     return s;
+}
+
+/* Shared tail for the :N and :$ line jumps: normalise the cursor state,
+ * scroll, and return 1 when the viewport moved (text redraw needed). */
+static int ejd_top;
+
+static int ex_jump_done()
+{
+    ed.want_col = 0;
+    ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
+    ejd_top = ed.top_pos;
+    scr_scroll_to_cursor();
+    return ed.top_pos != ejd_top;
 }
 
 /*
@@ -37,7 +54,6 @@ char *cmd;
     /* :N  -- go to line N */
     if (*p >= '0' && *p <= '9') {
         int lnum = 0;
-        int old_top;
         while (*p >= '0' && *p <= '9')
             lnum = lnum * 10 + (*p++ - '0');
         if (lnum < 1) lnum = 1;
@@ -45,32 +61,24 @@ char *cmd;
         {
             int total = scr_line_count();
             if (lnum >= total) lnum = total - 1;
+            ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
             ed.cur_pos = scr_line_start(lnum);
-            ed.want_col = 0;
         }
-        ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
-        old_top = ed.top_pos;
-        scr_scroll_to_cursor();
-        if (ed.top_pos == old_top)
-            return 0;       /* viewport unchanged: no text redraw needed */
-        return 1;
+        /* return 0 when the viewport is unchanged: no text redraw needed */
+        return ex_jump_done();
     }
 
     /* :$ -- go to last line (loads entire tail for large files) */
     if (*p == '$') {
         int clen;
-        int old_top;
+        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         while (ed.tail_offset > 0L) {
             clen = gb_content_len();
             if (clen > 0) ed.cur_pos = clen - 1;
             if (gb_load_more(LOAD_CHUNK) == 0) break;
         }
         ed.cur_pos = scr_last_line_start();
-        ed.want_col = 0;
-        ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
-        old_top = ed.top_pos;
-        scr_scroll_to_cursor();
-        if (ed.top_pos == old_top && ed.win_start == 0L && ed.tail_offset == 0L)
+        if (!ex_jump_done() && ed.win_start == 0L && ed.tail_offset == 0L)
             return 0;       /* viewport unchanged: no text redraw needed */
         return 1;
     }
@@ -119,7 +127,7 @@ char *cmd;
         hvi_fclose(f);
         new_len = gb_content_len();
         ed.modified = 1;
-        hvi_sprintf(ed.status, "\"%s\" %d chars", (int)fname, new_len - old_len);
+        hvi_sprintf(ed.status, fmt_chars, (int)fname, new_len - old_len);
         return 1;
     }
 
@@ -165,7 +173,7 @@ char *cmd;
 
         rc = gb_load(fname, (HFILE *)0);
         if (rc == 0)
-            hvi_sprintf(ed.status, "\"%s\" [New File]", (int)fname, 0);
+            hvi_sprintf(ed.status, fmt_newfile, (int)fname, 0);
         else if (rc == 2)
             hvi_sprintf(ed.status, "\"%s\" (partial load)", (int)fname, 0);
         else

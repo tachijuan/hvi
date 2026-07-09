@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-06" "HVI 2.1.1" "CP/M User Commands"
+.TH HVI 1 "2026-07-09" "HVI 2.3" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -317,6 +317,37 @@ Repeat the last search in the same direction.
 Repeat the last search in the opposite direction.
 .PP
 Patterns are plain-text strings (no regular expressions).
+.\"
+.SS Marks
+.TP
+.BI m { a-z }
+Set the named mark at the cursor position.
+.TP
+.BI ` { a-z }
+Jump to the named mark, restoring the exact line and column.
+.TP
+.B ``
+Jump back to the position before the last jump.
+A jump is
+.BR ` ,
+.BR G ,
+.BR gg ,
+.BR :N ,
+.BR :$ ,
+or a successful search.
+Pressing
+.B ``
+twice toggles between the two positions.
+.PP
+Marks follow the text as it is edited; a mark is cleared when the text it
+points to is deleted.
+All marks are cleared when a new file is loaded or when, in a large file,
+the sliding window moves to a different part of the file.
+Jumping to a cleared or never-set mark reports
+.BR "Mark not set" .
+Marks cannot be used as operator motions
+.RB ( d`a
+is not supported).
 .\"
 .SS Miscellaneous Normal-Mode Commands
 .TP

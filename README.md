@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.2**
+**Version 2.3**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -164,6 +164,25 @@ file, search scans the entire file — not just the loaded buffer. When the matc
 is found in an unloaded section HVI reloads the window around it automatically.
 `search hit BOTTOM, continuing at TOP` (or `TOP … BOTTOM`) is shown only when
 the search genuinely wraps past the end (or beginning) of the file.
+
+### Normal Mode — Marks
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
+| `m{a-z}`  | Set mark `{a-z}` at the cursor position                 |
+| `` `{a-z} `` | Jump to mark `{a-z}` (exact line **and** column)     |
+| `` `` ``  | Jump back to the position before the last jump          |
+
+A jump — for the purpose of `` `` `` — is `` ` ``, `G`, `gg`, `:N`, `:$`, or a
+successful search (`/`, `?`, `n`, `N`). Pressing `` `` `` twice toggles between
+the two positions.
+
+Marks follow the text as it is edited: inserting or deleting above a mark
+shifts it so it stays on the same character. A mark is cleared when the text
+it points to is deleted, and all marks are cleared when a new file is loaded
+(`:e`) or, in a large file, when the sliding window moves to a different part
+of the file. Jumping to a cleared or never-set mark reports `Mark not set`.
+Marks are not available as operator motions (`` d`a `` is not supported).
 
 ### Normal Mode — Character Search (current line)
 
@@ -388,6 +407,46 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.2 → 2.3
+
+Feature release: **marks**. All 125 + 13 tests in `tests/` pass (9 mark
+tests were added).
+
+- **New commands `m{a-z}`, `` `{a-z} `` and `` `` ``.** `m` sets one of 26
+  named marks at the cursor; backtick jumps back to the exact position
+  (line and column). `` `` `` returns to the position before the last jump
+  (`` ` ``, `G`, `gg`, `:N`, `:$`, or a successful search), so pressing it
+  twice toggles between two locations.
+- Marks are stored as buffer positions and adjusted on every insert and
+  delete, so they stay on the same character as the text above them
+  changes. A mark whose text is deleted is cleared (matching vi, which
+  drops marks on deleted lines). In a large file, all marks are cleared
+  when the sliding window moves — a mark can't outlive the window that
+  contains it.
+- Jumps to marks reuse the minimal-redraw path from 2.2
+  (`scr_update_after_move`), so a nearby jump scrolls the region instead
+  of repainting the screen.
+
+Also in 2.3, a third source-level size pass (no functionality or speed
+change — every fold swaps an inlined sequence for one extra call on a
+non-hot path):
+
+- The ex `:` command line and the `/` `?` search prompts now share one
+  line-reader (`read_line`) instead of carrying two copies of the same
+  prompt/edit loop.
+- `r` is now implemented by its own `.`-replay (as `J` and `~` already
+  were), removing a duplicated replace routine; `a`/`I`/`A` position the
+  cursor through the same code their replay uses; `o`/`O` share one
+  open-line body.
+- Repeated fragments were factored into tiny helpers: status-line
+  updates, `want_col` capture, scroll-plus-repaint after motions,
+  pull-cursor-off-newline, the insert-mode wrap check, dot-state
+  recording, and the status-row clear; duplicate status format strings
+  were merged across modules.
+
+Binary size: 238 CP/M records (~30K) — the mark feature cost 4 records
+over 2.2's 240, and the size pass bought back 6.
 
 ### 2.1.1 → 2.2
 

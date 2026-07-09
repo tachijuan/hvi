@@ -30,6 +30,44 @@ extern int gb_cntnl(/* char *p, int len */);
 static char swp_name[] = "HVISWP.TMP";
 static char tmp_name[] = "HVITMP.TMP";
 
+/* ------------------------------------------------------------------ */
+/*  Marks (m / ` commands)                                              */
+/* ------------------------------------------------------------------ */
+
+/* Invalidate all marks: buffer positions no longer describe the same
+ * text (fresh load, or the large-file window moved). */
+static int mkc_i;
+
+static void mk_clear()
+{
+    for (mkc_i = 0; mkc_i < NMARKS; mkc_i++)
+        ed.marks[mkc_i] = -1;
+}
+
+/*
+ * Keep marks pointing at the same characters across an edit at pos.
+ * del=0: len bytes inserted at pos; del=1: len bytes deleted at pos.
+ * A mark inside a deleted range is cleared (its text is gone) -- this
+ * also drops marks that gb_discard_head slides out of the window.
+ * The -1 sentinel is naturally skipped by the mark < pos test.
+ */
+static int mka_i, mka_m;
+
+static void mk_adjust(pos, len, del)
+int pos, len, del;
+{
+    for (mka_i = 0; mka_i < NMARKS; mka_i++) {
+        mka_m = ed.marks[mka_i];
+        if (mka_m < pos) continue;
+        if (!del)
+            ed.marks[mka_i] = mka_m + len;
+        else if (mka_m >= pos + len)
+            ed.marks[mka_i] = mka_m - len;
+        else
+            ed.marks[mka_i] = -1;
+    }
+}
+
 /*
  * Initialise an empty gap buffer.
  *
@@ -54,6 +92,7 @@ int gb_init()
     ed.gb.size   = alloc;
     ed.gb.gstart = 0;
     ed.gb.gend   = alloc;
+    mk_clear();     /* ed is BSS-zeroed; 0 would be a valid mark */
     return 1;
 }
 
@@ -164,6 +203,8 @@ int   len;
         ed.cur_vrow = -1;
     }
 
+    mk_adjust(pos, len, 0);
+
     gb_move_gap(pos);
     gb_memmove(ed.gb.buf + ed.gb.gstart, text, len);
     ed.gb.gstart += len;
@@ -263,6 +304,8 @@ int len;
         ed.cur_vrow = -1;
     }
 
+    mk_adjust(pos, len, 1);
+
     gb_move_gap(pos);
     /* Expand gap right to consume deleted chars */
     ed.gb.gend += len;
@@ -276,8 +319,7 @@ int len;
 static void show_loading()
 {
     scr_status_invalidate();
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
+    term_status_row();
     term_reverse();
     term_puts("[Loading...]");
     term_normal();
@@ -365,6 +407,7 @@ HFILE *fp;
     ed.win_start    = 0L;
     ed.tail_offset  = 0L;
     ed.tail_file[0] = '\0';
+    mk_clear();
     s_gbl_rc = gb_fill(s_gbl_fp, s_gbl_fn);
     return s_gbl_rc;
 }
@@ -537,6 +580,7 @@ long offset;
     ed.cur_vrow        = -1;
     ed.cur_line_pos    = -1;
     ed.line_cnt_cached = 0;
+    mk_clear();          /* window moved: old positions are meaningless */
     /* tail_file unchanged -- same source file */
     return gb_fill(grf_f, (char *)0);
 }

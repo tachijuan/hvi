@@ -7,7 +7,7 @@
  * the HI-TECH C V3.09 compiler limit.
  *
  * Contains:
- *   dot_ins_position()  - reposition cursor for insert-mode replay
+ *   ins_position()      - reposition cursor for insert-entry commands
  *   dot_replay_c()      - replay c/C change commands
  *   dot_replay()        - replay the last change (the '.' command)
  */
@@ -24,17 +24,28 @@ void mv_eol();
 int  motion_endpoint();
 extern int me_cw;
 void apply_op();
+void status_show();
 
 /* ------------------------------------------------------------------ */
 
+/* Pull the cursor back off a trailing newline (shared post-edit fixup;
+ * also used by the insert-mode ESC handler in edit.c). */
+void cur_back_nl()
+{
+    if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
+        ed.cur_pos--;
+}
+
 /*
- * Reposition the cursor to the correct location before replaying an
- * insert-mode command stored in ed.dot_cmd.
+ * Reposition the cursor to the insertion point for insert-entry command
+ * cmd.  Shared by the normal-mode a/I/A handlers in edit.c and the
+ * dot-replay of all insert commands below.
  */
-void dot_ins_position()
+void ins_position(cmd)
+int cmd;
 {
     int sz, eol;
-    switch (ed.dot_cmd) {
+    switch (cmd) {
     case 'a':
         sz = gb_content_len();
         if (sz > 0 && ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n')
@@ -95,9 +106,7 @@ int n;
         undo_save_insert(ins_pos, ed.dot_len);
         gb_insert(ins_pos, ed.dot_text, ed.dot_len);
         ed.cur_pos = ins_pos + ed.dot_len;
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-            ed.cur_pos--;
-        if (ed.cur_pos < 0) ed.cur_pos = 0;
+        cur_back_nl();
     }
     scr_edit_end(light);
 }
@@ -183,7 +192,7 @@ int count;
             ed.modified = 1;
         }
         scr_redraw_from_cur();
-        scr_show_status(ed.status);
+        status_show();
         break;
 
     case 'd':
@@ -212,7 +221,7 @@ int count;
 
     default:
         if (ed.dot_len > 0) {
-            dot_ins_position();
+            ins_position(ed.dot_cmd);
             ins_pos = ed.cur_pos;
             /* Check if inserted text crosses a line boundary. */
             has_nl = 0;
@@ -222,22 +231,20 @@ int count;
             undo_save_insert(ins_pos, ed.dot_len);
             gb_insert(ins_pos, ed.dot_text, ed.dot_len);
             ed.cur_pos = ins_pos + ed.dot_len;
-            if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-                ed.cur_pos--;
+            cur_back_nl();
             ed.modified = 1;
             if (has_nl) {
                 /* Multi-line insert: redraw from insertion point. */
                 ed.cur_pos = ins_pos;
                 scr_adj();
                 ed.cur_pos = ins_pos + ed.dot_len;
-                if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-                    ed.cur_pos--;
-                scr_show_status(ed.status);
+                cur_back_nl();
+                status_show();
             } else if (del) {
                 scr_edit_end(1);
             } else {
                 scr_adj();
-                scr_show_status(ed.status);
+                status_show();
             }
         }
         break;

@@ -67,9 +67,36 @@ void mv_find();
 int  motion_endpoint();
 extern int me_cw;
 void apply_op();
+int  read_line();
 int  read_pattern();
 int  do_search_from();
 int  do_search_full();
+void status_show();
+void status_msg();
+void set_wcol();
+
+/* Defined in erepeat.c */
+void cur_back_nl();
+
+/* Scroll the viewport to the cursor, then repaint only the rows that
+ * came into view (old_top = ed.top_pos captured before the motion). */
+static void move_upd(old_top)
+int old_top;
+{
+    scr_scroll_to_cursor();
+    scr_update_after_move(old_top);
+}
+
+/* Record the dot-repeat state for a change command. */
+static void set_dot(cmd, motion, cnt, arg)
+int cmd, motion, cnt, arg;
+{
+    ed.dot_cmd    = cmd;
+    ed.dot_motion = motion;
+    ed.dot_count  = cnt;
+    ed.dot_arg    = arg;
+    ed.dot_len    = 0;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Insert mode                                                         */
@@ -80,12 +107,17 @@ int  do_search_full();
  * one-character insert, and repaint from scratch (the room-making
  * reloaded the window).  Shared by the newline and character paths.
  */
+/* Insert session touched a multi-row line: make ESC redraw the line. */
+static void chk_multi()
+{
+    if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+}
+
 static void ins_full_retry(tmp)
 char *tmp;
 {
     if (!gb_make_room() || !gb_insert(ed.cur_pos, tmp, 1)) {
-        hvi_strcpy(ed.status, "Buffer full");
-        scr_show_status(ed.status);
+        status_msg("Buffer full");
         return;
     }
     ed.cur_pos++;
@@ -105,7 +137,7 @@ int c;
 {
     static char tmp[2];
     static int del_ch, cur_col, new_col, sz;
-    static int old_top, i, ilen, prev;
+    static int old_top, i, ilen;
     static int start, del, had_nl, sol;
 
     if (c == KEY_ESC) {
@@ -121,11 +153,8 @@ int c;
             if (g_ins_cmd != 'c') ed.dot_motion = 0;
         }
         g_ins_cmd = 0;
-        if (ed.cur_pos > 0) {
-            prev = gb_char_at(ed.cur_pos - 1);
-            if (prev != '\n') ed.cur_pos--;
-        }
-        ed.want_col = scr_pos_col(ed.cur_pos);
+        cur_back_nl();
+        set_wcol();
         ed.status[0] = '\0';
         old_top = ed.top_pos;
         scr_scroll_to_cursor();
@@ -133,11 +162,11 @@ int c;
             scr_refresh();
         } else if (!g_ins_multi && scr_line_is_1row(ed.cur_pos)) {
             /* Insert mode kept the row current -- status update only. */
-            scr_show_status(ed.status);
+            status_show();
         } else {
             ed.cur_vrow = -1;   /* row cache unreliable after wrap ops */
             scr_redraw_cur_line();
-            scr_show_status(ed.status);
+            status_show();
         }
         g_ins_multi = 0;
         return 1;
@@ -155,7 +184,7 @@ int c;
 
     if (c == KEY_BS || c == KEY_DEL || c == KEY_CTRL_H) {
         if (ed.cur_pos > 0) {
-            if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+            chk_multi();
             del_ch = gb_char_at(ed.cur_pos - 1);
             ed.cur_pos--;
             gb_delete(ed.cur_pos, 1);
@@ -182,7 +211,7 @@ int c;
     }
 
     if (c == KEY_CTRL_W) {
-        if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+        chk_multi();
         start = ed.cur_pos;
         while (ed.cur_pos > 0 && isspacech(gb_char_at(ed.cur_pos - 1)))
             ed.cur_pos--;
@@ -207,7 +236,7 @@ int c;
     }
 
     if (c == KEY_CTRL_U) {
-        if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+        chk_multi();
         sol = find_bol(ed.cur_pos);
         if (sol < ed.cur_pos) {
             del = ed.cur_pos - sol;
@@ -281,7 +310,7 @@ int c;
             }
             /* Mid-line insert into a line that (now) wraps can push a
              * character off the row end; make ESC repaint the line. */
-            if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+            chk_multi();
         }
     }
     return 0;
@@ -291,45 +320,18 @@ int c;
 /*  Command-line (ex) mode                                              */
 /* ------------------------------------------------------------------ */
 
-static int s_clm_c;  /* static: bios in term_getch may corrupt IX-relative locals */
-
 static void cmdline_mode()
 {
-    ed.cmdline[0] = '\0';
-    ed.cmdlen = 0;
-    scr_status_invalidate();
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
-    term_putch(':');
-
-    for (;;) {
-        s_clm_c = term_getch();
-        if (s_clm_c == KEY_ESC) {
-            scr_clear_status();
-            return;
-        }
-        if (s_clm_c == KEY_CR || s_clm_c == KEY_LF) {
-            ed.cmdline[ed.cmdlen] = '\0';
-            if (ed.cmdlen > 0) {
-                if (ex_execute(ed.cmdline)) {
-                    if (!ed.quit) scr_refresh();
-                } else {
-                    if (!ed.quit) scr_show_status(ed.status);
-                }
-            } else {
-                if (!ed.quit) scr_clear_status();
-            }
-            return;
-        }
-        if ((s_clm_c == KEY_BS || s_clm_c == KEY_DEL) && ed.cmdlen > 0) {
-            ed.cmdlen--;
-            term_putch(KEY_BS); term_putch(' '); term_putch(KEY_BS);
-            continue;
-        }
-        if (s_clm_c >= 0x20 && s_clm_c < 0x7F && ed.cmdlen < CMD_MAX - 1) {
-            ed.cmdline[ed.cmdlen++] = (char)s_clm_c;
-            term_putch(s_clm_c);
-        }
+    /* read_line (emove.c) shares the prompt/edit loop with / and ?. */
+    ed.cmdlen = read_line(':', ed.cmdline, CMD_MAX, 0);
+    if (ed.cmdlen <= 0) {           /* ESC (-1) or empty command */
+        scr_clear_status();
+        return;
+    }
+    if (ex_execute(ed.cmdline)) {
+        if (!ed.quit) scr_refresh();
+    } else {
+        if (!ed.quit) status_show();
     }
 }
 
@@ -344,8 +346,7 @@ int dir, count;
     static int fm_top;
     fm_top = ed.top_pos;
     mv_find(g_find_char, dir, count);
-    scr_scroll_to_cursor();
-    scr_update_after_move(fm_top);
+    move_upd(fm_top);
 }
 
 /* Character search on current line: f, F, ;, ,, . */
@@ -377,7 +378,7 @@ int c, count;
 }
 
 /* Adjust cursor to the insertion point for the original entry command. */
-void dot_ins_position();
+void ins_position();
 void dot_replay_c();
 void dot_replay();
 
@@ -391,25 +392,25 @@ static void do_search_move()
     sm_win = ed.win_start;
     sm_pos = do_search_full(ed.cur_pos);
     if (sm_pos >= 0) {
+        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         ed.cur_pos  = sm_pos;
         ed.cur_vrow = -1;
         sm_top = ed.top_pos;
-        scr_scroll_to_cursor();
-        /* A buffer reload changes win_start; need a full screen redraw. */
+        /* A buffer reload changes win_start; need a full screen redraw
+         * (scr_refresh scrolls to the cursor itself). */
         if (ed.win_start != sm_win) {
             scr_refresh();
         } else {
-            scr_update_after_move(sm_top);
+            move_upd(sm_top);
         }
         if (ed.search_wrapped) {
             hvi_sprintf(ed.status, "search hit %s, continuing at %s",
                 (int)(ed.search_dir == SEARCH_FWD ? "BOTTOM" : "TOP"),
                 (int)(ed.search_dir == SEARCH_FWD ? "TOP" : "BOTTOM"));
-            scr_show_status(ed.status);
+            status_show();
         }
     } else {
-        hvi_strcpy(ed.status, "Pattern not found");
-        scr_show_status(ed.status);
+        status_msg("Pattern not found");
     }
 }
 
@@ -481,7 +482,35 @@ static void normal_misc_cmd(c, count, size)
 int c, count, size;
 {
     static int save_len, old_dir, light, u_i;
+    static int mk_c, mk_pos, mk_top;
     switch (c) {
+
+    /* --- Marks --- */
+    case 'm':
+        mk_c = term_getch();
+        if (mk_c >= 'a' && mk_c <= 'z')
+            ed.marks[mk_c - 'a'] = ed.cur_pos;
+        break;
+
+    case '`':
+        mk_c = term_getch();
+        if (mk_c == '`')
+            mk_pos = ed.marks[MARK_PREV];
+        else if (mk_c >= 'a' && mk_c <= 'z')
+            mk_pos = ed.marks[mk_c - 'a'];
+        else
+            break;
+        if (mk_pos < 0 || mk_pos > size) {
+            status_msg("Mark not set");
+            break;
+        }
+        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
+        ed.cur_pos  = mk_pos;
+        ed.cur_vrow = -1;
+        set_wcol();
+        mk_top = ed.top_pos;
+        move_upd(mk_top);
+        break;
 
     /* --- Yank/Put --- */
     case 'Y':
@@ -537,8 +566,7 @@ int c, count, size;
             ed.undo.type = UNDO_NONE;
             scr_edit_end(light);
         } else {
-            hvi_strcpy(ed.status, "Nothing to undo");
-            scr_show_status(ed.status);
+            status_msg("Nothing to undo");
         }
         break;
 
@@ -563,8 +591,7 @@ int c, count, size;
      * run the shared handler in erepeat.c (one copy of the logic). */
     case 'J':
     case '~':
-        ed.dot_cmd = c; ed.dot_count = count;
-        ed.dot_motion = 0; ed.dot_arg = 0;
+        set_dot(c, 0, count, 0);
         dot_replay(count);
         break;
 
@@ -582,9 +609,10 @@ int c, count, size;
     switch (c) {
 
     /* --- Operators --- */
-    case 'd':  g_op = 'd'; g_count = count; g_hcnt = 1; return;
-    case 'c':  g_op = 'c'; g_count = count; g_hcnt = 1; return;
-    case 'y':  g_op = 'y'; g_count = count; g_hcnt = 1; return;
+    case 'd':
+    case 'c':
+    case 'y':
+        g_op = c; g_count = count; g_hcnt = 1; return;
 
     case 'D':  op_motion('d', count, '$'); break;
     case 'C':  op_motion('c', count, '$'); break;
@@ -592,22 +620,14 @@ int c, count, size;
     case 'X':  op_motion('d', count, 'h'); break;
 
     case 'r':
+        /* Same implementation as its '.' replay (one copy of the logic,
+         * like J and ~): record the dot state and run the replay. */
         {
             int repl = term_getch();
-            int oldc;
             if (repl != KEY_ESC && ed.cur_pos < size) {
-                char tmp_c[1];
                 if (repl == KEY_CR) repl = '\n';
-                oldc = gb_char_at(ed.cur_pos);
-                undo_save_delete(ed.cur_pos, 1);
-                gb_delete(ed.cur_pos, 1);
-                tmp_c[0] = (char)repl;
-                gb_insert(ed.cur_pos, tmp_c, 1);
-                ed.modified = 1;
-                ed.dot_cmd = 'r'; ed.dot_count = 1;
-                ed.dot_motion = 0; ed.dot_arg = repl;
-                if (repl == '\n') scr_refresh();
-                else scr_fix_char(oldc, repl);
+                set_dot('r', 0, 1, repl);
+                dot_replay(1);
             }
         }
         break;
@@ -628,6 +648,23 @@ int c;
     scr_show_status(msg_insert);
 }
 
+/* Open a new line at pos and enter insert mode (o and O). */
+static char ol_nl = '\n';
+
+static void open_line(cmd, pos)
+int cmd, pos;
+{
+    g_ins_cmd = cmd;
+    undo_save_insert(pos, 0);
+    gb_insert(pos, &ol_nl, 1);
+    ed.cur_pos = pos;
+    ed.modified = 1;
+    ed.undo.len++;
+    scr_adj();
+    ed.mode = MODE_INSERT;
+    scr_show_status(msg_insert);
+}
+
 static void normal_edit_cmd(c, count, size)
 int c, count, size;
 {
@@ -637,60 +674,32 @@ int c, count, size;
         enter_insert('i');
         break;
 
+    /* a/I/A position via ins_position (erepeat.c) -- the same code
+     * their '.' replay uses. */
     case 'a':
-        if (size > 0 && gb_char_at(ed.cur_pos) != '\n')
-            ed.cur_pos++;
-        enter_insert('a');
-        break;
-
     case 'I':
-        mv_bnb();
-        enter_insert('I');
-        break;
-
     case 'A':
-        mv_eol();
-        if (size > 0 && ed.cur_pos < size && gb_char_at(ed.cur_pos) != '\n')
-            ed.cur_pos++;
-        enter_insert('A');
+        ins_position(c);
+        enter_insert(c);
         break;
 
     case 'o':
-        g_ins_cmd = 'o';
         {
-            char nl = '\n';
-            int  eol = ed.cur_pos;
-            int  sz  = gb_content_len();
-            while (eol < sz && gb_char_at(eol) != '\n') eol++;
+            int eol = find_eol(ed.cur_pos);
+            int sz  = gb_content_len();
             if (eol < sz) eol++;
             if (eol >= sz && sz > 0 && gb_char_at(sz - 1) != '\n') {
-                gb_insert(sz, &nl, 1);
+                /* last line lacks its newline: add it first */
+                gb_insert(sz, &ol_nl, 1);
                 eol = sz + 1;
             }
-            undo_save_insert(eol, 0);
-            gb_insert(eol, &nl, 1);
-            ed.cur_pos = eol;
-            ed.modified = 1;
-            ed.undo.len++;
-            scr_adj();
-            ed.mode = MODE_INSERT;
-            scr_show_status(msg_insert);
+            open_line('o', eol);
         }
         break;
 
     case 'O':
-        g_ins_cmd = 'O';
-        {
-            char nl = '\n';
-            mv_bol();
-            undo_save_insert(ed.cur_pos, 0);
-            gb_insert(ed.cur_pos, &nl, 1);
-            ed.modified = 1;
-            ed.undo.len++;
-            scr_adj();
-            ed.mode = MODE_INSERT;
-            scr_show_status(msg_insert);
-        }
+        mv_bol();
+        open_line('O', ed.cur_pos);
         break;
 
     case 's':  op_motion('c', count, 'l'); break;
@@ -715,11 +724,13 @@ static void nav_refresh()
     scr_refresh();
 }
 
-/* Place the cursor on the middle line of the new page and repaint. */
+/* Set the new top line, place the cursor on the middle line of the new
+ * page, and repaint. */
 static void pg_mid(new_top, total)
 int new_top, total;
 {
     static int mid;
+    ed.top_pos = scr_line_start(new_top);
     mid = new_top + ((ed.scr_rows - 2) >> 1);   /* >> 1 replaces / 2 */
     if (mid >= total) mid = total - 1;
     if (mid < 0) mid = 0;
@@ -740,6 +751,7 @@ int c, count, had_count;
     switch (c) {
 
     case 'G':
+        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         if (had_count) {
             /* nG: navigate to line n, scanning the file if needed. */
             gb_goto_line(count);
@@ -756,7 +768,7 @@ int c, count, had_count;
             ed.cur_pos = scr_last_line_start();
         }
         nav_refresh();
-        ed.want_col = scr_pos_col(ed.cur_pos);
+        set_wcol();
         break;
 
     case KEY_CTRL_F:
@@ -775,7 +787,6 @@ int c, count, had_count;
         new_top = top_line + n;
         if (new_top >= total) new_top = total - 1;
         if (new_top <= top_line) break;
-        ed.top_pos = scr_line_start(new_top);
         pg_mid(new_top, total);
         break;
 
@@ -796,27 +807,19 @@ int c, count, had_count;
             if (new_top < 0) new_top = 0;
             total = scr_line_count();
         }
-        ed.top_pos = scr_line_start(new_top);
         pg_mid(new_top, total);
         break;
 
     case KEY_CTRL_D:
+    case KEY_CTRL_U:
         n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
-        if (ed.tail_offset > 0L &&
+        if (c == KEY_CTRL_D && ed.tail_offset > 0L &&
             ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
             gb_load_more(LOAD_CHUNK);
         pg_top = ed.top_pos;         /* after load: positions rebased */
-        mv_down(n * count);
-        scr_scroll_to_cursor();
-        scr_update_after_move(pg_top);   /* scroll + paint new rows only */
-        break;
-
-    case KEY_CTRL_U:
-        n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
-        pg_top = ed.top_pos;
-        mv_up(n * count);
-        scr_scroll_to_cursor();
-        scr_update_after_move(pg_top);
+        if (c == KEY_CTRL_D) mv_down(n * count);
+        else                 mv_up(n * count);
+        move_upd(pg_top);            /* scroll + paint new rows only */
         break;
     }
 }
@@ -863,10 +866,8 @@ int c;
             /* cc/S replace the line's text but keep its newline */
             if (op == 'c' && nc_to > nc_from && gb_char_at(nc_to - 1) == '\n')
                 nc_to--;
-            if (op != 'y') {
-                ed.dot_cmd = op; ed.dot_motion = op;
-                ed.dot_count = count; ed.dot_arg = 0; ed.dot_len = 0;
-            }
+            if (op != 'y')
+                set_dot(op, op, count, 0);
             if (op == 'c') g_ins_cmd = 'c';
             apply_op(op, nc_from, nc_to, 1);
             return;
@@ -878,13 +879,11 @@ int c;
         endpoint = motion_endpoint(c, count, &linewise);
         if (endpoint < 0) {
             hvi_sprintf(ed.status, "Unknown motion: %c", c, 0);
-            scr_show_status(ed.status);
+            status_show();
             return;
         }
-        if (op != 'y') {
-            ed.dot_cmd = op; ed.dot_motion = c;
-            ed.dot_count = count; ed.dot_arg = 0; ed.dot_len = 0;
-        }
+        if (op != 'y')
+            set_dot(op, c, count, 0);
         if (op == 'c') g_ins_cmd = 'c';
         apply_op(op, ed.cur_pos, endpoint, linewise);
         return;
@@ -895,6 +894,7 @@ int c;
         g_g = 0;
         if (c == 'g') {
             gg_line = (g_g_count > 0) ? g_g_count : 1;
+            ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
             gb_goto_line(gg_line);
             nav_refresh();
         }
@@ -916,8 +916,8 @@ int c;
 
     case KEY_CR:
         old_top = ed.top_pos;
-        mv_down(count); mv_bnb(); scr_scroll_to_cursor();
-        scr_update_after_move(old_top);
+        mv_down(count); mv_bnb();
+        move_upd(old_top);
         break;
 
     case 'j':
@@ -928,8 +928,8 @@ int c;
             scr_refresh();
         } else {
             old_top = ed.top_pos;
-            mv_down(count); scr_scroll_to_cursor();
-            scr_update_after_move(old_top);
+            mv_down(count);
+            move_upd(old_top);
         }
         break;
     case 'k':
@@ -950,12 +950,12 @@ int c;
     case 'b':
     case 'e':
         old_top = ed.top_pos;
-        mv_word(c, count); scr_scroll_to_cursor();
-        scr_update_after_move(old_top);
+        mv_word(c, count);
+        move_upd(old_top);
         break;
 
     case '0':  mv_bol();  ed.want_col = 0; scr_update_cursor(); break;
-    case '^':  mv_bnb();  ed.want_col = scr_pos_col(ed.cur_pos); scr_update_cursor(); break;
+    case '^':  mv_bnb();  set_wcol(); scr_update_cursor(); break;
     case '$':  mv_eol();  ed.want_col = 9999; scr_update_cursor(); break;
 
     case '.':
@@ -1005,7 +1005,7 @@ void edit_run()
             }
             insert_key(s_er_c);
             if (ed.mode == MODE_INSERT && ed.status[0])
-                scr_show_status(ed.status);
+                status_show();
         } else {
             if (ed.status[0]) {
                 ed.status[0] = '\0';

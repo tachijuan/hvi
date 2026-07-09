@@ -636,8 +636,7 @@ char *msg;
     if (hvi_strcmp(sss_p, sss_last) != 0) {
         hvi_strncpy(sss_last, sss_p, STATUS_MAX - 1);
         sss_last[STATUS_MAX - 1] = '\0';
-        term_goto(ed.scr_rows - 1, 0);
-        term_clreol();
+        term_status_row();
         term_reverse();
         term_puts(sss_p);
         term_normal();
@@ -650,8 +649,7 @@ void scr_clear_status()
 {
     ed.status[0] = '\0';
     sss_last[0] = '\0';
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
+    term_status_row();
     scr_update_cursor();
 }
 

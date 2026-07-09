@@ -278,13 +278,19 @@ void term_init()
     term_flush();
 }
 
+/* Park the cursor at the start of the status row and clear it. */
+void term_status_row()
+{
+    term_goto(ed.scr_rows - 1, 0);
+    term_clreol();
+}
+
 void term_restore()
 {
     raw_byte(0x1B); raw_byte('['); raw_byte('r'); /* reset scroll region */
     term_normal();
     s_trow = -1; s_tcol = -1;
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
+    term_status_row();
     raw_byte('\n');
     term_flush();
 }

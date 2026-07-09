@@ -15,6 +15,30 @@ extern Editor ed;
 int motion_endpoint();   /* fwd decl: used by the word motions below */
 
 /* ------------------------------------------------------------------ */
+/*  Shared status-line helpers                                          */
+/* ------------------------------------------------------------------ */
+
+/* Show ed.status (call after hvi_sprintf into it). */
+void status_show()
+{
+    scr_show_status(ed.status);
+}
+
+/* Set ed.status to a fixed message and show it. */
+void status_msg(s)
+char *s;
+{
+    hvi_strcpy(ed.status, s);
+    status_show();
+}
+
+/* Remember the cursor's column for subsequent vertical movement. */
+void set_wcol()
+{
+    ed.want_col = scr_pos_col(ed.cur_pos);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Character classification                                            */
 /* ------------------------------------------------------------------ */
 
@@ -144,7 +168,7 @@ int n;
         if (gb_char_at(ed.cur_pos - 1) == '\n') break;
         ed.cur_pos--;
     }
-    ed.want_col = scr_pos_col(ed.cur_pos);
+    set_wcol();
     end_hmove();
 }
 
@@ -161,7 +185,7 @@ int n;
         if (gb_char_at(ed.cur_pos + 1) == '\n') break;
         ed.cur_pos++;
     }
-    ed.want_col = scr_pos_col(ed.cur_pos);
+    set_wcol();
     end_hmove();
 }
 
@@ -258,7 +282,7 @@ int ch, dir, count;
         if (found < 0) break;
         ed.cur_pos = found;
     }
-    ed.want_col = scr_pos_col(ed.cur_pos);
+    set_wcol();
     end_hmove();
 }
 
@@ -444,7 +468,7 @@ int op, from, to, linewise;
         ed.cur_vrow = -1;
         hvi_sprintf(ed.status, "%d char%s yanked",
                     save, (int)(save == 1 ? "" : "s"));
-        scr_show_status(ed.status);
+        status_show();
         return;
     }
 
@@ -479,38 +503,56 @@ int op, from, to, linewise;
 /*  Search                                                              */
 /* ------------------------------------------------------------------ */
 
-int read_pattern(prompt)
-int prompt;
+/*
+ * Read a line of input on the status row after echoing prompt.
+ * Stores up to max-1 chars (plus NUL) into buf; lower != 0 folds A-Z to
+ * a-z as stored (the echo keeps the typed case).  Returns the length,
+ * or -1 on ESC.  Shared by the ex ':' command line and the / ? prompts.
+ * All locals static: term_getch's bios call may corrupt IX-relative autos.
+ */
+static int   rl_c, rl_len, rl_max, rl_lower;
+static char *rl_buf;
+
+int read_line(prompt, buf, max, lower)
+int   prompt;
+char *buf;
+int   max, lower;
 {
-    static int c, len;
-    static char *pat;
-    pat = ed.search;
+    rl_buf   = buf;
+    rl_max   = max;
+    rl_lower = lower;
 
     scr_status_invalidate();
-    term_goto(ed.scr_rows - 1, 0);
-    term_clreol();
+    term_status_row();
     term_putch(prompt);
-    len = 0;
+    rl_len = 0;
 
     for (;;) {
-        c = term_getch();
-        if (c == KEY_ESC) return 0;
-        if (c == KEY_CR || c == KEY_LF) {
-            pat[len] = '\0';
-            return (len > 0) ? 1 : 0;
+        rl_c = term_getch();
+        if (rl_c == KEY_ESC) return -1;
+        if (rl_c == KEY_CR || rl_c == KEY_LF) {
+            rl_buf[rl_len] = '\0';
+            return rl_len;
         }
-        if ((c == KEY_BS || c == KEY_DEL) && len > 0) {
-            len--;
+        if ((rl_c == KEY_BS || rl_c == KEY_DEL) && rl_len > 0) {
+            rl_len--;
             term_putch(KEY_BS); term_putch(' '); term_putch(KEY_BS);
             continue;
         }
-        if (c >= 0x20 && c < 0x7F && len < SEARCH_MAX - 1) {
-            /* Store pre-lowered: the search is case-insensitive, so the
-             * inner loops need no per-comparison pattern lowering. */
-            pat[len++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
-            term_putch(c);
+        if (rl_c >= 0x20 && rl_c < 0x7F && rl_len < rl_max - 1) {
+            rl_buf[rl_len++] = (char)((rl_lower && rl_c >= 'A' && rl_c <= 'Z')
+                                      ? rl_c + 32 : rl_c);
+            term_putch(rl_c);
         }
     }
+}
+
+/* Search patterns are stored pre-lowered: the search is case-insensitive,
+ * so the inner compare loops need no per-comparison pattern lowering. */
+int read_pattern(prompt)
+int prompt;
+{
+    return read_line(prompt, ed.search, SEARCH_MAX, 1) > 0;
 }
 
 /*

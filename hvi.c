@@ -17,6 +17,10 @@ extern int bdos_disk();   /* IX-safe BDOS wrapper (cstart.as) */
 Editor ed;
 char msg_insert[] = "-- INSERT --";
 
+/* Status formats shared with ex.c (one copy of each literal). */
+char fmt_newfile[] = "\"%s\" [New File]";
+char fmt_chars[]   = "\"%s\" %d chars";
+
 /*
  * cstart.as reads the CP/M command tail from page zero (0x0080/0x0081)
  * in assembly -- page-zero pointer casts in C generate relocation records
@@ -85,11 +89,11 @@ char *cmdtail;
                         "\"%s\" [Partial: %d chars, tail preserved]",
                         (int)ed.filename, gb_content_len());
         } else if (partial == 1) {
-            hvi_sprintf(ed.status, "\"%s\" %d chars",
+            hvi_sprintf(ed.status, fmt_chars,
                         (int)ed.filename, gb_content_len());
         } else {
             /* File does not exist -- start with empty buffer */
-            hvi_sprintf(ed.status, "\"%s\" [New File]",
+            hvi_sprintf(ed.status, fmt_newfile,
                         (int)ed.filename, 0);
         }
         ed.modified = 0;

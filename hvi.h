@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.2"
+#define HVI_VERSION "2.3"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -46,6 +46,11 @@
 
 /* Search pattern buffer */
 #define SEARCH_MAX  64
+
+/* Marks: slots 0-25 hold `a-`z; MARK_PREV holds the position before the
+ * last jump (used by ``).  A mark value of -1 means "not set". */
+#define NMARKS      27
+#define MARK_PREV   26
 
 /* Filename/status buffer */
 #define PATH_MAX    64
@@ -207,6 +212,11 @@ typedef struct {
      * Maintained incrementally by mv_down/mv_up so scr_scroll_to_cursor()
      * can skip the O(text_rows) viewport scan on every j/k keypress. */
     int     cur_vrow;
+
+    /* Marks: buffer positions for m/` (a-z + MARK_PREV); -1 = not set.
+     * Adjusted on every insert/delete; cleared when the large-file
+     * window slides or a new file is loaded (positions become invalid). */
+    int     marks[NMARKS];
 } Editor;
 
 extern Editor ed;
@@ -258,6 +268,7 @@ void term_restore();
 void term_clear();
 void term_clreol();
 void term_goto(/* int row, int col */);
+void term_status_row();
 void term_putch(/* int c */);
 void term_puts(/* char *s */);
 void term_flush();

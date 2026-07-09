@@ -360,6 +360,28 @@ def main():
               "one\nthree\n")
     file_test(sess, "undo charwise p", "abcdef\n", "2ylpu", "abcdef\n")
 
+    # ---------- marks (m / `) ----------
+    # `a returns to the exact position (line AND column) of the mark
+    file_test(sess, "mark jump exact", "alpha bravo\ndelta echo\ngolf hotel\n",
+              "jllmagg`arX", "alpha bravo\ndeXta echo\ngolf hotel\n")
+    # `` returns to the position before the last jump (here: G)
+    file_test(sess, "mark backtick return", BASIC, "G``rX",
+              BASIC.replace("alpha", "Xlpha"))
+    # `` again toggles back to where the first `` came from
+    file_test(sess, "mark backtick toggle", BASIC, "G````rX",
+              BASIC.replace("mike", "Xike"))
+    # a search records the previous position for ``
+    file_test(sess, "mark after search", BASIC, "/mike\r``rX",
+              BASIC.replace("alpha", "Xlpha"))
+    # :N records the previous position for ``
+    file_test(sess, "mark after :N", BASIC, ":4\r``rX",
+              BASIC.replace("alpha", "Xlpha"))
+    # marks shift with edits made before them
+    file_test(sess, "mark tracks delete", "one\ntwo\nthree\n",
+              "jjmaggdd`arX", "two\nXhree\n")
+    file_test(sess, "mark tracks insert", "one\ntwo\n",
+              "jmaggOnew\x1b`arX", "new\none\nXwo\n")
+
     # ---------- screen checks ----------
     rm_file("T.TXT"); put_file("T.TXT", BASIC)
     sess.start_hvi("T.TXT")
@@ -523,6 +545,19 @@ def main():
     ok = sess.quit_expect_prompt(":wq\r")
     check("file EOF append", ok and get_file("T.TXT") == "one\ntwo\nthreeXY\n",
           "got %r" % get_file("T.TXT"))
+
+    # marks: jumping to a deleted or never-set mark reports an error
+    rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\nthree\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("jmagg2dd`a")                # 2dd removes the marked text
+    lines = sess.screen_lines()
+    check("screen mark deleted", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys("`z")                        # never set
+    lines = sess.screen_lines()
+    check("screen mark unset", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.quit_expect_prompt(":q!\r")
 
     # shrinking a line back across the wrap boundary (dirty-flag path)
     rm_file("T.TXT"); put_file("T.TXT", "c" * 81 + "\nsecond\n")
