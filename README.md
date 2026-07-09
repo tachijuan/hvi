@@ -391,8 +391,8 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 
 ### 2.1.1 → 2.2
 
-Performance release (targeting 4 MHz Z80). No new commands; all 114 + 13
-tests in `tests/` pass (19 screen-scrape tests were added for the new
+Performance release (targeting 4 MHz Z80). No new commands; all 116 + 13
+tests in `tests/` pass (21 screen-scrape tests were added for the new
 minimal-redraw paths, plus 4 put/undo regression tests).
 
 The theme of this release is removing per-character function-call overhead:
@@ -486,6 +486,19 @@ Editing bug fixes:
   in that case, which also corrects the same off-by-one-row miscount in
   the scroll and row-location walks.
 
+- **A blank line typed between text lines kept a stray `~`.**  Pressing
+  Enter at the end of the buffer parks the cursor on the empty last
+  line (position == content length, after the final newline), and
+  `draw_row_at()` painted that row as a past-the-end `~`; the next
+  Enter shifted the redraw window down and stranded the tilde on what
+  was now a real blank line.  That row is left blank while the cursor
+  occupies it.
+- **A mid-line Enter left the moved-down tail on the row above.**  The
+  after-edit redraw starts at the cursor's (new) row, so the first half
+  of the split line was never repainted (`aX<Enter>` on `ab` displayed
+  `aXb` above `Yb`).  The split row is now repainted when the new line
+  is non-empty.
+
 Screen bug fixes (both caught by the 16 new screen-scrape tests):
 
 - **`:N` and `:$` left the cursor-row cache stale**, so the terminal cursor
@@ -517,9 +530,20 @@ work added; every byte saved also enlarges the gap buffer, since
 - Mirror-image message strings merged into single format strings
   (`search hit …`, the two `Modified buffer` hints); the temp-file name
   literals are stored once.
+- Second pass: the BDOS-33 sector-read setup shared by `hvi_fgetc` and
+  `hvi_fseek` is one `rd_sector()`; the sector flush shared by
+  `hvi_fputc` and `flush_write` is one `wr_sector()`; the save-time
+  head and tail copies are one `gb_copy_file(from, to)`; the three
+  word-motion wrappers are one `mv_word(c, n)` and `w`/`b`/`e` share
+  one dispatcher case; `i`/`a`/`I`/`A` share `enter_insert()`; the six
+  copies of the console-status poll countdown (arrow-key
+  disambiguation, terminal-size handshake) are one `con_wait()` and
+  the two size-report digit parsers are one `tgs_num()`; the two
+  advance-top loops in `scr_scroll_to_cursor()` are merged; the
+  write-only `count` field left the Editor struct.
 
-Binary size: 243 CP/M records (~31K) — the speed and redraw work above
-cost a net 7 records over 2.1.1's 236.
+Binary size: 240 CP/M records (~30K) — the speed and redraw work above
+cost a net 4 records over 2.1.1's 236.
 
 ### 2.1 → 2.1.1
 

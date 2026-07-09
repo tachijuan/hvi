@@ -62,9 +62,7 @@ void mv_left();
 void mv_right();
 void mv_up();
 void mv_down();
-void mv_word_fwd();
-void mv_word_back();
-void mv_word_end();
+void mv_word();
 void mv_find();
 int  motion_endpoint();
 extern int me_cw;
@@ -237,6 +235,12 @@ int c;
         ed.modified = 1;
         if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
         scr_adj();
+        /* Mid-line split: the row above the cursor kept the tail that
+         * moved down with the new line -- repaint it (tail exists only
+         * when the cursor's new line is non-empty). */
+        if (ed.cur_vrow > 0 && ed.cur_pos < gb_content_len() &&
+            gb_char_at(ed.cur_pos) != '\n')
+            scr_redraw_line(ed.cur_vrow - 1);
         scr_show_status(msg_insert);
         g_ins_multi = 0;        /* cursor is on a freshly drawn line */
         return 0;
@@ -614,43 +618,41 @@ int c, count, size;
     }
 }
 
+/* Enter insert mode at the current position for entry command c. */
+static void enter_insert(c)
+int c;
+{
+    g_ins_cmd = c;
+    undo_save_insert(ed.cur_pos, 0);
+    ed.mode = MODE_INSERT;
+    scr_show_status(msg_insert);
+}
+
 static void normal_edit_cmd(c, count, size)
 int c, count, size;
 {
     switch (c) {
 
     case 'i':
-        g_ins_cmd = 'i';
-        undo_save_insert(ed.cur_pos, 0);
-        ed.mode = MODE_INSERT;
-        scr_show_status(msg_insert);
+        enter_insert('i');
         break;
 
     case 'a':
         if (size > 0 && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
-        g_ins_cmd = 'a';
-        undo_save_insert(ed.cur_pos, 0);
-        ed.mode = MODE_INSERT;
-        scr_show_status(msg_insert);
+        enter_insert('a');
         break;
 
     case 'I':
         mv_bnb();
-        g_ins_cmd = 'I';
-        undo_save_insert(ed.cur_pos, 0);
-        ed.mode = MODE_INSERT;
-        scr_show_status(msg_insert);
+        enter_insert('I');
         break;
 
     case 'A':
         mv_eol();
         if (size > 0 && ed.cur_pos < size && gb_char_at(ed.cur_pos) != '\n')
             ed.cur_pos++;
-        g_ins_cmd = 'A';
-        undo_save_insert(ed.cur_pos, 0);
-        ed.mode = MODE_INSERT;
-        scr_show_status(msg_insert);
+        enter_insert('A');
         break;
 
     case 'o':
@@ -945,18 +947,10 @@ int c;
         break;
 
     case 'w':
-        old_top = ed.top_pos;
-        mv_word_fwd(count); scr_scroll_to_cursor();
-        scr_update_after_move(old_top);
-        break;
     case 'b':
-        old_top = ed.top_pos;
-        mv_word_back(count); scr_scroll_to_cursor();
-        scr_update_after_move(old_top);
-        break;
     case 'e':
         old_top = ed.top_pos;
-        mv_word_end(count); scr_scroll_to_cursor();
+        mv_word(c, count); scr_scroll_to_cursor();
         scr_update_after_move(old_top);
         break;
 

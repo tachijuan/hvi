@@ -90,7 +90,7 @@ char *cmd;
         p++;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_strcpy(ed.status, "Usage: :r filename");
+            hvi_sprintf(ed.status, "Usage: :%c filename", 'r', 0);
             return 0;
         }
 
@@ -130,7 +130,7 @@ char *cmd;
         force = (*p == '!') ? (p++, 1) : 0;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_strcpy(ed.status, "Usage: :e[!] filename");
+            hvi_sprintf(ed.status, "Usage: :%c filename", 'e', 0);
             return 0;
         }
         if (ed.modified && !force) {
@@ -154,7 +154,6 @@ char *cmd;
         ed.cur_line_pos    = -1;
         ed.line_cnt_cached = 0;
         ed.want_col        = 0;
-        ed.count           = 0;
         ed.undo.type       = UNDO_NONE;
         ed.yank_len        = 0;
         ed.yank_line       = 0;

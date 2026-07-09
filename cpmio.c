@@ -187,11 +187,22 @@ char *name, *mode;
     return s_fop_fp;
 }
 
-/* Pad and flush the current write sector then mark buffer clean.
+/* Write the current sector buffer (BDOS 21) and mark it clean.
  * s_fw_fp is static: bdos calls may corrupt IX-relative auto vars. */
 static HFILE *s_fw_fp;
 static int    s_fw_i;
 
+static void wr_sector(fp)
+HFILE *fp;
+{
+    s_fw_fp = fp;
+    bdos_disk(26, (int)s_fw_fp->buf);
+    bdos_disk(21, (int)s_fw_fp->fcb);   /* BDOS 21: Write Sequential */
+    s_fw_fp->buf_pos = 0;
+    s_fw_fp->dirty   = 0;
+}
+
+/* Pad and flush the current write sector then mark buffer clean. */
 static void flush_write(fp)
 HFILE *fp;
 {
@@ -199,10 +210,32 @@ HFILE *fp;
     if (!s_fw_fp->dirty) return;
     for (s_fw_i = s_fw_fp->buf_pos; s_fw_i < SECTOR_SZ; s_fw_i++)
         s_fw_fp->buf[s_fw_i] = 0x1A;
-    bdos_disk(26, (int)s_fw_fp->buf);
-    bdos_disk(21, (int)s_fw_fp->fcb);   /* BDOS 21: Write Sequential */
-    s_fw_fp->buf_pos = 0;
-    s_fw_fp->dirty   = 0;
+    wr_sector(s_fw_fp);
+}
+
+/*
+ * Load 128-byte sector `sect` of fp into its buffer via BDOS 33
+ * (Read Random).  Sets the FCB random-record fields r0/r1/r2 and CR
+ * (some emulators track position via CR rather than r0/r1/r2).
+ * Shared by hvi_fgetc refills and hvi_fseek.
+ * Returns the BDOS result (0 = ok).
+ * All statics: disk BDOS calls may corrupt IX-relative auto vars.
+ */
+static HFILE *s_rs_fp;
+static long   s_rs_sect;
+
+static int rd_sector(fp, sect)
+HFILE *fp;
+long   sect;
+{
+    s_rs_fp   = fp;        /* cache params before any bdos call */
+    s_rs_sect = sect;
+    s_rs_fp->fcb[32] = (unsigned char)(s_rs_sect & 0x7FL);
+    s_rs_fp->fcb[33] = (unsigned char)( s_rs_sect        & 0xFFL);
+    s_rs_fp->fcb[34] = (unsigned char)((s_rs_sect >>  8) & 0xFFL);
+    s_rs_fp->fcb[35] = (unsigned char)((s_rs_sect >> 16) & 0x7FL);
+    bdos_disk(26, (int)s_rs_fp->buf);
+    return bdos_disk(33, (int)s_rs_fp->fcb);   /* BDOS 33: Read Random */
 }
 
 /* s_fcl_fp is static: bdos calls may corrupt IX-relative auto vars. */
@@ -245,7 +278,6 @@ HFILE *fp;
  * All statics: disk BDOS calls may corrupt IX-relative auto vars.
  */
 static HFILE *s_fgc_fp;
-static long   s_fgc_sect;  /* sector number for BDOS 33 refill */
 static int    s_fgc_rc;
 
 #ifdef HVI_DEBUG
@@ -287,17 +319,8 @@ HFILE *fp;
     if (s_fgc_fp->at_eof)                  return HEOF;
 
     if (s_fgc_fp->buf_pos >= s_fgc_fp->buf_valid) {
-        /* Compute sector from current byte position (fp->pos tracks this). */
-        s_fgc_sect = s_fgc_fp->pos >> 7;
-        /* Set CR = sector within current extent.  Some emulators track position
-         * via CR (FCB byte 32) rather than r0/r1/r2; setting it explicitly here
-         * ensures they read the correct sector regardless of implementation. */
-        s_fgc_fp->fcb[32] = (unsigned char)(s_fgc_sect & 0x7FL);
-        s_fgc_fp->fcb[33] = (unsigned char)(s_fgc_sect        & 0xFFL);
-        s_fgc_fp->fcb[34] = (unsigned char)((s_fgc_sect >>  8) & 0xFFL);
-        s_fgc_fp->fcb[35] = (unsigned char)((s_fgc_sect >> 16) & 0x7FL);
-        bdos_disk(26, (int)s_fgc_fp->buf);
-        s_fgc_rc = bdos_disk(33, (int)s_fgc_fp->fcb);  /* BDOS 33: Read Random */
+        /* Refill: sector = current byte position >> 7 (fp->pos tracks it). */
+        s_fgc_rc = rd_sector(s_fgc_fp, s_fgc_fp->pos >> 7);
         if (s_fgc_rc != 0) { s_fgc_fp->at_eof = 1; return HEOF; }
         s_fgc_fp->buf_pos   = 0;
         s_fgc_fp->buf_valid = SECTOR_SZ;
@@ -333,12 +356,8 @@ HFILE *fp;
     fp->pos++;
     fp->dirty = 1;
 
-    if (fp->buf_pos >= SECTOR_SZ) {
-        bdos_disk(26, (int)fp->buf);
-        bdos_disk(21, (int)fp->fcb);        /* BDOS 21: Write Sequential */
-        fp->buf_pos = 0;
-        fp->dirty   = 0;
-    }
+    if (fp->buf_pos >= SECTOR_SZ)
+        wr_sector(fp);
     return c;
 }
 
@@ -385,17 +404,9 @@ int    whence;
     /* Low 7 bits = byte position within the 128-byte sector. */
     s_fsk_byte_off = (int)(s_fsk_offset & 0x7FL);
 
-    /* Sector number = offset >> 7.  Use long shifts to preserve all bits;
-     * a 16-bit cast before shifting would truncate for offsets >= 32 KB.
-     * Also set CR = sector within extent, for emulators that use CR for
-     * position tracking instead of (or alongside) r0/r1/r2. */
-    s_fsk_fp->fcb[32] = (unsigned char)((s_fsk_offset >>  7) & 0x7FL);
-    s_fsk_fp->fcb[33] = (unsigned char)((s_fsk_offset >>  7) & 0xFFL);
-    s_fsk_fp->fcb[34] = (unsigned char)((s_fsk_offset >> 15) & 0xFFL);
-    s_fsk_fp->fcb[35] = (unsigned char)((s_fsk_offset >> 23) & 0x7FL);
-
-    bdos_disk(26, (int)s_fsk_fp->buf);
-    s_fsk_rc = bdos_disk(33, (int)s_fsk_fp->fcb);   /* BDOS 33: Read Random */
+    /* Sector number = offset >> 7 as a long shift: a 16-bit cast before
+     * shifting would truncate for offsets >= 32 KB. */
+    s_fsk_rc = rd_sector(s_fsk_fp, s_fsk_offset >> 7);
     if (s_fsk_rc != 0) return -1;
 
     s_fsk_fp->buf_pos   = s_fsk_byte_off;

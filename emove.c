@@ -212,37 +212,21 @@ int n;
 }
 
 /*
- * Word motions delegate to motion_endpoint(), which implements the exact
- * same scans for the d/c/y operators -- one copy of the logic instead of
- * two.  'e' returns an exclusive endpoint, hence the -1.
+ * Word motions (w/b/e) delegate to motion_endpoint(), which implements
+ * the exact same scans for the d/c/y operators -- one copy of the
+ * logic.  'e' returns an exclusive endpoint, hence the -1.
  */
 static int mw_lw;   /* dummy linewise out-param */
 
-/* Forward to start of next word. */
-void mv_word_fwd(n)
-int n;
+void mv_word(c, n)
+int c, n;
 {
     begin_hmove();
-    ed.cur_pos = motion_endpoint('w', n, &mw_lw);
-    end_hmove();
-}
-
-/* Backward to start of previous word. */
-void mv_word_back(n)
-int n;
-{
-    begin_hmove();
-    ed.cur_pos = motion_endpoint('b', n, &mw_lw);
-    end_hmove();
-}
-
-/* Forward to end of current/next word. */
-void mv_word_end(n)
-int n;
-{
-    begin_hmove();
-    ed.cur_pos = motion_endpoint('e', n, &mw_lw) - 1;
-    if (ed.cur_pos < 0) ed.cur_pos = 0;
+    ed.cur_pos = motion_endpoint(c, n, &mw_lw);
+    if (c == 'e') {
+        ed.cur_pos--;
+        if (ed.cur_pos < 0) ed.cur_pos = 0;
+    }
     end_hmove();
 }
 

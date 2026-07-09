@@ -180,9 +180,6 @@ typedef struct {
     /* Wanted column for vertical movement */
     int     want_col;
 
-    /* Count prefix for commands */
-    int     count;
-
     /* Dot-repeat: replay last change with '.' */
     int     dot_cmd;            /* 0=none, else command key */
     int     dot_motion;         /* motion for d/c operators */

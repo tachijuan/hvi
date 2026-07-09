@@ -305,7 +305,26 @@ void term_clear()
 /*  Input                                                               */
 /* ------------------------------------------------------------------ */
 
-static int s_tgc_c, s_tgc_c2, s_tgc_wait;
+/*
+ * Poll console status (BDOS 11) up to n times, then read one character
+ * with BDOS 6 (Direct Console Input, no echo).  Returns the character,
+ * or -1 when the countdown expires with nothing available.  Shared by
+ * the ESC-sequence disambiguation and the terminal-size handshake.
+ * n cached in a static: bdos_disk calls follow.
+ */
+static int cw_n;
+
+static int con_wait(n)
+int n;
+{
+    cw_n = n;
+    while (bdos_disk(11, 0) == 0) {
+        if (--cw_n == 0) return -1;
+    }
+    return bdos_disk(6, 0xFF) & 0xFF;
+}
+
+static int s_tgc_c, s_tgc_c2;
 static int s_tgc_pend;   /* pushback: key typed quickly after a bare ESC */
 
 int term_getch()
@@ -325,11 +344,8 @@ int term_getch()
     s_tgc_c = bdos_disk(6, 0xFF) & 0xFF;
 
     if (s_tgc_c == KEY_ESC) {
-        s_tgc_wait = 8000;
-        while (bdos_disk(11, 0) == 0) {
-            if (--s_tgc_wait == 0) return KEY_ESC;
-        }
-        s_tgc_c2 = bdos_disk(6, 0xFF) & 0xFF;
+        s_tgc_c2 = con_wait(8000);
+        if (s_tgc_c2 < 0) return KEY_ESC;
         if (s_tgc_c2 != '[') {
             /* Not an arrow sequence: the byte is the NEXT keystroke typed
              * quickly after ESC.  Push it back instead of swallowing it. */
@@ -337,11 +353,7 @@ int term_getch()
             return KEY_ESC;
         }
 
-        s_tgc_wait = 8000;
-        while (bdos_disk(11, 0) == 0) {
-            if (--s_tgc_wait == 0) return KEY_ESC;
-        }
-        s_tgc_c2 = bdos_disk(6, 0xFF) & 0xFF;
+        s_tgc_c2 = con_wait(8000);
         switch (s_tgc_c2) {
         case 'A': return KEY_UP;
         case 'B': return KEY_DOWN;
@@ -365,7 +377,29 @@ static int  s_tgs_r;        /* parsed row count from response       */
 static int  s_tgs_c;        /* parsed col count from response       */
 static int  s_tgs_ch;       /* character read from console          */
 static int  s_tgs_n;        /* digit accumulator                    */
-static int  s_tgs_wait;     /* timeout countdown                    */
+static int  s_tgs_term;     /* expected number terminator           */
+
+/*
+ * Read a decimal number from the console, terminated by `term`.
+ * Returns the value, or -1 on timeout or an unexpected character.
+ * Digit multiply uses shifts to avoid linking __mulu:
+ *   n * 10  ==  (n << 3) + (n << 1)
+ */
+static int tgs_num(term)
+int term;
+{
+    s_tgs_term = term;
+    s_tgs_n = 0;
+    for (;;) {
+        s_tgs_ch = con_wait(8000);
+        if (s_tgs_ch >= '0' && s_tgs_ch <= '9')
+            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
+        else if (s_tgs_ch == s_tgs_term)
+            return s_tgs_n;
+        else
+            return -1;
+    }
+}
 
 /*
  * Query terminal dimensions via ANSI cursor-position report.
@@ -378,10 +412,7 @@ static int  s_tgs_wait;     /* timeout countdown                    */
  *
  * Uses bdos_disk(2/6/11) exclusively (never BIOS CONIN) to preserve IX
  * across every I/O call.  Each character read is guarded by a countdown
- * so that a non-responding terminal falls through to DEF_ROWS/DEF_COLS.
- *
- * Digit multiply uses shifts to avoid linking __mulu:
- *   n * 10  ==  (n << 3) + (n << 1)
+ * (con_wait) so a non-responding terminal falls back to DEF_ROWS/COLS.
  */
 void term_getsize(rows, cols)
 int *rows;
@@ -397,51 +428,16 @@ int *cols;
      * One block write replaces 13 individual BDOS calls. */
     con_write("\033[999;999H\033[6n", 14);
 
-    /* Step 3a: wait for ESC */
-    s_tgs_wait = 30000;
-    while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
-    s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
-    if (s_tgs_ch != 0x1B) goto tgs_done;
-
-    /* Step 3b: wait for '[' */
-    s_tgs_wait = 8000;
-    while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
-    s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
-    if (s_tgs_ch != '[') goto tgs_done;
-
-    /* Step 3c: read row digits terminated by ';' */
-    s_tgs_n = 0;
-    for (;;) {
-        s_tgs_wait = 8000;
-        while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
-        s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
-        if (s_tgs_ch >= '0' && s_tgs_ch <= '9') {
-            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
-        } else if (s_tgs_ch == ';') {
+    /* Step 3: parse ESC [ rows ; cols R */
+    if (con_wait(30000) == 0x1B && con_wait(8000) == '[') {
+        s_tgs_n = tgs_num(';');
+        if (s_tgs_n >= 0) {
             if (s_tgs_n > 0) s_tgs_r = s_tgs_n;
-            break;
-        } else {
-            goto tgs_done;
-        }
-    }
-
-    /* Step 3d: read col digits terminated by 'R' */
-    s_tgs_n = 0;
-    for (;;) {
-        s_tgs_wait = 8000;
-        while (bdos_disk(11, 0) == 0) { if (--s_tgs_wait == 0) goto tgs_done; }
-        s_tgs_ch = bdos_disk(6, 0xFF) & 0xFF;
-        if (s_tgs_ch >= '0' && s_tgs_ch <= '9') {
-            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
-        } else if (s_tgs_ch == 'R') {
+            s_tgs_n = tgs_num('R');
             if (s_tgs_n > 0) s_tgs_c = s_tgs_n;
-            break;
-        } else {
-            goto tgs_done;
         }
     }
 
-tgs_done:
     *s_tgs_rp = s_tgs_r;
     *s_tgs_cp = s_tgs_c;
 }

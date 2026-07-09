@@ -224,35 +224,24 @@ void scr_scroll_to_cursor()
         return;
     }
 
-    /* Fast path: cur_vrow valid and cursor already in the viewport. */
-    if (ed.cur_vrow >= 0 && ed.cur_vrow < stc_text_rows)
-        return;
-
-    /* Fast path 2: cur_vrow valid but scrolled down */
-    if (ed.cur_vrow >= stc_text_rows) {
-        stc_advance = ed.cur_vrow - stc_text_rows + 1;
-        stc_p = ed.top_pos;
-        while (stc_advance-- > 0) {
+    if (ed.cur_vrow >= 0) {
+        /* Fast path: the cached row is current. */
+        stc_rows = ed.cur_vrow;
+    } else {
+        /* Count visual rows from top_pos to find the cursor. */
+        stc_p    = ed.top_pos;
+        stc_rows = 0;
+        while (stc_p < ed.cur_pos) {
             stc_next = next_vrow(stc_p);
             if (stc_next <= stc_p) break;
+            if (stc_next > ed.cur_pos) break;
             stc_p = stc_next;
+            stc_rows++;
         }
-        ed.top_pos = stc_p;
-        ed.cur_vrow = stc_text_rows - 1;
-        return;
     }
 
-    /* cur_vrow == -1: count visual rows from top_pos to find the cursor. */
-    stc_p    = ed.top_pos;
-    stc_rows = 0;
-    while (stc_p < ed.cur_pos) {
-        stc_next = next_vrow(stc_p);
-        if (stc_next <= stc_p) break;
-        if (stc_next > ed.cur_pos) break;
-        stc_p = stc_next;
-        stc_rows++;
-    }
-
+    /* Cursor below the viewport: advance top_pos until it is on the
+     * last text row. */
     if (stc_rows >= stc_text_rows) {
         stc_advance = stc_rows - stc_text_rows + 1;
         stc_p = ed.top_pos;
@@ -317,7 +306,16 @@ int screen_row, pos;
     term_goto(screen_row, 0);
     term_clreol();
     if (pos >= dra_size) {
-        if (screen_row > 0) term_putch('~');
+        /* '~' marks rows past the end of the buffer.  Exception: the
+         * empty last line right after a final newline, while the cursor
+         * is parked on it (typing at the end of the file), is a real
+         * line -- leave it blank, or the '~' is left stranded on what
+         * becomes a genuine blank line when the next Enter shifts the
+         * redraw window down. */
+        if (screen_row > 0 &&
+            !(pos == dra_size && ed.cur_pos == dra_size && dra_size > 0 &&
+              gb_char_at(dra_size - 1) == '\n'))
+            term_putch('~');
         return;
     }
     dra_col = 0;

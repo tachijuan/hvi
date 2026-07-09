@@ -542,29 +542,39 @@ long offset;
 }
 
 /*
- * Write the original-file head (bytes before the buffer window) to f.
+ * Copy bytes [from, to) of ed.tail_file to f (stops early at EOF/^Z).
+ * Serves both save-time copies: the head (bytes before the window,
+ * [0, win_start)) and the unloaded tail ([tail_offset, end), passed
+ * with to = 0x7FFFFFFF).
  * All locals static: hvi_fopen/hvi_fgetc/hvi_fputc are function calls.
  */
-static HFILE *gwh_f;       /* cache param: BDOS trashes HL which may hold f */
-static HFILE *gwh_tf;
-static long   gwh_pos;
-static int    gwh_c;
+static HFILE *gcp_f;       /* cache param: BDOS trashes HL which may hold f */
+static HFILE *gcp_tf;
+static long   gcp_pos;
+static long   gcp_to;
+static int    gcp_c;
 
-static void gb_write_head(f)
+static void gb_copy_file(f, from, to)
 HFILE *f;
+long from, to;
 {
-    gwh_f = f;             /* cache before any BDOS call */
-    if (ed.win_start <= 0L || !ed.tail_file[0]) return;
-    gwh_tf = hvi_fopen(ed.tail_file, "rb");
-    if (!gwh_tf) return;
-    gwh_pos = 0L;
-    while (gwh_pos < ed.win_start) {
-        gwh_c = hvi_fgetc(gwh_tf);
-        if (gwh_c == HEOF || gwh_c == 0x1A) break;
-        hvi_fputc(gwh_c, gwh_f);
-        gwh_pos++;
+    gcp_f  = f;            /* cache before any BDOS call */
+    gcp_to = to;
+    if (from >= gcp_to || !ed.tail_file[0]) return;
+    gcp_tf = hvi_fopen(ed.tail_file, "rb");
+    if (!gcp_tf) return;
+    if (from > 0L && hvi_fseek(gcp_tf, from, 0) != 0) {
+        hvi_fclose(gcp_tf);
+        return;
     }
-    hvi_fclose(gwh_tf);
+    gcp_pos = from;
+    while (gcp_pos < gcp_to) {
+        gcp_c = hvi_fgetc(gcp_tf);
+        if (gcp_c == HEOF || gcp_c == 0x1A) break;
+        hvi_fputc(gcp_c, gcp_f);
+        gcp_pos++;
+    }
+    hvi_fclose(gcp_tf);
 }
 
 /*
@@ -600,27 +610,6 @@ HFILE *f;
     gwb_seg(ed.gb.buf, ed.gb.buf + ed.gb.gstart);
     gwb_seg(ed.gb.buf + ed.gb.gend, ed.gb.buf + ed.gb.size);
     return gwb_written;
-}
-
-/*
- * Append the unloaded tail from the original source file to f.
- * All locals static: hvi_fopen/hvi_fgetc/hvi_fputc are function calls.
- */
-static HFILE *gwt_f;       /* cache param: BDOS trashes HL which may hold f */
-static HFILE *gwt_tf;
-static int    gwt_c;
-
-static void gb_write_tail(f)
-HFILE *f;
-{
-    gwt_f = f;             /* cache before any BDOS call */
-    if (ed.tail_offset <= 0L || !ed.tail_file[0]) return;
-    gwt_tf = hvi_fopen(ed.tail_file, "rb");
-    if (!gwt_tf) return;
-    if (hvi_fseek(gwt_tf, ed.tail_offset, 0) != 0) { hvi_fclose(gwt_tf); return; }
-    while ((gwt_c = hvi_fgetc(gwt_tf)) != HEOF && gwt_c != 0x1A)
-        hvi_fputc(gwt_c, gwt_f);
-    hvi_fclose(gwt_tf);
 }
 
 /*
@@ -662,9 +651,10 @@ char *filename;
     }
     if (!gsv_f) return 0;
 
-    gb_write_head(gsv_f);
+    gb_copy_file(gsv_f, 0L, ed.win_start);       /* head before window */
     gsv_new_tail = gb_write_buf(gsv_f);
-    gb_write_tail(gsv_f);
+    if (ed.tail_offset > 0L)                     /* unloaded tail      */
+        gb_copy_file(gsv_f, ed.tail_offset, 0x7FFFFFFFL);
     hvi_fputc(0x1A, gsv_f);
     hvi_fclose(gsv_f);
 

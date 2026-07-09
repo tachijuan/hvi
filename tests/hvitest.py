@@ -487,6 +487,26 @@ def main():
           "rows=%r" % [lines[0][-3:], lines[1], lines[2]])
     sess.quit_expect_prompt(":q!\r")
 
+    # a blank line typed between text lines must stay blank (stray ~)
+    rm_file("T.TXT")
+    sess.start_hvi("T.TXT")
+    sess.keys("iaaa\rbbb\r\rccc\x1b")
+    lines = sess.screen_lines()
+    check("screen typed blank line",
+          lines[0] == "aaa" and lines[1] == "bbb" and lines[2] == "" and
+          lines[3] == "ccc" and lines[4] == "~",
+          "rows=%r" % lines[:5])
+    sess.quit_expect_prompt(":q!\r")
+
+    # mid-line Enter: the row above must lose the tail that moved down
+    rm_file("T.TXT"); put_file("T.TXT", "ab\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("aX\rY\x1b")
+    lines = sess.screen_lines()
+    check("screen mid-line Enter", lines[0] == "aX" and lines[1] == "Yb",
+          "rows=%r" % lines[:2])
+    sess.quit_expect_prompt(":q!\r")
+
     # append at the true end of buffer (no trailing newline): the cursor
     # must sit after the last char, and typed text must append in place
     rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\nthree")
