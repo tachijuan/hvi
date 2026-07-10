@@ -269,13 +269,19 @@ void term_init()
     ed.scr_cols = DEF_COLS;
     term_getsize(&ed.scr_rows, &ed.scr_cols);
     term_clear();
-    /* Set scroll region: ESC [ 1 ; (scr_rows-1) r */
-    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte(';');
-    raw_num(ed.scr_rows - 1);
-    raw_byte('r');
+    term_scroll_region();
     s_trow = -1;
     s_tcol = -1;
     term_flush();
+}
+
+/* Set the scroll region to the text area: ESC [ 1 ; (scr_rows-1) r.
+ * Also used by Ctrl-L after term_clear() erases it. */
+void term_scroll_region()
+{
+    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte(';');
+    raw_num(ed.scr_rows - 1);
+    raw_byte('r');
 }
 
 /* Park the cursor at the start of the status row and clear it. */

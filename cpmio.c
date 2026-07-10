@@ -169,20 +169,16 @@ char *name, *mode;
 
     if (!s_fop_write) {
         s_fop_rc = bdos_disk(15, (int)s_fop_fp->fcb);   /* BDOS 15: Open File */
-        if ((s_fop_rc & 0xFF) == 0xFF) return (HFILE *)0;
-        s_fop_fp->fcb[0]  = 0;               /* BDOS 15 may set drive; keep current (0) */
-        s_fop_fp->mode    = 1;
-        s_fop_fp->fcb[32] = 0;               /* CR = 0 */
     } else {
         /* Create: erase any existing file first (may fail silently) */
         bdos_disk(19, (int)s_fop_fp->fcb);        /* BDOS 19: Erase File */
         fill_fcb(s_fop_fp->fcb, s_fop_name); /* re-init FCB after erase */
         s_fop_rc = bdos_disk(22, (int)s_fop_fp->fcb);   /* BDOS 22: Make File */
-        if ((s_fop_rc & 0xFF) == 0xFF) return (HFILE *)0;
-        s_fop_fp->fcb[0]  = 0;               /* BDOS 22 may set drive; keep current (0) */
-        s_fop_fp->mode    = 2;
-        s_fop_fp->fcb[32] = 0;               /* CR = 0 */
     }
+    if ((s_fop_rc & 0xFF) == 0xFF) return (HFILE *)0;
+    s_fop_fp->fcb[0]  = 0;               /* BDOS may set drive; keep current (0) */
+    s_fop_fp->fcb[32] = 0;               /* CR = 0 */
+    s_fop_fp->mode    = s_fop_write ? 2 : 1;
 
     return s_fop_fp;
 }

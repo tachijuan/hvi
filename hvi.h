@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.3"
+#define HVI_VERSION "2.4"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -269,6 +269,7 @@ void term_clear();
 void term_clreol();
 void term_goto(/* int row, int col */);
 void term_status_row();
+void term_scroll_region();
 void term_putch(/* int c */);
 void term_puts(/* char *s */);
 void term_flush();

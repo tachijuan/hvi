@@ -14,6 +14,11 @@ extern Editor ed;
 extern char fmt_newfile[];   /* "\"%s\" [New File]" */
 extern char fmt_chars[];     /* "\"%s\" %d chars"   */
 
+/* One copy each of the formats used twice below (the compiler does not
+ * pool identical string literals). */
+static char msg_modified[] = "Modified buffer (use :%c! to discard)";
+static char msg_usage[]    = "Usage: :%c filename";
+
 /* Skip leading whitespace in s; returns pointer to first non-space. */
 static char *skip_space(s)
 char *s;
@@ -98,7 +103,7 @@ char *cmd;
         p++;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_sprintf(ed.status, "Usage: :%c filename", 'r', 0);
+            hvi_sprintf(ed.status, msg_usage, 'r', 0);
             return 0;
         }
 
@@ -138,12 +143,11 @@ char *cmd;
         force = (*p == '!') ? (p++, 1) : 0;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_sprintf(ed.status, "Usage: :%c filename", 'e', 0);
+            hvi_sprintf(ed.status, msg_usage, 'e', 0);
             return 0;
         }
         if (ed.modified && !force) {
-            hvi_sprintf(ed.status, "Modified buffer (use :%c! to discard)",
-                        'e', 0);
+            hvi_sprintf(ed.status, msg_modified, 'e', 0);
             return 0;
         }
 
@@ -215,8 +219,7 @@ char *cmd;
 
     if (do_quit) {
         if (ed.modified && !force && !do_write) {
-            hvi_sprintf(ed.status, "Modified buffer (use :%c! to discard)",
-                        'q', 0);
+            hvi_sprintf(ed.status, msg_modified, 'q', 0);
             return 0;
         }
         ed.quit = 1;

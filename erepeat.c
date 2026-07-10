@@ -25,6 +25,8 @@ int  motion_endpoint();
 extern int me_cw;
 void apply_op();
 void status_show();
+int  line_span();
+extern int ls_from;
 
 /* ------------------------------------------------------------------ */
 
@@ -197,16 +199,9 @@ int count;
 
     case 'd':
         if (ed.dot_motion == 'd') {
-            /* Same find_bol/find_eol walk as dd in edit.c -- O(range). */
-            sz   = gb_content_len();
-            from = find_bol(ed.cur_pos);
-            to   = from;
-            for (k = ed.dot_count; k > 0; k--) {
-                to = find_eol(to);
-                if (to >= sz) break;
-                to++;       /* include the newline */
-            }
-            apply_op('d', from, to, 1);
+            /* Same line_span walk as dd in edit.c -- O(range). */
+            to = line_span(ed.dot_count);
+            apply_op('d', ls_from, to, 1);
         } else {
             linewise = 0;
             endpoint = motion_endpoint(ed.dot_motion, ed.dot_count, &linewise);

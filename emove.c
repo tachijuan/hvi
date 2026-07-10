@@ -128,34 +128,39 @@ void mv_bol()
     end_hmove();
 }
 
+/* First non-blank position of the line containing pos (shared by
+ * mv_bnb and the '^' operator motion). */
+static int bnb_p, bnb_size, bnb_c;
+
+static int bnb_of(pos)
+int pos;
+{
+    bnb_size = gb_content_len();
+    bnb_p = find_bol(pos);
+    while (bnb_p < bnb_size) {
+        bnb_c = gb_char_at(bnb_p);
+        if (bnb_c != ' ' && bnb_c != '\t') break;
+        bnb_p++;
+    }
+    return bnb_p;
+}
+
 void mv_bnb()
 {
-    static int size, c;
-    size = gb_content_len();
     begin_hmove();
-    ed.cur_pos = find_bol(ed.cur_pos);
-    while (ed.cur_pos < size) {
-        c = gb_char_at(ed.cur_pos);
-        if (c != ' ' && c != '\t') break;
-        ed.cur_pos++;
-    }
+    ed.cur_pos = bnb_of(ed.cur_pos);
     end_hmove();
 }
 
 void mv_eol()
 {
-    static int size;
-    size = gb_content_len();
+    static int p;
     begin_hmove();
-    if (size == 0) return;
-    if (gb_char_at(ed.cur_pos) == '\n') return;
-    while (ed.cur_pos < size - 1) {
-        if (gb_char_at(ed.cur_pos + 1) == '\n') break;
-        ed.cur_pos++;
-    }
-    if (ed.cur_pos < size && gb_char_at(ed.cur_pos) == '\n'
-        && ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
-        ed.cur_pos--;
+    /* find_eol lands on the '\n' (or buffer end); the cursor sits on
+     * the last character before it.  p == cur_pos when the line is
+     * empty or the cursor is already on its '\n'. */
+    p = find_eol(ed.cur_pos);
+    if (p > ed.cur_pos) ed.cur_pos = p - 1;
     end_hmove();
 }
 
@@ -295,6 +300,23 @@ int ch, dir, count;
  * changes the word only, while dw deletes through the following spaces. */
 int me_cw;
 
+/*
+ * Word-character class of the char at pos: 1 = word, 0 = blank/newline,
+ * 2 = other punctuation (past-the-end reads as 2, matching the old
+ * iswordch(-1)?1:2 fallbacks).  One gb_char_at call per character
+ * instead of the two the inline classifiers cost.
+ */
+static int cht_c;
+
+static int chtype(pos)
+int pos;
+{
+    cht_c = gb_char_at(pos);
+    if (iswordch(cht_c))  return 1;
+    if (isspacech(cht_c)) return 0;
+    return 2;
+}
+
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
 int *linewise;
@@ -323,12 +345,9 @@ int *linewise;
     case 'w':
         n = count;
         while (n-- > 0) {
-            int type = iswordch(gb_char_at(pos)) ? 1 :
-                       isspacech(gb_char_at(pos)) ? 0 : 2;
+            int type = chtype(pos);
             while (pos < size) {
-                int t2 = iswordch(gb_char_at(pos)) ? 1 :
-                         isspacech(gb_char_at(pos)) ? 0 : 2;
-                if (t2 != type) break;
+                if (chtype(pos) != type) break;
                 pos++;
             }
             if (!cw || n > 0)
@@ -346,11 +365,9 @@ int *linewise;
                 while (pos > 0 && isspacech(gb_char_at(pos))) pos--;
                 if (pos == 0) break;
                 {
-                    int type = iswordch(gb_char_at(pos)) ? 1 : 2;
+                    int type = chtype(pos);
                     while (pos > 0) {
-                        int t2 = iswordch(gb_char_at(pos-1)) ? 1 :
-                                 isspacech(gb_char_at(pos-1)) ? 0 : 2;
-                        if (t2 != type) break;
+                        if (chtype(pos - 1) != type) break;
                         pos--;
                     }
                 }
@@ -365,31 +382,22 @@ int *linewise;
             if (pos >= size - 1) break;
             pos++;
             while (pos < size && isspacech(gb_char_at(pos))) pos++;
-            type = iswordch(gb_char_at(pos)) ? 1 : 2;
+            type = chtype(pos);
             while (pos < size - 1) {
-                int t2 = iswordch(gb_char_at(pos+1)) ? 1 :
-                         isspacech(gb_char_at(pos+1)) ? 0 : 2;
-                if (t2 != type) break;
+                if (chtype(pos + 1) != type) break;
                 pos++;
             }
         }
         return pos + 1;
 
     case '$':
-        while (pos < size && gb_char_at(pos) != '\n') pos++;
-        return pos;
+        return find_eol(pos);
 
     case '0':
-        while (pos > 0 && gb_char_at(pos-1) != '\n') pos--;
-        return pos;
+        return find_bol(pos);
 
     case '^':
-        {
-            int sol = pos;
-            while (sol > 0 && gb_char_at(sol-1) != '\n') sol--;
-            while (sol < size && (gb_char_at(sol)==' '||gb_char_at(sol)=='\t')) sol++;
-            return sol;
-        }
+        return bnb_of(pos);
 
     /* Linewise motions walk with find_bol/find_eol -- O(range covered)
      * instead of the old O(buffer) scr_pos_line/scr_line_start scans. */
@@ -433,6 +441,29 @@ int *linewise;
 /* ------------------------------------------------------------------ */
 /*  Operator application                                                */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Whole-line span for the doubled operators (dd/cc/yy) and their '.'
+ * replay: from the start of the cursor's line, walk count lines with
+ * find_bol/find_eol (O(range)).  Sets ls_from to the span start and
+ * returns the end (just past the count-th newline, or buffer end).
+ */
+int ls_from;
+static int lsp_k, lsp_size, lsp_to;
+
+int line_span(count)
+int count;
+{
+    lsp_size = gb_content_len();
+    ls_from  = find_bol(ed.cur_pos);
+    lsp_to   = ls_from;
+    for (lsp_k = count; lsp_k > 0; lsp_k--) {
+        lsp_to = find_eol(lsp_to);
+        if (lsp_to >= lsp_size) break;
+        lsp_to++;       /* include the newline */
+    }
+    return lsp_to;
+}
 
 /* Copy [from, from+len) into the yank buffer (clamped); returns count. */
 static int yr_save;

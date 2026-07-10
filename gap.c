@@ -797,70 +797,51 @@ int gb_make_room()
 /* ------------------------------------------------------------------ */
 
 /*
- * Scan ed.tail_file from byte 0, counting LF (0x0A) characters.
- * Returns the byte offset of the first byte of line n (0-indexed) in
- * the CP/M file (which uses CR+LF, so each line end costs 2 bytes).
- * Returns -1L if the file contains fewer than n lines.
+ * Scan ed.tail_file, tracking LF (0x0A) characters in [from, to).
+ * stop_n >= 0: return the byte offset just past the stop_n-th LF (the
+ *              first byte of 0-indexed line stop_n), or -1L when the
+ *              file ends first (fewer than stop_n lines).
+ * stop_n < 0:  return the LF count seen before reaching to (or EOF);
+ *              -1L on open/seek error (callers clamp negatives to 0).
+ * One scanner serves both the line-offset lookup and the range count
+ * that gb_goto_line needs.
  * All locals static to survive BDOS calls under HI-TECH C -O.
  */
-static HFILE *gfl_f;
-static long   gfl_off;
-static int    gfl_n;       /* cache param: BDOS trashes HL which may hold n */
-static int    gfl_line;
-static int    gfl_c;
+static HFILE *gsl_f;
+static long   gsl_off;
+static long   gsl_from;    /* cache params: BDOS trashes HL:DE */
+static long   gsl_to;
+static int    gsl_n;
+static int    gsl_cnt;
+static int    gsl_c;
 
-static long gb_find_line_offset(n)
-int n;
+static long gb_scan_lines(from, to, stop_n)
+long from, to;
+int  stop_n;
 {
-    gfl_n = n;             /* cache before any BDOS call */
-    if (gfl_n <= 0) return 0L;
+    gsl_from = from;       /* cache before any BDOS call */
+    gsl_to   = to;
+    gsl_n    = stop_n;
     if (!ed.tail_file[0]) return -1L;
-    gfl_f = hvi_fopen(ed.tail_file, "rb");
-    if (!gfl_f) return -1L;
-    gfl_line = 0;
-    gfl_off  = 0L;
-    while (gfl_line < gfl_n) {
-        gfl_c = hvi_fgetc(gfl_f);
-        if (gfl_c == HEOF || gfl_c == 0x1A) { hvi_fclose(gfl_f); return -1L; }
-        gfl_off++;
-        if (gfl_c == '\n') gfl_line++;
+    gsl_f = hvi_fopen(ed.tail_file, "rb");
+    if (!gsl_f) return -1L;
+    if (gsl_from > 0L && hvi_fseek(gsl_f, gsl_from, 0) != 0) {
+        hvi_fclose(gsl_f);
+        return -1L;
     }
-    hvi_fclose(gfl_f);
-    return gfl_off;
-}
-
-/*
- * Count LF characters in ed.tail_file between byte offsets [from_off, to_off).
- * Seeks to from_off with BDOS 33 then reads sequentially.
- * Returns the count; 0 on error or if from_off >= to_off.
- * All locals static to survive BDOS calls under HI-TECH C -O.
- */
-static HFILE *gcl_f;
-static long   gcl_pos;
-static long   gcl_from;    /* cache param: BDOS trashes HL:DE */
-static long   gcl_to;      /* cache param: used in loop condition after BDOS */
-static int    gcl_cnt;
-static int    gcl_c2;
-
-static int gb_count_lines(from_off, to_off)
-long from_off, to_off;
-{
-    gcl_from = from_off;   /* cache before any BDOS call */
-    gcl_to   = to_off;
-    if (gcl_from >= gcl_to || !ed.tail_file[0]) return 0;
-    gcl_f = hvi_fopen(ed.tail_file, "rb");
-    if (!gcl_f) return 0;
-    if (hvi_fseek(gcl_f, gcl_from, 0) != 0) { hvi_fclose(gcl_f); return 0; }
-    gcl_cnt = 0;
-    gcl_pos = gcl_from;
-    while (gcl_pos < gcl_to) {
-        gcl_c2 = hvi_fgetc(gcl_f);
-        if (gcl_c2 == HEOF || gcl_c2 == 0x1A) break;
-        gcl_pos++;
-        if (gcl_c2 == '\n') gcl_cnt++;
+    gsl_cnt = 0;
+    gsl_off = gsl_from;
+    while (gsl_off < gsl_to && gsl_cnt != gsl_n) {
+        gsl_c = hvi_fgetc(gsl_f);
+        if (gsl_c == HEOF || gsl_c == 0x1A) {
+            hvi_fclose(gsl_f);
+            return (gsl_n >= 0) ? -1L : (long)gsl_cnt;
+        }
+        gsl_off++;
+        if (gsl_c == '\n') gsl_cnt++;
     }
-    hvi_fclose(gcl_f);
-    return gcl_cnt;
+    hvi_fclose(gsl_f);
+    return (gsl_n >= 0) ? gsl_off : (long)gsl_cnt;
 }
 
 /*
@@ -899,7 +880,7 @@ int n;
     }
 
     /* Scan the file to locate line n-1. */
-    gg_target_off = gb_find_line_offset(n - 1);
+    gg_target_off = gb_scan_lines(0L, 0x7FFFFFFFL, n - 1);
 
     if (gg_target_off < 0L) {
         /* Line n doesn't exist -- jump to last line instead. */
@@ -923,9 +904,10 @@ int n;
     gg_win_off &= ~127L;
 
     /* Count newlines from gg_win_off to gg_target_off to find the local
-     * buffer line number of the target.  Must be done before gb_reload_from
-     * because gb_reload_from may update ed.tail_file. */
-    gg_local_line = gb_count_lines(gg_win_off, gg_target_off);
+     * buffer line number of the target (clamped below: a scan error
+     * returns -1).  Must be done before gb_reload_from because
+     * gb_reload_from may update ed.tail_file. */
+    gg_local_line = (int)gb_scan_lines(gg_win_off, gg_target_off, -1);
 
     /* Reload (flushes any unsaved edits first via s_reload_skip_flush). */
     gb_reload_from(gg_win_off);

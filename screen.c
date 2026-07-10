@@ -85,22 +85,62 @@ int pos;
     return nvs_p;
 }
 
-static int svc_p, svc_vstart, svc_col, svc_c, svc_nc, svc_size; /* scr_vrow_col */
+/*
+ * Shared vrow-walk loops.  vwalk_to advances from vrow start to vrow
+ * start while the next start is still <= pos, counting steps in
+ * vwk_rows -- i.e. it stops on the row containing pos.  vwalk_n
+ * advances by up to n vrow steps.  Both stop at the buffer end.
+ */
+static int vwk_rows, vwk_nx;
+
+static int vwalk_to(from, pos)
+int from, pos;
+{
+    vwk_rows = 0;
+    for (;;) {
+        vwk_nx = next_vrow(from);
+        if (vwk_nx <= from || vwk_nx > pos) break;
+        from = vwk_nx;
+        vwk_rows++;
+    }
+    return from;
+}
+
+static int vwalk_n(from, n)
+int from, n;
+{
+    while (n-- > 0) {
+        vwk_nx = next_vrow(from);
+        if (vwk_nx <= from) break;
+        from = vwk_nx;
+    }
+    return from;
+}
+
+/*
+ * Display column of pos counting from the row/line start p (tab stops
+ * expanded).  Shared by scr_vrow_col, scr_pos_col and scr_update_cursor;
+ * pos is always <= content length, so no size guard is needed.
+ */
+static int cfw_col, cfw_c;
+
+static int col_from(p, pos)
+int p, pos;
+{
+    cfw_col = 0;
+    while (p < pos) {
+        cfw_c   = gb_char_at(p);
+        cfw_col = (cfw_c == '\t') ? (cfw_col | (TAB_STOP - 1)) + 1
+                                  : cfw_col + 1;
+        p++;
+    }
+    return cfw_col;
+}
 
 int scr_vrow_col(pos)
 int pos;
 {
-    svc_size   = gb_content_len();
-    svc_vstart = vrow_start_of(pos);
-    svc_col    = 0;
-    svc_p      = svc_vstart;
-    while (svc_p < pos && svc_p < svc_size) {
-        svc_c  = gb_char_at(svc_p);
-        svc_nc = (svc_c == '\t') ? (svc_col | (TAB_STOP - 1)) + 1 : svc_col + 1;
-        svc_col = svc_nc;
-        svc_p++;
-    }
-    return svc_col;
+    return col_from(vrow_start_of(pos), pos);
 }
 
 /* ------------------------------------------------------------------ */
@@ -147,21 +187,10 @@ int scr_cur_line()
 /*
  * Return the display column (0-based) of pos within its logical line.
  */
-static int spc_col, spc_i, spc_start, spc_c; /* scr_pos_col statics */
-
 int scr_pos_col(pos)
 int pos;
 {
-    spc_start = find_bol(pos);
-    spc_col = 0;
-    for (spc_i = spc_start; spc_i < pos; spc_i++) {
-        spc_c = gb_char_at(spc_i);
-        if (spc_c == '\t')
-            spc_col = (spc_col | (TAB_STOP - 1)) + 1;
-        else
-            spc_col++;
-    }
-    return spc_col;
+    return col_from(find_bol(pos), pos);
 }
 
 /* Buffer position of the first character of the last line. */
@@ -211,7 +240,7 @@ int scr_line_count()
 
 /* statics for scr_scroll_to_cursor -- draw_row_at may trigger term_flush
  * which calls bdos(2,...); disk bdos calls may not preserve IX on CP/M. */
-static int stc_p, stc_rows, stc_advance, stc_text_rows, stc_next;
+static int stc_rows, stc_text_rows;
 
 void scr_scroll_to_cursor()
 {
@@ -229,62 +258,33 @@ void scr_scroll_to_cursor()
         stc_rows = ed.cur_vrow;
     } else {
         /* Count visual rows from top_pos to find the cursor. */
-        stc_p    = ed.top_pos;
-        stc_rows = 0;
-        while (stc_p < ed.cur_pos) {
-            stc_next = next_vrow(stc_p);
-            if (stc_next <= stc_p) break;
-            if (stc_next > ed.cur_pos) break;
-            stc_p = stc_next;
-            stc_rows++;
-        }
+        vwalk_to(ed.top_pos, ed.cur_pos);
+        stc_rows = vwk_rows;
     }
 
     /* Cursor below the viewport: advance top_pos until it is on the
      * last text row. */
     if (stc_rows >= stc_text_rows) {
-        stc_advance = stc_rows - stc_text_rows + 1;
-        stc_p = ed.top_pos;
-        while (stc_advance-- > 0) {
-            stc_next = next_vrow(stc_p);
-            if (stc_next <= stc_p) break;
-            stc_p = stc_next;
-        }
-        ed.top_pos = stc_p;
+        ed.top_pos = vwalk_n(ed.top_pos, stc_rows - stc_text_rows + 1);
         stc_rows = stc_text_rows - 1;
     }
     ed.cur_vrow = stc_rows;
 }
 
-static int suc_p, suc_vstart, suc_scr_row, suc_scr_col, suc_col, suc_c, suc_nc, suc_size, suc_next;
+static int suc_vstart, suc_scr_row, suc_scr_col;
 
 void scr_update_cursor()
 {
-    suc_size   = gb_content_len();
     suc_vstart = vrow_start_of(ed.cur_pos);
 
     if (ed.cur_vrow >= 0) {
         suc_scr_row = ed.cur_vrow;
     } else {
-        suc_p       = ed.top_pos;
-        suc_scr_row = 0;
-        while (suc_p < suc_vstart) {
-            suc_next = next_vrow(suc_p);
-            if (suc_next <= suc_p) break;
-            suc_p = suc_next;
-            suc_scr_row++;
-        }
+        vwalk_to(ed.top_pos, suc_vstart);
+        suc_scr_row = vwk_rows;
     }
 
-    suc_col = 0;
-    suc_p   = suc_vstart;
-    while (suc_p < ed.cur_pos && suc_p < suc_size) {
-        suc_c  = gb_char_at(suc_p);
-        suc_nc = (suc_c == '\t') ? (suc_col | (TAB_STOP - 1)) + 1 : suc_col + 1;
-        suc_col = suc_nc;
-        suc_p++;
-    }
-    suc_scr_col = suc_col;
+    suc_scr_col = col_from(suc_vstart, ed.cur_pos);
 
     if (suc_scr_col >= ed.scr_cols)      suc_scr_col = ed.scr_cols - 1;
     if (suc_scr_row < 0)                 suc_scr_row = 0;
@@ -333,18 +333,10 @@ int screen_row, pos;
     }
 }
 
-static int rl_pos, rl_r, rl_next;
-
 void scr_redraw_line(screen_row)
 int screen_row;
 {
-    rl_pos = ed.top_pos;
-    for (rl_r = 0; rl_r < screen_row; rl_r++) {
-        rl_next = next_vrow(rl_pos);
-        if (rl_next <= rl_pos) break;
-        rl_pos = rl_next;
-    }
-    draw_row_at(screen_row, rl_pos);
+    draw_row_at(screen_row, vwalk_n(ed.top_pos, screen_row));
 }
 
 static int sr_row, sr_text_rows, sr_pos, sr_next;
@@ -367,30 +359,20 @@ void scr_refresh()
  * Sets lcr_vstart / lcr_row.  Shared by scr_redraw_cur_line() and
  * scr_redraw_from_cur().
  */
-static int lcr_vstart, lcr_row, lcr_p, lcr_next;
+static int lcr_vstart, lcr_row;
 
 static void locate_cur_row()
 {
     lcr_vstart = vrow_start_of(ed.cur_pos);
 
     if (ed.cur_vrow >= 0) {
-        lcr_p   = lcr_vstart;
+        /* The cursor's vrow start is lcr_vstart by construction
+         * (next_vrow(lcr_vstart) > cur_pos), so the cached row is
+         * already the answer. */
         lcr_row = ed.cur_vrow;
-        while (lcr_p < ed.cur_pos) {
-            lcr_next = next_vrow(lcr_p);
-            if (lcr_next <= lcr_p || lcr_next > ed.cur_pos) break;
-            lcr_p = lcr_next;
-            lcr_row--;
-        }
     } else {
-        lcr_p   = ed.top_pos;
-        lcr_row = 0;
-        while (lcr_p < lcr_vstart) {
-            lcr_next = next_vrow(lcr_p);
-            if (lcr_next <= lcr_p) break;
-            lcr_p = lcr_next;
-            lcr_row++;
-        }
+        vwalk_to(ed.top_pos, lcr_vstart);
+        lcr_row = vwk_rows;
     }
 }
 
@@ -582,12 +564,7 @@ int old_top;
     }
     uam_from = uam_down ? uam_tr - uam_delta : 0;
     uam_to   = uam_down ? uam_tr : uam_delta;
-    uam_p    = uam_new_top;
-    for (uam_i = 0; uam_i < uam_from; uam_i++) {
-        uam_nx = next_vrow(uam_p);
-        if (uam_nx <= uam_p) break;
-        uam_p = uam_nx;
-    }
+    uam_p    = vwalk_n(uam_new_top, uam_from);
     for (uam_i = uam_from; uam_i < uam_to; uam_i++) {
         draw_row_at(uam_i, uam_p);
         uam_nx = next_vrow(uam_p);
@@ -621,15 +598,16 @@ static char *sss_p;
 void scr_show_status(msg)
 char *msg;
 {
-    static char lineno[48];
+    /* Sized for the worst case: quotes + a PATH_MAX-1 (63) char
+     * filename + " [+]" + NUL = 70 bytes (48 could overflow). */
+    static char lineno[72];
 
     if (msg && *msg) {
         sss_p = msg;
     } else {
         hvi_sprintf(lineno, "\"%s\"%s",
             (int)(ed.filename[0] ? ed.filename : "[No Name]"),
-            (int)(ed.modified ? " [+]" : ""),
-            0, 0, 0);
+            (int)(ed.modified ? " [+]" : ""));
         sss_p = lineno;
     }
 

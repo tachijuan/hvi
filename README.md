@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.3**
+**Version 2.4**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -407,6 +407,40 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.3 → 2.4
+
+Redundancy-elimination release: no new commands and no behavior change —
+every fold replaces duplicated code with one shared copy, at equal or
+better speed.  All 128 + 13 tests in `tests/` pass unchanged.
+
+- **Word motions classify each character once.** The `w`/`b`/`e` scans
+  (and their `d`/`c`/`y` operator ranges) called `gb_char_at` twice plus
+  two classifier functions per character; a shared `chtype()` does it
+  with one buffer read — the scans are now measurably cheaper as well
+  as smaller.
+- **screen.c's six copies of the visual-row walk loop** became two
+  helpers (`vwalk_to`/`vwalk_n`), and its three copies of the
+  tab-expanding column walk became `col_from()`.  A provably dead loop
+  in `locate_cur_row()` (its condition can never hold after
+  `vrow_start_of`) was removed.
+- **`mv_eol`, and the `$`/`0`/`^` operator motions** re-implemented
+  `find_eol`/`find_bol`/first-non-blank walks that already existed —
+  they now call them.  The `dd`/`cc`/`yy` line-span walk, duplicated in
+  edit.c and the `.` replay, is one `line_span()` in emove.c.
+- **`gb_find_line_offset` and `gb_count_lines`** in gap.c were the same
+  file-scan loop with different stop conditions — merged into one
+  `gb_scan_lines()`.
+- Smaller folds: Ctrl-L reuses term.c's scroll-region emitter instead
+  of rebuilding the escape sequence, `^F`/`^B` share their header,
+  `hvi_fopen`'s read/write tails merged, duplicate ex.c format strings
+  now have one copy each (HI-TECH C does not pool identical literals),
+  and several `old_top` temporaries were eliminated.
+- Robustness: the status-bar filename buffer was sized for a worst-case
+  63-char filename (48 bytes could overflow — same class as the 2.3
+  `hvi_sprintf` fix, in BSS so the fix is free).
+
+Binary size: 229 CP/M records (~29K), 10 records below 2.3's 239.
 
 ### 2.2 → 2.3
 

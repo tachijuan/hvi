@@ -74,6 +74,8 @@ int  do_search_full();
 void status_show();
 void status_msg();
 void set_wcol();
+int  line_span();
+extern int ls_from;
 
 /* Defined in erepeat.c */
 void cur_back_nl();
@@ -198,13 +200,11 @@ int c;
                 scr_redraw_cur_line();
             } else {
                 sz = gb_content_len();
-                if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
-                    term_putch(KEY_BS);
+                term_putch(KEY_BS);
+                if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n')
                     term_clreol();
-                } else {
-                    term_putch(KEY_BS);
+                else
                     term_del_char();
-                }
             }
         }
         return 0;
@@ -343,10 +343,8 @@ static void cmdline_mode()
 static void find_move(dir, count)
 int dir, count;
 {
-    static int fm_top;
-    fm_top = ed.top_pos;
-    mv_find(g_find_char, dir, count);
-    move_upd(fm_top);
+    mv_find(g_find_char, dir, count);   /* does not move top_pos */
+    move_upd(ed.top_pos);
 }
 
 /* Character search on current line: f, F, ;, ,, . */
@@ -383,7 +381,6 @@ void dot_replay_c();
 void dot_replay();
 
 static int  sm_pos;
-static int  sm_top;
 static long sm_win;   /* win_start before search -- detects buffer reload */
 
 /* Shared search-result handler: move to match or report not found. */
@@ -395,13 +392,12 @@ static void do_search_move()
         ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         ed.cur_pos  = sm_pos;
         ed.cur_vrow = -1;
-        sm_top = ed.top_pos;
         /* A buffer reload changes win_start; need a full screen redraw
          * (scr_refresh scrolls to the cursor itself). */
         if (ed.win_start != sm_win) {
             scr_refresh();
         } else {
-            move_upd(sm_top);
+            move_upd(ed.top_pos);
         }
         if (ed.search_wrapped) {
             hvi_sprintf(ed.status, "search hit %s, continuing at %s",
@@ -482,7 +478,7 @@ static void normal_misc_cmd(c, count, size)
 int c, count, size;
 {
     static int save_len, old_dir, light, u_i;
-    static int mk_c, mk_pos, mk_top;
+    static int mk_c, mk_pos;
     switch (c) {
 
     /* --- Marks --- */
@@ -508,8 +504,7 @@ int c, count, size;
         ed.cur_pos  = mk_pos;
         ed.cur_vrow = -1;
         set_wcol();
-        mk_top = ed.top_pos;
-        move_upd(mk_top);
+        move_upd(ed.top_pos);
         break;
 
     /* --- Yank/Put --- */
@@ -572,15 +567,11 @@ int c, count, size;
 
     /* --- Screen control --- */
     case KEY_CTRL_L:
-        {
-            char buf[16];
-            term_clear();
-            scr_status_invalidate();    /* status row was just erased */
-            /* Re-establish scroll region after term_clear() homes the cursor. */
-            hvi_sprintf(buf, "\033[1;%dr", ed.scr_rows - 1, 0);
-            term_puts(buf);
-            scr_refresh();
-        }
+        term_clear();
+        scr_status_invalidate();    /* status row was just erased */
+        /* Re-establish scroll region after term_clear() homes the cursor. */
+        term_scroll_region();
+        scr_refresh();
         break;
 
     /* --- Ex command line --- */
@@ -745,7 +736,7 @@ int new_top, total;
 static void normal_page_cmd(c, count, had_count)
 int c, count, had_count;
 {
-    static int n, top_line, total, text_rows, new_top, pg_top;
+    static int n, top_line, total, text_rows, new_top;
     static long new_off;
 
     switch (c) {
@@ -772,28 +763,25 @@ int c, count, had_count;
         break;
 
     case KEY_CTRL_F:
-        text_rows = ed.scr_rows - 1;
-        n        = count * (text_rows - 2);
-        top_line = scr_pos_line(ed.top_pos);
-        total    = scr_line_count();
-        /* Load when new screen bottom would exceed buffer: need a full screen
-         * of lines above new_top plus text_rows more for the new viewport. */
-        if (ed.tail_offset > 0L && top_line + n + text_rows > total) {
-            gb_load_more(LOAD_CHUNK);
-            /* Recompute: gb_discard_head inside gb_load_more shifts ed.top_pos. */
-            top_line = scr_pos_line(ed.top_pos);
-            total    = scr_line_count();
-        }
-        new_top = top_line + n;
-        if (new_top >= total) new_top = total - 1;
-        if (new_top <= top_line) break;
-        pg_mid(new_top, total);
-        break;
-
     case KEY_CTRL_B:
         text_rows = ed.scr_rows - 1;
         n        = count * (text_rows - 2);
-        if (ed.top_pos == 0 && ed.win_start > 0L) {
+        if (c == KEY_CTRL_F) {
+            top_line = scr_pos_line(ed.top_pos);
+            total    = scr_line_count();
+            /* Load when new screen bottom would exceed buffer: need a full
+             * screen of lines above new_top plus text_rows more for the new
+             * viewport. */
+            if (ed.tail_offset > 0L && top_line + n + text_rows > total) {
+                gb_load_more(LOAD_CHUNK);
+                /* Recompute: gb_discard_head in gb_load_more shifts top_pos. */
+                top_line = scr_pos_line(ed.top_pos);
+                total    = scr_line_count();
+            }
+            new_top = top_line + n;
+            if (new_top >= total) new_top = total - 1;
+            if (new_top <= top_line) break;
+        } else if (ed.top_pos == 0 && ed.win_start > 0L) {
             new_off = ed.win_start - (long)LOAD_CHUNK;
             if (new_off < 0L) new_off = 0L;
             gb_reload_from(new_off);
@@ -802,8 +790,7 @@ int c, count, had_count;
             if (new_top < 0) new_top = 0;
         } else {
             if (ed.top_pos == 0) break;
-            top_line = scr_pos_line(ed.top_pos);
-            new_top  = top_line - n;
+            new_top = scr_pos_line(ed.top_pos) - n;
             if (new_top < 0) new_top = 0;
             total = scr_line_count();
         }
@@ -816,10 +803,9 @@ int c, count, had_count;
         if (c == KEY_CTRL_D && ed.tail_offset > 0L &&
             ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
             gb_load_more(LOAD_CHUNK);
-        pg_top = ed.top_pos;         /* after load: positions rebased */
         if (c == KEY_CTRL_D) mv_down(n * count);
         else                 mv_up(n * count);
-        move_upd(pg_top);            /* scroll + paint new rows only */
+        move_upd(ed.top_pos);        /* scroll + paint new rows only */
         break;
     }
 }
@@ -829,7 +815,7 @@ int c;
 {
     static int  count, size, linewise, endpoint;
     static int  had_count, old_top;
-    static int  op, nc_from, nc_to, nc_k;
+    static int  op, nc_from, nc_to;
     static int  gg_line;
     static long k_new_off;
 
@@ -854,15 +840,10 @@ int c;
         g_op = 0;
 
         /* doubled operator (dd, cc, yy) = operate on count lines.
-         * Walk with find_bol/find_eol -- O(range), not O(buffer). */
+         * line_span (emove.c) walks with find_bol/find_eol -- O(range). */
         if (c == op) {
-            nc_from = find_bol(ed.cur_pos);
-            nc_to   = nc_from;
-            for (nc_k = count; nc_k > 0; nc_k--) {
-                nc_to = find_eol(nc_to);
-                if (nc_to >= size) break;
-                nc_to++;    /* include the newline */
-            }
+            nc_to   = line_span(count);
+            nc_from = ls_from;
             /* cc/S replace the line's text but keep its newline */
             if (op == 'c' && nc_to > nc_from && gb_char_at(nc_to - 1) == '\n')
                 nc_to--;
@@ -915,9 +896,8 @@ int c;
     case 'l':  mv_right(count); scr_update_cursor(); break;
 
     case KEY_CR:
-        old_top = ed.top_pos;
-        mv_down(count); mv_bnb();
-        move_upd(old_top);
+        mv_down(count); mv_bnb();       /* neither moves top_pos */
+        move_upd(ed.top_pos);
         break;
 
     case 'j':
@@ -927,9 +907,8 @@ int c;
             mv_down(count); scr_scroll_to_cursor();
             scr_refresh();
         } else {
-            old_top = ed.top_pos;
             mv_down(count);
-            move_upd(old_top);
+            move_upd(ed.top_pos);
         }
         break;
     case 'k':
@@ -949,9 +928,8 @@ int c;
     case 'w':
     case 'b':
     case 'e':
-        old_top = ed.top_pos;
-        mv_word(c, count);
-        move_upd(old_top);
+        mv_word(c, count);              /* does not move top_pos */
+        move_upd(ed.top_pos);
         break;
 
     case '0':  mv_bol();  ed.want_col = 0; scr_update_cursor(); break;
