@@ -28,6 +28,9 @@ void status_show();
 int  line_span();
 extern int ls_from;
 
+/* CPIR newline counter over raw memory (cstart.as). */
+extern int gb_cntnl();
+
 /* ------------------------------------------------------------------ */
 
 /* Pull the cursor back off a trailing newline (shared post-edit fixup;
@@ -80,7 +83,7 @@ void dot_replay_c(n)
 int n;
 {
     int from, to, ins_pos, linewise, endpoint;
-    int light, i;
+    int light;
     linewise = 0;
     if (ed.dot_motion == 'c') {          /* cc / S: whole-line change */
         from = find_bol(ed.cur_pos);
@@ -94,9 +97,8 @@ int n;
     }
     /* One-row repaint when the whole change stays on a single-row line. */
     light = !linewise && scr_line_is_1row(from) &&
-            gb_count_nl(from, to - from) == 0;
-    for (i = 0; i < ed.dot_len && light; i++)
-        if (ed.dot_text[i] == '\n') light = 0;
+            gb_count_nl(from, to - from) == 0 &&
+            gb_cntnl(ed.dot_text, ed.dot_len) == 0;
     ins_pos = from;
     if (to > from) {
         undo_save_delete(from, to - from);
@@ -117,18 +119,18 @@ int n;
  * Replay the last change command at the current cursor position.
  * count == 0 means use the stored dot_count; otherwise use count.
  */
+static char dr_sp[1] = { ' ' };   /* J's separating space (1 data byte) */
+
 void dot_replay(count)
 int count;
 {
     int  n, sz, k, linewise, endpoint;
     int  from, to, ins_pos, ch, eol, del;
-    int  has_nl, ki;
+    int  has_nl;
     char tmp_c[1];
-    char sp;
 
     if (!ed.dot_cmd) return;
     n  = (count > 0) ? count : ed.dot_count;
-    sp = ' ';
 
     /* Note: x, X, D, C, s, S never appear as dot_cmd -- they expand
      * through op_motion() and replay as 'd' or 'c' with a motion. */
@@ -190,7 +192,7 @@ int count;
             ch = (eol > 0) ? gb_char_at(eol - 1) : '\n';
             if (eol < sz && gb_char_at(eol) != '\n' &&
                 ch != ' ' && ch != '\t' && ch != '\n')
-                gb_insert(eol, &sp, 1);
+                gb_insert(eol, dr_sp, 1);
             ed.modified = 1;
         }
         scr_redraw_from_cur();
@@ -219,9 +221,7 @@ int count;
             ins_position(ed.dot_cmd);
             ins_pos = ed.cur_pos;
             /* Check if inserted text crosses a line boundary. */
-            has_nl = 0;
-            for (ki = 0; ki < ed.dot_len; ki++)
-                if (ed.dot_text[ki] == '\n') { has_nl = 1; break; }
+            has_nl = gb_cntnl(ed.dot_text, ed.dot_len) != 0;
             del = !has_nl && scr_line_is_1row(ins_pos);   /* light path */
             undo_save_insert(ins_pos, ed.dot_len);
             gb_insert(ins_pos, ed.dot_text, ed.dot_len);

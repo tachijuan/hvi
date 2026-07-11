@@ -94,10 +94,13 @@ char *cmd;
 
     /* :r filename -- read file and insert after cursor line */
     if (*p == 'r' && (p[1] == ' ' || p[1] == '\t' || p[1] == '\0')) {
+        /* 128-byte staging chunk: one gb_insert (gap move + mark sweep)
+         * per sector instead of per character. */
+        static char rbuf[128];
         char  *fname;
         HFILE *f;
         int    c;
-        char   tmp[2];
+        int    rn;
         int    ins_pos, old_len, new_len;
 
         p++;
@@ -123,12 +126,19 @@ char *cmd;
             return 0;
         }
         old_len = gb_content_len();
+        rn = 0;
         while ((c = hvi_fgetc(f)) != HEOF) {
             if (c == 0x0D) continue;
             if (c == 0x1A) break;   /* CP/M EOF marker */
-            tmp[0] = (char)c;
-            gb_insert(ins_pos++, tmp, 1);
+            rbuf[rn++] = (char)c;
+            if (rn == 128) {
+                if (!gb_insert(ins_pos, rbuf, rn)) { rn = 0; break; }
+                ins_pos += rn;
+                rn = 0;
+            }
         }
+        if (rn > 0)
+            gb_insert(ins_pos, rbuf, rn);
         hvi_fclose(f);
         new_len = gb_content_len();
         ed.modified = 1;

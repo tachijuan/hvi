@@ -25,7 +25,8 @@
  *
  *   scr_cur_line() maintains an incremental cache of the current line
  *   number so that the status bar update and movement routines avoid
- *   the O(buffer) scan of scr_pos_line(cur_pos) on every keystroke.
+ *   the O(buffer) newline count of gb_count_nl(0, cur_pos) on every
+ *   keystroke.
  *
  * No standard library headers are included; hvi_sprintf from util.c
  * is used for status-bar formatting.
@@ -148,18 +149,9 @@ int pos;
 /* ------------------------------------------------------------------ */
 
 /*
- * Return the line number (0-based) of buffer position pos.
- * O(pos), but via the CPIR scanner (gb_count_nl) rather than one
- * gb_char_at call per byte -- use scr_cur_line() for the cursor.
- */
-int scr_pos_line(pos)
-int pos;
-{
-    return gb_count_nl(0, pos);
-}
-
-/*
- * Cached, incremental line number for ed.cur_pos.
+ * Cached, incremental line number for ed.cur_pos.  For an arbitrary
+ * position, its 0-based line number is simply gb_count_nl(0, pos)
+ * (CPIR scan) -- callers use that directly.
  */
 static int scl_pos, scl_old_pos, scl_old_line; /* scr_cur_line statics */
 
@@ -178,7 +170,7 @@ int scr_cur_line()
         }
         ed.cur_line = scl_old_line;
     } else {
-        ed.cur_line = scr_pos_line(scl_pos);
+        ed.cur_line = gb_count_nl(0, scl_pos);
     }
     ed.cur_line_pos = scl_pos;
     return ed.cur_line;
@@ -199,18 +191,18 @@ int scr_last_line_start()
     return scr_line_start(scr_line_count() - 1);
 }
 
-static int sls_pos, sls_line, sls_size; /* scr_line_start statics */
+static int sls_pos, sls_size; /* scr_line_start statics */
 
 int scr_line_start(linenum)
 int linenum;
 {
+    /* Hop line starts with find_eol (CPIR scan in gap.c) instead of
+     * one gb_char_at call per byte -- :N and paging jump far faster. */
     sls_pos  = 0;
-    sls_line = 0;
     sls_size = gb_content_len();
-    while (sls_pos < sls_size && sls_line < linenum) {
-        if (gb_char_at(sls_pos) == '\n')
-            sls_line++;
-        sls_pos++;
+    while (linenum-- > 0 && sls_pos < sls_size) {
+        sls_pos = find_eol(sls_pos);
+        if (sls_pos < sls_size) sls_pos++;
     }
     return sls_pos;
 }

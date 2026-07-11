@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.4"
+#define HVI_VERSION "2.5"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -109,6 +109,11 @@
  * HFILE: CP/M direct-BDOS file handle (replaces stdio FILE).
  * Each instance carries its own 128-byte sector buffer, which is set as
  * the BDOS DMA address before every BDOS read/write call.
+ *
+ * File names accept a ZCPR-style "du:" prefix (drive A-P, user 0-15):
+ * "B:F.TXT", "3:F.TXT", "B3:F.TXT".  CP/M has no per-FCB user number,
+ * so the handle records the file's user area and cpmio.c switches to
+ * it (BDOS 32) around every directory/data call on the file.
  */
 typedef struct {
     unsigned char fcb[36];  /* CP/M File Control Block              */
@@ -119,6 +124,7 @@ typedef struct {
     int  mode;              /* 0=closed  1=read  2=write             */
     int  dirty;             /* write buffer has unflushed data       */
     int  at_eof;            /* 1 when BDOS reported end-of-file      */
+    int  user;              /* user area 0-15; -1 = HVI's own user   */
 } HFILE;
 
 /*
@@ -226,7 +232,9 @@ extern char msg_insert[];
 int  gb_init();
 void gb_free();
 int  gb_content_len();  /* logical content size (no gap) */
-int  gb_char_at(/* int pos */);
+int  gb_char_at(/* int pos */);  /* assembly, cstart.as: reads GapBuf
+                                  * fields at fixed offsets from ed --
+                                  * GapBuf must stay Editor's 1st member */
 int  find_bol(/* int pos */);
 int  find_eol(/* int pos */);
 int  gb_insert(/* int pos, char *text, int len */);
@@ -237,6 +245,8 @@ int  gb_load(/* char *filename, HFILE *fp */); /* fp=NULL -> hvi_fopen filename 
 int  gb_save(/* char *filename */);
 int  gb_load_more(/* int n */);
 int  gb_reload_from(/* long offset */);
+void gb_load_last();   /* window to file tail, cursor to last line */
+void gb_load_prev();   /* window back one LOAD_CHUNK from win_start */
 int  gb_make_room();
 int  gb_goto_line(/* int n */);
 
@@ -301,7 +311,6 @@ void scr_update_after_move();
 void scr_adj();
 void scr_after_edit();
 int  scr_cur_line();
-int  scr_pos_line();
 int  scr_pos_col();
 int  scr_vrow_col();
 int  scr_line_start();

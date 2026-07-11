@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-09" "HVI 2.4" "CP/M User Commands"
+.TH HVI 1 "2026-07-11" "HVI 2.5" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -32,6 +32,26 @@ is given and the file exists, it is loaded for editing.
 If the file does not exist, an empty buffer is opened and the file is created
 on the first write.
 If no filename is given, HVI starts with an unnamed empty buffer.
+.PP
+Every
+.I filename
+argument \(em on the command line and in the
+.BR :w ,
+.BR :e ,
+and
+.B :r
+commands \(em accepts an optional drive and user-area prefix in the
+ZCPR
+.B du:
+form:
+.B B:FILE.TXT
+(drive B, current user),
+.B 3:FILE.TXT
+(current drive, user area 3), or
+.B B3:FILE.TXT
+(drive B, user area 3).
+Drives A\-P and user areas 0\-15 are accepted.
+Unprefixed names use the drive and user area HVI was started from.
 .PP
 HVI supports three editing modes: normal mode (the default), insert mode,
 and command-line (ex) mode.

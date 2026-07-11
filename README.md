@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.4**
+**Version 2.5**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -78,6 +78,11 @@ HVI [filename]
 ```
 
 - `filename` — file to open (created if it does not exist)
+
+Any filename — on the command line or in `:w`, `:e`, `:r` — may carry a
+ZCPR-style `du:` drive/user prefix: `B:FILE.TXT` (drive B), `3:FILE.TXT`
+(user area 3), `B3:FILE.TXT` (both).  Drives A–P, user areas 0–15.
+Unprefixed names use the drive and user area HVI was started from.
 
 ---
 
@@ -407,6 +412,46 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.4 → 2.5
+
+Feature release (drive/user-area file access) plus an assembly speed
+pass.  All 139 + 13 tests in `tests/` pass, including 11 new
+user-area tests.
+
+- **CP/M user areas and drive prefixes.**  Every filename — command
+  line, `:w`, `:e`, `:r` — accepts ZCPR-style `du:` prefixes:
+  `B:FILE.TXT`, `3:FILE.TXT`, `B3:FILE.TXT` (drives A–P, users 0–15).
+  CP/M has no per-FCB user number, so each `HFILE` records its user
+  area and cpmio.c brackets every directory/data BDOS call with
+  BDOS 32 set-user/restore.  Unprefixed names never issue a BDOS 32
+  (zero overhead) and live where HVI was started.  When saving a
+  large file back to itself, the `HVITMP.TMP` staging file is created
+  with the destination's prefix — BDOS rename cannot cross a drive or
+  user area.
+- **`gb_char_at` is now assembly** (cstart.as, frameless): the hottest
+  function in the editor, called once per character by every scanner.
+- **`find_bol`/`find_eol` run on new CPIR/CPDR scanners**
+  (`gb_memchr`/`gb_memrchr`, 21 T-states/byte vs ~300 for the compiled
+  loop) — these back j/k, dd, J, o, G, `:N`, and `line_span`, so line
+  motions in a full 24K buffer are an order of magnitude faster.
+  `scr_line_start` hops lines via `find_eol` instead of scanning every
+  byte.
+- **Newline counting funnels into the CPIR counter** (`gb_cntnl`) in
+  five more places (`gb_insert`, yank/undo/dot-replay checks), and
+  `:r` reads through a 128-byte staging chunk instead of one
+  `gb_insert` (gap move + 27-mark sweep) per character.
+- Size offsets for the above: the FCB builder + `du:` parser and the
+  BDOS-32 user bracket (`fill_fcb`, `dsk_u`) are assembly in
+  cstart.as, `rd_sector`/`hvi_fseek` read the sector number's
+  little-endian bytes instead of calling the 32-bit shift library,
+  `gb_copy_out`/`gb_count_nl` share one clamp/split helper, the
+  `G`/`^B`/`k`-at-top window jumps share `gb_load_last`/`gb_load_prev`,
+  `fmt_int`'s power table moved to initialized data, and `bdos_puts`
+  uses the `con_write` assembly loop.
+
+Binary size: 229 CP/M records (~29K) — identical to 2.4 despite the
+user-area feature.
 
 ### 2.3 → 2.4
 

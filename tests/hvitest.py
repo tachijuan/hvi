@@ -592,6 +592,76 @@ def main():
           lines[0] == "c" * 79 and lines[1] == "second",
           "rows=%r" % [lines[0][-3:], lines[1]])
     sess.quit_expect_prompt(":q!\r")
+
+    # ---------- drive / user-area prefixes (du:) ----------
+    # RunCPM maps user areas to subdirectories: A/1, B/0, B/5, ...
+    U1 = "/tmp/hvi-test/A/1"
+    B0 = "/tmp/hvi-test/B/0"
+    B5 = "/tmp/hvi-test/B/5"
+    for d in (U1, B0, B5):
+        os.makedirs(d, exist_ok=True)
+
+    def put_at(dirp, name, content):
+        data = content.replace("\n", "\r\n").encode("latin1")
+        open(os.path.join(dirp, name), "wb").write(data + b"\x1a")
+
+    def get_at(dirp, name):
+        p = os.path.join(dirp, name)
+        if not os.path.exists(p):
+            return None
+        d = open(p, "rb").read().rstrip(b"\x1a")
+        return d.replace(b"\r\n", b"\n").decode("latin1")
+
+    def rm_at(dirp, name):
+        p = os.path.join(dirp, name)
+        if os.path.exists(p):
+            os.remove(p)
+
+    # edit a file living in user area 1, from user 0
+    rm_file("U.TXT"); rm_at(U1, "U.TXT")
+    put_at(U1, "U.TXT", "user one file\n")
+    sess.start_hvi("1:U.TXT")
+    sess.keys("rX")
+    sess.quit_expect_prompt(":wq\r")
+    check("user edit 1:file", get_at(U1, "U.TXT") == "Xser one file\n",
+          "got %r" % get_at(U1, "U.TXT"))
+    check("user edit no stray copy", get_file("U.TXT") is None,
+          "file leaked into user 0")
+
+    # :w into another user area
+    rm_at(U1, "OUT.TXT")
+    file_test(sess, "user :w 1:name", "cross user\n", ":w 1:OUT.TXT\r",
+              "cross user\n", quit_seq=":q\r")
+    check("user :w 1:name content", get_at(U1, "OUT.TXT") == "cross user\n",
+          "got %r" % get_at(U1, "OUT.TXT"))
+
+    # :r from another user area
+    put_at(U1, "INC.TXT", "included\n")
+    file_test(sess, "user :r 1:name", "top\n", ":r 1:INC.TXT\r",
+              "top\nincluded\n")
+
+    # :w with a drive prefix, and with drive+user combined
+    rm_at(B0, "BOUT.TXT"); rm_at(B5, "BU.TXT")
+    file_test(sess, "drive :w B:name", "on drive b\n", ":w B:BOUT.TXT\r",
+              "on drive b\n", quit_seq=":q\r")
+    check("drive :w B:name content", get_at(B0, "BOUT.TXT") == "on drive b\n",
+          "got %r" % get_at(B0, "BOUT.TXT"))
+    file_test(sess, "du :w B5:name", "drive b user 5\n", ":w B5:BU.TXT\r",
+              "drive b user 5\n", quit_seq=":q\r")
+    check("du :w B5:name content", get_at(B5, "BU.TXT") == "drive b user 5\n",
+          "got %r" % get_at(B5, "BU.TXT"))
+
+    # :e across user areas, then back to an unprefixed file
+    put_at(U1, "E.TXT", "edit me\n")
+    rm_file("PLAIN.TXT"); put_file("PLAIN.TXT", "plain\n")
+    sess.start_hvi("PLAIN.TXT")
+    sess.keys(":e 1:E.TXT\r")
+    sess.keys("rY")
+    sess.quit_expect_prompt(":wq\r")
+    check("user :e 1:name", get_at(U1, "E.TXT") == "Ydit me\n",
+          "got %r" % get_at(U1, "E.TXT"))
+    check("user :e keeps plain intact", get_file("PLAIN.TXT") == "plain\n",
+          "got %r" % get_file("PLAIN.TXT"))
     sess.close()
 
     # ---------- summary ----------

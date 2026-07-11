@@ -14,17 +14,16 @@
 #include <cpm.h>
 #include "hvi.h"
 
-extern int bdos_disk();
+extern void con_write();  /* block console output via BDOS 6 (cstart.as) */
 
 /* ------------------------------------------------------------------ */
-/*  Console output -- uses bdos_disk(2,...) to preserve IX around CALL 5 */
+/*  Console output                                                      */
 /* ------------------------------------------------------------------ */
 
 void bdos_puts(s)
 char *s;
 {
-    while (*s)
-        bdos_disk(2, (int)(unsigned char)*s++);
+    con_write(s, hvi_strlen(s));
 }
 
 /* ------------------------------------------------------------------ */
@@ -75,14 +74,10 @@ char *fmt_int(buf, n)
 char *buf;
 int   n;
 {
-    static int pows[5];   /* must be static to avoid IX-frame overhead */
+    /* Initialised static: costs 10 bytes of stored data psect but saves
+     * the ~40 bytes of code five per-call stores compiled to. */
+    static int pows[5] = { 10000, 1000, 100, 10, 1 };
     int i, d, started;
-
-    pows[0] = 10000;
-    pows[1] =  1000;
-    pows[2] =   100;
-    pows[3] =    10;
-    pows[4] =     1;
 
     if (n < 0) { *buf++ = '-'; n = -n; }
     if (n == 0) { *buf++ = '0'; return buf; }

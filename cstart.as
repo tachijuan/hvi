@@ -63,6 +63,19 @@
     GLOBAL  _bdos_disk, _bdos_disk_ix
     GLOBAL  _gb_memmove
     GLOBAL  _con_write, _gb_cntnl
+    GLOBAL  _gb_char_at, _gb_memchr, _gb_memrchr, _ed
+    GLOBAL  _dsk_u
+    GLOBAL  _fill_fcb, _fcb_user, _fcb_drive
+
+; Editor-struct field offsets used by _gb_char_at.  GapBuf is the FIRST
+; member of Editor (hvi.h) so its fields sit at the start of _ed:
+;   _ed+0 = gb.buf   _ed+2 = gb.size   _ed+4 = gb.gstart   _ed+6 = gb.gend
+; If GapBuf stops being the first member or its fields are reordered,
+; these EQUs must be updated to match.
+GBBUF   equ 0
+GBSIZE  equ 2
+GBGST   equ 4
+GBGND   equ 6
 
 start:
     ; --- Stack setup -------------------------------------------------
@@ -389,6 +402,378 @@ cnl_done:
     ex      de,hl               ; return count in HL
     pop     ix
     ret
+
+    ; --- dsk_u: bdos_disk within a file's user area --------------------
+    ;
+    ; int dsk_u(int fn, int arg, int user)
+    ;
+    ; bdos_disk() bracketed by BDOS 32 user-area switches: user 0-15
+    ; enters that user area for the call and returns to the process
+    ; user afterwards; user < 0 (no du: prefix) calls straight through
+    ; with no BDOS 32 traffic at all.  The process user number is
+    ; fetched once, lazily (du_cur starts as 80h = unknown; it is a
+    ; data-psect byte because BSS zeroing would read as "user 0").
+    ; All BDOS traffic goes through _bdos_disk, which preserves IX.
+    ;
+_dsk_u:
+    push    ix
+    ld      ix,0
+    add     ix,sp               ; IX+4 fn, IX+6 arg, IX+8 user
+    ld      a,(ix+9)
+    rla                         ; user sign bit -> carry
+    jp      c,dsku_op           ; user < 0: no switching
+    ld      a,(du_cur)
+    rla
+    jp      nc,dsku_have        ; process user already known
+    ld      hl,0ffh
+    push    hl
+    ld      hl,32
+    push    hl
+    call    _bdos_disk          ; BDOS 32: get current user
+    pop     bc
+    pop     bc
+    ld      a,l
+    ld      (du_cur),a
+dsku_have:
+    ld      a,(du_cur)
+    cp      (ix+8)
+    jp      z,dsku_op           ; file lives in the process user area
+    ld      l,(ix+8)
+    ld      h,0
+    push    hl
+    ld      hl,32
+    push    hl
+    call    _bdos_disk          ; BDOS 32: enter file's user area
+    pop     bc
+    pop     bc
+    ld      e,(ix+6)
+    ld      d,(ix+7)
+    push    de
+    ld      l,(ix+4)
+    ld      h,(ix+5)
+    push    hl
+    call    _bdos_disk          ; the actual disk operation
+    pop     bc
+    pop     bc
+    push    hl                  ; save its result
+    ld      a,(du_cur)
+    ld      l,a
+    ld      h,0
+    push    hl
+    ld      hl,32
+    push    hl
+    call    _bdos_disk          ; BDOS 32: back to the process user
+    pop     bc
+    pop     bc
+    pop     hl                  ; result of the operation
+    pop     ix
+    ret
+dsku_op:
+    ld      e,(ix+6)
+    ld      d,(ix+7)
+    push    de
+    ld      l,(ix+4)
+    ld      h,(ix+5)
+    push    hl
+    call    _bdos_disk
+    pop     bc
+    pop     bc
+    pop     ix
+    ret
+
+    ; --- fill_fcb: build a 36-byte FCB from "du:NAME.EXT" --------------
+    ;
+    ; void fill_fcb(unsigned char *fcb, char *name)
+    ;
+    ; Parses the optional ZCPR "du:" prefix -- drive letter A-P/a-p,
+    ; user number 0-15, terminating ':' -- then fills the FCB: drive
+    ; code in byte 0, name/ext upper-cased and space-padded, all other
+    ; bytes zero.  An invalid prefix (user > 15, 3+ digits, or no ':')
+    ; leaves the whole string as the filename, exactly like the
+    ; retired C version in cpmio.c.
+    ;
+    ; Results for the C side (both ints defined in cpmio.c):
+    ;   _fcb_user  = parsed user area, -1 when none given
+    ;   _fcb_drive = FCB drive code (0 = current, 1 = A ...); hvi_fopen
+    ;                re-asserts it into FCB byte 0 after BDOS open.
+    ;
+_fill_fcb:
+    push    ix
+    ld      ix,0
+    add     ix,sp               ; IX+4 fcb, IX+6 name
+    ld      hl,0ffffh
+    ld      (_fcb_user),hl      ; user = -1 (current)
+    ld      hl,0
+    ld      (_fcb_drive),hl     ; drive = 0 (current)
+    ; ---- parse prefix into B (drive code) / C (user; FFh = none)
+    ld      l,(ix+6)
+    ld      h,(ix+7)            ; HL = name scan pointer
+    ld      b,0
+    ld      c,0ffh
+    ld      a,(hl)
+    call    ffb_upper
+    cp      'A'
+    jp      c,ffb_digits
+    cp      'P'+1
+    jp      nc,ffb_digits
+    sub     'A'-1               ; drive code 1..16
+    ld      b,a
+    inc     hl
+ffb_digits:
+    ld      a,(hl)
+    sub     '0'
+    jp      c,ffb_colon
+    cp      10
+    jp      nc,ffb_colon
+    ld      c,a                 ; first user digit
+    inc     hl
+    ld      a,(hl)
+    sub     '0'
+    jp      c,ffb_colon
+    cp      10
+    jp      nc,ffb_colon
+    ld      e,a                 ; second digit: user = c*10 + e
+    ld      a,c
+    add     a,a
+    ld      d,a                 ; d = 2c
+    add     a,a
+    add     a,a                 ; a = 8c
+    add     a,d                 ; a = 10c
+    add     a,e
+    ld      c,a
+    inc     hl
+    ld      a,(hl)              ; a third digit invalidates the prefix
+    sub     '0'
+    jp      c,ffb_colon
+    cp      10
+    jp      c,ffb_nopfx
+ffb_colon:
+    ld      a,(hl)
+    cp      ':'
+    jp      nz,ffb_nopfx
+    ld      a,c
+    cp      0ffh
+    jp      z,ffb_commit        ; "B:" form -- no user digits
+    cp      16
+    jp      nc,ffb_nopfx        ; user 16-99: not a prefix
+ffb_commit:
+    inc     hl                  ; consume the ':'
+    ld      a,b
+    ld      (_fcb_drive),a      ; low byte; high byte still 0
+    ld      a,c
+    cp      0ffh
+    jp      z,ffb_build         ; no user digit: _fcb_user stays -1
+    ld      (_fcb_user),a
+    xor     a
+    ld      (_fcb_user+1),a
+    jp      ffb_build
+ffb_nopfx:
+    ld      l,(ix+6)
+    ld      h,(ix+7)            ; rewind: whole string is the name
+    ; ---- build the FCB (DE = name text, HL = fcb)
+ffb_build:
+    ex      de,hl
+    ld      l,(ix+4)
+    ld      h,(ix+5)
+    push    hl
+    ld      b,36                ; zero all 36 bytes
+    xor     a
+ffb_z:
+    ld      (hl),a
+    inc     hl
+    djnz    ffb_z
+    pop     hl
+    push    hl
+    ld      a,(_fcb_drive)
+    ld      (hl),a              ; byte 0 = drive code
+    inc     hl
+    ld      b,11                ; blank the name+ext fields
+ffb_sp:
+    ld      (hl),' '
+    inc     hl
+    djnz    ffb_sp
+    pop     hl
+    inc     hl                  ; HL = &fcb[1]
+    ld      b,8                 ; up to 8 name chars, stop at '.'/NUL
+ffb_n:
+    ld      a,(de)
+    or      a
+    jp      z,ffb_done
+    cp      '.'
+    jp      z,ffb_dot
+    call    ffb_upper
+    ld      (hl),a
+    inc     hl
+    inc     de
+    djnz    ffb_n
+ffb_skip:
+    ld      a,(de)              ; skip extra name chars before the dot
+    or      a
+    jp      z,ffb_done
+    cp      '.'
+    jp      z,ffb_dot
+    inc     de
+    jp      ffb_skip
+ffb_dot:
+    inc     de                  ; skip the '.'
+    ld      l,(ix+4)
+    ld      h,(ix+5)
+    ld      bc,9
+    add     hl,bc               ; HL = &fcb[9] (extension field)
+    ld      b,3
+ffb_e:
+    ld      a,(de)
+    or      a
+    jp      z,ffb_done
+    call    ffb_upper
+    ld      (hl),a
+    inc     hl
+    inc     de
+    djnz    ffb_e
+ffb_done:
+    pop     ix
+    ret
+
+ffb_upper:                      ; fold a-z in A to upper case
+    cp      'a'
+    ret     c
+    cp      'z'+1
+    ret     nc
+    sub     20h
+    ret
+
+    ; --- gb_char_at: logical byte fetch through the gap ---------------
+    ;
+    ; int gb_char_at(int pos)
+    ;
+    ; Returns the unsigned byte at logical position pos, or -1 when pos
+    ; is out of range.  Mirrors the retired C version in gap.c exactly:
+    ; pos < 0 -> -1; pos < gstart -> buf[pos]; otherwise raw = pos +
+    ; gend - gstart and raw >= size -> -1, else buf[raw].
+    ;
+    ; This is the hottest function in the editor -- every per-character
+    ; scanner (next_vrow, col_from, word motions, search, row painting)
+    ; funnels through it -- so it is frameless: the argument is read
+    ; relative to SP and IX/IY are never touched.
+    ;
+_gb_char_at:
+    ld      hl,2
+    add     hl,sp
+    ld      a,(hl)
+    inc     hl
+    ld      h,(hl)
+    ld      l,a             ; HL = pos
+    bit     7,h
+    jp      nz,gca_m1       ; pos < 0
+    ld      de,(_ed+GBGST)  ; DE = gstart
+    or      a
+    sbc     hl,de           ; HL = pos - gstart; carry: pos < gstart
+    jp      c,gca_dir
+    ld      de,(_ed+GBGND)
+    add     hl,de           ; HL = raw = pos - gstart + gend
+    ld      de,(_ed+GBSIZE)
+    or      a
+    sbc     hl,de           ; carry: raw < size
+    jp      nc,gca_m1       ; raw >= size -> out of range
+    add     hl,de           ; restore raw
+    jp      gca_ld
+gca_dir:
+    add     hl,de           ; restore pos (raw index == pos)
+gca_ld:
+    ld      de,(_ed+GBBUF)
+    add     hl,de
+    ld      l,(hl)
+    ld      h,0             ; zero-extend the byte
+    ret
+gca_m1:
+    ld      hl,-1
+    ret
+
+    ; --- gb_memchr: CPIR index-of over a raw memory range -------------
+    ;
+    ; int gb_memchr(char *p, int len, int c)
+    ;
+    ; Returns the index of the first byte equal to c in p[0..len), or
+    ; -1 when absent or len <= 0.  21 T-states/byte versus ~300 for the
+    ; compiled gb_char_at loop it replaces -- backs find_eol() in gap.c
+    ; (and through it j/k, dd, line_span, scr_line_start, :N).
+    ;
+    ; cdecl args at SP+2/+4/+6; frameless, IX/IY untouched.
+    ;
+_gb_memchr:
+    ld      hl,2
+    add     hl,sp
+    ld      e,(hl)
+    inc     hl
+    ld      d,(hl)          ; DE = p
+    inc     hl
+    ld      c,(hl)
+    inc     hl
+    ld      b,(hl)          ; BC = len
+    inc     hl
+    ld      a,b
+    or      c
+    jp      z,mch_no        ; len == 0
+    bit     7,b
+    jp      nz,mch_no       ; len < 0
+    ld      a,(hl)          ; A = search byte
+    ex      de,hl           ; HL = p
+    push    hl              ; save p for the index calculation
+    cpir
+    pop     de              ; DE = p
+    jp      nz,mch_no       ; range exhausted, last byte not c
+    or      a
+    sbc     hl,de
+    dec     hl              ; index = (HL_after_match - 1) - p
+    ret
+mch_no:
+    ld      hl,-1
+    ret
+
+    ; --- gb_memrchr: CPDR last-index-of over a raw memory range -------
+    ;
+    ; int gb_memrchr(char *p, int len, int c)
+    ;
+    ; Returns the index of the LAST byte equal to c in p[0..len), or
+    ; -1 when absent or len <= 0.  Backward CPDR scan -- backs
+    ; find_bol() in gap.c, the other half of every line motion.
+    ;
+    ; cdecl args at SP+2/+4/+6; frameless, IX/IY untouched.
+    ;
+_gb_memrchr:
+    ld      hl,2
+    add     hl,sp
+    ld      e,(hl)
+    inc     hl
+    ld      d,(hl)          ; DE = p
+    inc     hl
+    ld      c,(hl)
+    inc     hl
+    ld      b,(hl)          ; BC = len
+    inc     hl
+    ld      a,b
+    or      c
+    jp      z,mrc_no        ; len == 0
+    bit     7,b
+    jp      nz,mrc_no       ; len < 0
+    ld      a,(hl)          ; A = search byte
+    ld      h,d
+    ld      l,e
+    add     hl,bc
+    dec     hl              ; HL = p + len - 1 (last byte)
+    cpdr
+    jp      nz,mrc_no       ; range exhausted, first byte not c
+    inc     hl              ; CPDR left HL = match address - 1
+    or      a
+    sbc     hl,de           ; index = match address - p
+    ret
+mrc_no:
+    ld      hl,-1
+    ret
+
+    ; --- initialised data --------------------------------------------
+    PSECT   data
+du_cur: defb    80h             ; process user area; 80h = not yet fetched
 
     ; --- BSS section marker ------------------------------------------
     ; bss_begin must be in the BSS psect so the linker places it at

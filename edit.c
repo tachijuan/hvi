@@ -410,14 +410,13 @@ static void do_search_move()
     }
 }
 
-/* Non-zero when the charwise yank buffer contains a newline. */
-static int yhn_i;
+/* CPIR newline counter over raw memory (cstart.as). */
+extern int gb_cntnl();
 
+/* Non-zero when the charwise yank buffer contains a newline. */
 static int yank_has_nl()
 {
-    for (yhn_i = 0; yhn_i < ed.yank_len; yhn_i++)
-        if (ed.yank[yhn_i] == '\n') return 1;
-    return 0;
+    return gb_cntnl(ed.yank, ed.yank_len) != 0;
 }
 
 /*
@@ -427,14 +426,13 @@ static int yank_has_nl()
  * newline added around the yank (py_start / py_total).
  */
 static int  py_pos, py_light, py_start, py_total;
-static char py_nl[1];
+static char py_nl[1] = { '\n' };   /* 1 data byte beats a store per call */
 
 static void put_yank(after)
 int after;
 {
     if (ed.yank_len <= 0) return;
     py_light = 0;
-    py_nl[0] = '\n';
     py_total = ed.yank_len;
     if (ed.yank_line) {
         if (after) {
@@ -477,7 +475,7 @@ int after;
 static void normal_misc_cmd(c, count, size)
 int c, count, size;
 {
-    static int save_len, old_dir, light, u_i;
+    static int save_len, old_dir, light;
     static int mk_c, mk_pos;
     switch (c) {
 
@@ -544,9 +542,8 @@ int c, count, size;
         if (ed.undo.type == UNDO_DELETE) {
             save_len = ed.undo.len;
             if (save_len > UNDO_MAX) save_len = UNDO_MAX;
-            light = scr_line_is_1row(ed.undo.pos);
-            for (u_i = 0; u_i < save_len && light; u_i++)
-                if (ed.undo.text[u_i] == '\n') light = 0;
+            light = scr_line_is_1row(ed.undo.pos) &&
+                    gb_cntnl(ed.undo.text, save_len) == 0;
             gb_insert(ed.undo.pos, ed.undo.text, save_len);
             ed.cur_pos   = ed.undo.pos;
             ed.modified  = ed.undo.was_clean ? 0 : 1;
@@ -737,7 +734,6 @@ static void normal_page_cmd(c, count, had_count)
 int c, count, had_count;
 {
     static int n, top_line, total, text_rows, new_top;
-    static long new_off;
 
     switch (c) {
 
@@ -746,16 +742,9 @@ int c, count, had_count;
         if (had_count) {
             /* nG: navigate to line n, scanning the file if needed. */
             gb_goto_line(count);
+        } else if (ed.tail_offset > 0L && ed.tail_file[0]) {
+            gb_load_last();   /* large file: jump to the last window */
         } else {
-            if (ed.tail_offset > 0L && ed.tail_file[0]) {
-                /* Large file: jump directly to the last window. */
-                new_off = hvi_fsize(ed.tail_file);
-                if (new_off > (long)LOAD_CHUNK)
-                    new_off -= (long)LOAD_CHUNK;
-                else
-                    new_off = 0L;
-                gb_reload_from(new_off);
-            }
             ed.cur_pos = scr_last_line_start();
         }
         nav_refresh();
@@ -767,7 +756,7 @@ int c, count, had_count;
         text_rows = ed.scr_rows - 1;
         n        = count * (text_rows - 2);
         if (c == KEY_CTRL_F) {
-            top_line = scr_pos_line(ed.top_pos);
+            top_line = gb_count_nl(0, ed.top_pos);
             total    = scr_line_count();
             /* Load when new screen bottom would exceed buffer: need a full
              * screen of lines above new_top plus text_rows more for the new
@@ -775,22 +764,20 @@ int c, count, had_count;
             if (ed.tail_offset > 0L && top_line + n + text_rows > total) {
                 gb_load_more(LOAD_CHUNK);
                 /* Recompute: gb_discard_head in gb_load_more shifts top_pos. */
-                top_line = scr_pos_line(ed.top_pos);
+                top_line = gb_count_nl(0, ed.top_pos);
                 total    = scr_line_count();
             }
             new_top = top_line + n;
             if (new_top >= total) new_top = total - 1;
             if (new_top <= top_line) break;
         } else if (ed.top_pos == 0 && ed.win_start > 0L) {
-            new_off = ed.win_start - (long)LOAD_CHUNK;
-            if (new_off < 0L) new_off = 0L;
-            gb_reload_from(new_off);
+            gb_load_prev();
             total   = scr_line_count();
             new_top = total - 1 - n;
             if (new_top < 0) new_top = 0;
         } else {
             if (ed.top_pos == 0) break;
-            new_top = scr_pos_line(ed.top_pos) - n;
+            new_top = gb_count_nl(0, ed.top_pos) - n;
             if (new_top < 0) new_top = 0;
             total = scr_line_count();
         }
@@ -817,7 +804,6 @@ int c;
     static int  had_count, old_top;
     static int  op, nc_from, nc_to;
     static int  gg_line;
-    static long k_new_off;
 
     /* ---- digit prefix ---- */
     if (c >= '1' && c <= '9' && !g_op) {
@@ -915,9 +901,7 @@ int c;
         old_top = ed.top_pos;
         mv_up(count); scr_scroll_to_cursor();
         if (ed.cur_pos == 0 && ed.win_start > 0L) {
-            k_new_off = ed.win_start - (long)LOAD_CHUNK;
-            if (k_new_off < 0L) k_new_off = 0L;
-            gb_reload_from(k_new_off);
+            gb_load_prev();
             ed.cur_pos = scr_last_line_start();
             nav_refresh();
             break;

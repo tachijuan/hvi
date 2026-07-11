@@ -394,8 +394,6 @@ static int  s_tgs_term;     /* expected number terminator           */
 /*
  * Read a decimal number from the console, terminated by `term`.
  * Returns the value, or -1 on timeout or an unexpected character.
- * Digit multiply uses shifts to avoid linking __mulu:
- *   n * 10  ==  (n << 3) + (n << 1)
  */
 static int tgs_num(term)
 int term;
@@ -405,7 +403,7 @@ int term;
     for (;;) {
         s_tgs_ch = con_wait(8000);
         if (s_tgs_ch >= '0' && s_tgs_ch <= '9')
-            s_tgs_n = (s_tgs_n << 3) + (s_tgs_n << 1) + (s_tgs_ch - '0');
+            s_tgs_n = s_tgs_n * 10 + (s_tgs_ch - '0');  /* imul is linked */
         else if (s_tgs_ch == s_tgs_term)
             return s_tgs_n;
         else

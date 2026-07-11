@@ -194,25 +194,31 @@ int n;
     end_hmove();
 }
 
+/* Count vrow starts stepped walking from a up to b (a, b are vrow
+ * starts; 0 when a >= b).  Shared cur_vrow bookkeeping for mv_up/mv_down. */
+static int vst_n;
+
+static int vsteps(a, b)
+int a, b;
+{
+    vst_n = 0;
+    while (a < b) { a = next_vrow(a); vst_n++; }
+    return vst_n;
+}
+
 void mv_up(n)
 int n;
 {
-    static int pos, prev_lstart, target, curr_vstart, target_vstart;
+    static int pos, target;
     while (n-- > 0) {
         pos = find_bol(ed.cur_pos);
         if (pos == 0) break;
         pos--;
-        prev_lstart = find_bol(pos);
-        target = pos_at_col(prev_lstart, ed.want_col);
+        target = pos_at_col(find_bol(pos), ed.want_col);
 
-        if (ed.cur_vrow >= 0) {
-            curr_vstart = vrow_start_of(ed.cur_pos);
-            target_vstart = vrow_start_of(target);
-            while (target_vstart < curr_vstart) {
-                target_vstart = next_vrow(target_vstart);
-                ed.cur_vrow--;
-            }
-        }
+        if (ed.cur_vrow >= 0)
+            ed.cur_vrow -= vsteps(vrow_start_of(target),
+                                  vrow_start_of(ed.cur_pos));
         ed.cur_pos = target;
     }
 }
@@ -220,7 +226,7 @@ int n;
 void mv_down(n)
 int n;
 {
-    static int pos, size, target, curr_vstart, target_vstart;
+    static int pos, size, target;
     size = gb_content_len();
     while (n-- > 0) {
         pos = find_eol(ed.cur_pos);
@@ -228,14 +234,9 @@ int n;
         pos++;
         target = pos_at_col(pos, ed.want_col);
 
-        if (ed.cur_vrow >= 0) {
-            curr_vstart = vrow_start_of(ed.cur_pos);
-            target_vstart = vrow_start_of(target);
-            while (curr_vstart < target_vstart) {
-                curr_vstart = next_vrow(curr_vstart);
-                ed.cur_vrow++;
-            }
-        }
+        if (ed.cur_vrow >= 0)
+            ed.cur_vrow += vsteps(vrow_start_of(ed.cur_pos),
+                                  vrow_start_of(target));
         ed.cur_pos = target;
     }
 }

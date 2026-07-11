@@ -26,6 +26,12 @@ extern void gb_memmove(/* char *dst, char *src, int len */);
  * (~8x faster than a gb_char_at loop -- backs gb_count_nl below). */
 extern int gb_cntnl(/* char *p, int len */);
 
+/* CPIR/CPDR byte scanners over a raw memory range; assembly in
+ * cstart.as.  Return the first/last index of c in p[0..len), or -1.
+ * They back find_eol/find_bol below, which every line motion uses. */
+extern int gb_memchr(/* char *p, int len, int c */);
+extern int gb_memrchr(/* char *p, int len, int c */);
+
 /* Temp-file names: one copy of each literal, passed around directly. */
 static char swp_name[] = "HVISWP.TMP";
 static char tmp_name[] = "HVITMP.TMP";
@@ -111,26 +117,11 @@ int gb_content_len()
 }
 
 /*
- * Return the character at logical position pos.
- * Returns -1 if pos is out of range.
- *
- * This is the hottest function in the editor -- every scanner calls it
- * once per character -- so it must not call gb_content_len(): the bounds
- * check is done inline on the raw buffer index instead (pos >= content
- * length is equivalent to the gap-adjusted index reaching ed.gb.size).
+ * gb_char_at(pos) -- the character at logical position pos, or -1 out
+ * of range -- lives in cstart.as: it is the hottest function in the
+ * editor (every scanner calls it once per character), so it is written
+ * frameless in assembly reading the GapBuf fields directly from ed.
  */
-int gb_char_at(pos)
-int pos;
-{
-    if (pos < 0)
-        return -1;
-    if (pos < ed.gb.gstart)
-        return (unsigned char)ed.gb.buf[pos];
-    pos += ed.gb.gend - ed.gb.gstart;
-    if (pos >= ed.gb.size)
-        return -1;
-    return (unsigned char)ed.gb.buf[pos];
-}
 
 /*
  * Move the gap so that gstart == pos.
@@ -173,7 +164,6 @@ int pos;
  * All locals static: gb_move_gap is a function call that may corrupt
  * IX-relative auto variables under HI-TECH C -O.
  */
-static int gbi_i;
 static int gbi_nl_added;
 
 int gb_insert(pos, text, len)
@@ -185,10 +175,7 @@ int   len;
     if (ed.gb.gend - ed.gb.gstart < len)
         return 0;   /* buffer is pre-allocated; cannot grow */
 
-    gbi_nl_added = 0;
-    for (gbi_i = 0; gbi_i < len; gbi_i++) {
-        if (text[gbi_i] == '\n') gbi_nl_added++;
-    }
+    gbi_nl_added = gb_cntnl(text, len);
 
     if (ed.line_cnt_cached > 0) ed.line_cnt_cached += gbi_nl_added;
 
@@ -212,58 +199,63 @@ int   len;
 }
 
 /*
+ * Split the logical range [pos, pos+len) -- clamped to the content --
+ * into its raw buffer segments: sp1/sl1 below the gap, sp2/sl2 above
+ * it (lengths 0 when a side is empty).  One copy of the clamp/split
+ * arithmetic shared by gb_copy_out and gb_count_nl.
+ */
+static char *sp1, *sp2;
+static int   sl1, sl2, spl_cl;
+
+static void gb_split(pos, len)
+int pos, len;
+{
+    sl1 = 0;
+    sl2 = 0;
+    spl_cl = gb_content_len();
+    if (pos < 0) { len += pos; pos = 0; }
+    if (pos >= spl_cl || len <= 0) return;
+    if (pos + len > spl_cl) len = spl_cl - pos;
+
+    if (pos < ed.gb.gstart) {
+        sl1 = ed.gb.gstart - pos;
+        if (sl1 > len) sl1 = len;
+        sp1 = ed.gb.buf + pos;
+        pos += sl1;
+        len -= sl1;
+    }
+    if (len > 0) {
+        sp2 = ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos;
+        sl2 = len;
+    }
+}
+
+/*
  * Copy len bytes of logical content starting at pos into dst.
  * Bulk replacement for per-character gb_char_at loops (yank, undo and
  * dot-text capture): at most two LDIR block copies, one per gap side.
- * The range is clamped to the buffer content.
  */
-static int gco_seg;
-
 void gb_copy_out(dst, pos, len)
 char *dst;
 int   pos, len;
 {
-    gco_seg = gb_content_len();
-    if (pos < 0 || pos >= gco_seg || len <= 0) return;
-    if (pos + len > gco_seg) len = gco_seg - pos;
-
-    if (pos < ed.gb.gstart) {
-        gco_seg = ed.gb.gstart - pos;
-        if (gco_seg > len) gco_seg = len;
-        gb_memmove(dst, ed.gb.buf + pos, gco_seg);
-        dst += gco_seg;
-        pos += gco_seg;
-        len -= gco_seg;
-    }
-    if (len > 0)
-        gb_memmove(dst, ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos, len);
+    gb_split(pos, len);
+    if (sl1 > 0) { gb_memmove(dst, sp1, sl1); dst += sl1; }
+    if (sl2 > 0) gb_memmove(dst, sp2, sl2);
 }
 
 /*
- * Count '\n' characters in the logical range [pos, pos+len).
- * Splits the range at the gap and runs the CPIR scanner from cstart.as
- * on each raw segment.  The range is clamped to the buffer content.
+ * Count '\n' characters in the logical range [pos, pos+len) with the
+ * CPIR scanner from cstart.as, one run per raw segment.
  */
-static int cnl_n, cnl_seg;
+static int cnl_n;
 
 int gb_count_nl(pos, len)
 int pos, len;
 {
-    cnl_n = gb_content_len();
-    if (pos < 0) { len += pos; pos = 0; }
-    if (pos >= cnl_n || len <= 0) return 0;
-    if (pos + len > cnl_n) len = cnl_n - pos;
-
-    cnl_n = 0;
-    if (pos < ed.gb.gstart) {
-        cnl_seg = ed.gb.gstart - pos;
-        if (cnl_seg > len) cnl_seg = len;
-        cnl_n = gb_cntnl(ed.gb.buf + pos, cnl_seg);
-        pos += cnl_seg;
-        len -= cnl_seg;
-    }
-    if (len > 0)
-        cnl_n += gb_cntnl(ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos, len);
+    gb_split(pos, len);
+    cnl_n = (sl1 > 0) ? gb_cntnl(sp1, sl1) : 0;
+    if (sl2 > 0) cnl_n += gb_cntnl(sp2, sl2);
     return cnl_n;
 }
 
@@ -670,7 +662,25 @@ static HFILE *gsv_f;
 static int    gsv_using_tmp;
 static int    gsv_len;
 static long   gsv_new_tail;
-static char   gsv_nl[1];
+static char   gsv_nl[1] = { '\n' };   /* 1 data byte beats a store per call */
+static char   gsv_tmp[PATH_MAX];      /* tmp_name with the dest's du: prefix */
+static int    gsv_i, gsv_j;
+
+/* Build the temp-file name on the same drive/user as gsv_fn: copy its
+ * "du:" prefix (at most "B15:", 4 chars) if present, then tmp_name.
+ * BDOS rename cannot cross a drive or user area, so the temp file must
+ * be created where the destination will live. */
+static void gsv_mk_tmp()
+{
+    gsv_j = 0;
+    for (gsv_i = 0; gsv_i < 4 && gsv_fn[gsv_i]; gsv_i++) {
+        if (gsv_fn[gsv_i] == ':') {
+            while (gsv_j <= gsv_i) { gsv_tmp[gsv_j] = gsv_fn[gsv_j]; gsv_j++; }
+            break;
+        }
+    }
+    hvi_strcpy(gsv_tmp + gsv_j, tmp_name);
+}
 
 int gb_save(filename)
 char *filename;
@@ -680,15 +690,14 @@ char *filename;
      * buffer when the buffer holds the end of the file and lacks it. */
     if (ed.tail_offset == 0L) {
         gsv_len = gb_content_len();
-        if (gsv_len > 0 && gb_char_at(gsv_len - 1) != '\n') {
-            gsv_nl[0] = '\n';
+        if (gsv_len > 0 && gb_char_at(gsv_len - 1) != '\n')
             gb_insert(gsv_len, gsv_nl, 1);
-        }
     }
     gsv_using_tmp = 0;
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {
-        gsv_f = hvi_fopen(tmp_name, "wb");
+        gsv_mk_tmp();
+        gsv_f = hvi_fopen(gsv_tmp, "wb");
         gsv_using_tmp = 1;
     } else {
         gsv_f = hvi_fopen(gsv_fn, "wb");
@@ -704,7 +713,7 @@ char *filename;
 
     if (gsv_using_tmp) {
         hvi_remove(gsv_fn);
-        hvi_rename(tmp_name, gsv_fn);
+        hvi_rename(gsv_tmp, gsv_fn);
     }
 
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L)) {
@@ -797,6 +806,33 @@ int gb_make_room()
 /* ------------------------------------------------------------------ */
 
 /*
+ * Shared window-jump helpers: one copy of the 32-bit clamp arithmetic
+ * (each inlined copy costs ~50 bytes of long-library calls).
+ */
+static long gll_off;
+
+/* Jump the window to the last LOAD_CHUNK of the tail file and park the
+ * cursor on the last line's start (G, and gb_goto_line past-EOF). */
+void gb_load_last()
+{
+    gll_off = hvi_fsize(ed.tail_file);
+    if (gll_off > (long)LOAD_CHUNK)
+        gll_off -= (long)LOAD_CHUNK;
+    else
+        gll_off = 0L;
+    gb_reload_from(gll_off);
+    ed.cur_pos = scr_last_line_start();
+}
+
+/* Slide the window back one LOAD_CHUNK from win_start (^B, k at top). */
+void gb_load_prev()
+{
+    gll_off = ed.win_start - (long)LOAD_CHUNK;
+    if (gll_off < 0L) gll_off = 0L;
+    gb_reload_from(gll_off);
+}
+
+/*
  * Scan ed.tail_file, tracking LF (0x0A) characters in [from, to).
  * stop_n >= 0: return the byte offset just past the stop_n-th LF (the
  *              first byte of 0-indexed line stop_n), or -1L when the
@@ -884,13 +920,7 @@ int n;
 
     if (gg_target_off < 0L) {
         /* Line n doesn't exist -- jump to last line instead. */
-        gg_win_off = hvi_fsize(ed.tail_file);
-        if (gg_win_off > (long)LOAD_CHUNK)
-            gg_win_off -= (long)LOAD_CHUNK;
-        else
-            gg_win_off = 0L;
-        gb_reload_from(gg_win_off);
-        ed.cur_pos = scr_last_line_start();
+        gb_load_last();
         return 0;
     }
 
@@ -919,28 +949,43 @@ int n;
 }
 
 /*
- * Find beginning of line logically containing pos.
- * Static locals survive gb_char_at calls under HI-TECH C -O register allocation.
+ * Find beginning of line logically containing pos: one past the last
+ * '\n' before pos, or 0.  Backward CPDR scan (gb_memrchr) over the raw
+ * gap-buffer segments -- at most one per gap side -- instead of one
+ * gb_char_at call per character.
  */
-static int fbol_p;
+static int fbol_r;
 int find_bol(pos)
 int pos;
 {
-    fbol_p = pos;
-    while (fbol_p > 0 && gb_char_at(fbol_p - 1) != '\n') fbol_p--;
-    return fbol_p;
+    if (pos <= 0) return pos;
+    if (pos > ed.gb.gstart) {
+        /* logical [gstart, pos) lives at raw buf + gend */
+        fbol_r = gb_memrchr(ed.gb.buf + ed.gb.gend, pos - ed.gb.gstart, '\n');
+        if (fbol_r >= 0) return ed.gb.gstart + fbol_r + 1;
+        pos = ed.gb.gstart;
+    }
+    return gb_memrchr(ed.gb.buf, pos, '\n') + 1;   /* -1 (absent) -> 0 */
 }
 
 /*
- * Find end of line logically containing pos.
- * Static locals survive gb_char_at calls under HI-TECH C -O register allocation.
+ * Find end of line logically containing pos: the '\n' at or after pos,
+ * or the content length.  Forward CPIR scan (gb_memchr), split at the
+ * gap like find_bol.
  */
-static int feol_p, feol_size;
+static int feol_r, feol_size;
 int find_eol(pos)
 int pos;
 {
-    feol_p    = pos;
     feol_size = gb_content_len();
-    while (feol_p < feol_size && gb_char_at(feol_p) != '\n') feol_p++;
-    return feol_p;
+    if (pos >= feol_size) return pos;
+    if (pos < 0) pos = 0;
+    if (pos < ed.gb.gstart) {
+        feol_r = gb_memchr(ed.gb.buf + pos, ed.gb.gstart - pos, '\n');
+        if (feol_r >= 0) return pos + feol_r;
+        pos = ed.gb.gstart;
+    }
+    feol_r = gb_memchr(ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos,
+                       feol_size - pos, '\n');
+    return (feol_r >= 0) ? pos + feol_r : feol_size;
 }

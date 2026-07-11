@@ -39,6 +39,9 @@
  */
 extern int bdos_disk();
 
+/* Overlap-safe LDIR block move (cstart.as); used by hvi_rename. */
+extern void gb_memmove();
+
 /* ------------------------------------------------------------------ */
 /*  Heap allocation -- static BSS array                                */
 /* ------------------------------------------------------------------ */
@@ -87,46 +90,35 @@ char *p;
 }
 
 /* ------------------------------------------------------------------ */
+/*  Drive / user-area prefixes                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Every file operation accepts a ZCPR-style "du:" prefix:
+ *   B:FILE.TXT    drive B, current user
+ *   3:FILE.TXT    current drive, user 3
+ *   B3:FILE.TXT   drive B, user 3       (drive A-P, user 0-15)
+ *
+ * fill_fcb (assembly, cstart.as) parses the prefix while building the
+ * FCB: the drive code lands in FCB byte 0 and the results land in
+ * fcb_user/fcb_drive below.  CP/M has no per-FCB user number, so a
+ * prefixed user area is entered with BDOS 32 around each directory
+ * and data call and the process user restored afterwards -- dsk_u()
+ * in cstart.as does the whole bracket in one call.  Unprefixed names
+ * never touch BDOS 32: zero overhead, files live in whatever user
+ * area HVI was started from.
+ */
+extern int  dsk_u();         /* bdos_disk within a user area (cstart.as) */
+extern void fill_fcb();      /* FCB builder + du: parser     (cstart.as) */
+
+int fcb_user;    /* set by fill_fcb: parsed user area, -1 = current  */
+int fcb_drive;   /* set by fill_fcb: FCB drive code, 0 = current     */
+
+/* ------------------------------------------------------------------ */
 /*  FCB helpers                                                         */
 /* ------------------------------------------------------------------ */
 
 #define SECTOR_SZ  128
-
-/*
- * Initialise a 36-byte FCB from a CP/M filename string (8.3, no path).
- * Drive defaults to 0 (current).  Name and extension are upper-cased
- * and space-padded.  All other FCB fields are zeroed.
- */
-static void fill_fcb(fcb, name)
-unsigned char *fcb;
-char          *name;
-{
-    static int  i;   /* static: bdos calls in caller must not corrupt these */
-    static char c;
-
-    for (i = 0; i < 36; i++) fcb[i] = 0;
-    for (i = 1; i <= 8;  i++) fcb[i] = ' ';  /* name field  */
-    for (i = 9; i <= 11; i++) fcb[i] = ' ';  /* ext field   */
-
-    /* Copy filename (up to 8 chars) */
-    i = 1;
-    while (i <= 8 && *name && *name != '.') {
-        c = *name++;
-        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        fcb[i++] = (unsigned char)c;
-    }
-    /* Skip any extra name chars before dot */
-    while (*name && *name != '.') name++;
-    if (*name == '.') name++;
-
-    /* Copy extension (up to 3 chars) */
-    i = 9;
-    while (i <= 11 && *name) {
-        c = *name++;
-        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        fcb[i++] = (unsigned char)c;
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /*  HFILE pool                                                          */
@@ -159,6 +151,7 @@ char *name, *mode;
     if (!s_fop_fp) return (HFILE *)0;
 
     fill_fcb(s_fop_fp->fcb, s_fop_name);
+    s_fop_fp->user      = fcb_user;   /* parsed user area (-1 = current) */
     s_fop_fp->buf_pos   = 0;
     s_fop_fp->buf_valid = 0;
     s_fop_fp->pos       = 0L;
@@ -168,15 +161,16 @@ char *name, *mode;
     bdos_disk(26, (int)s_fop_fp->buf);  /* set DMA; disk bdos -- may corrupt IX */
 
     if (!s_fop_write) {
-        s_fop_rc = bdos_disk(15, (int)s_fop_fp->fcb);   /* BDOS 15: Open File */
+        s_fop_rc = dsk_u(15, (int)s_fop_fp->fcb, s_fop_fp->user);  /* Open */
     } else {
         /* Create: erase any existing file first (may fail silently) */
-        bdos_disk(19, (int)s_fop_fp->fcb);        /* BDOS 19: Erase File */
+        dsk_u(19, (int)s_fop_fp->fcb, s_fop_fp->user);    /* Erase File */
         fill_fcb(s_fop_fp->fcb, s_fop_name); /* re-init FCB after erase */
-        s_fop_rc = bdos_disk(22, (int)s_fop_fp->fcb);   /* BDOS 22: Make File */
+        s_fop_rc = dsk_u(22, (int)s_fop_fp->fcb, s_fop_fp->user); /* Make */
     }
     if ((s_fop_rc & 0xFF) == 0xFF) return (HFILE *)0;
-    s_fop_fp->fcb[0]  = 0;               /* BDOS may set drive; keep current (0) */
+    s_fop_fp->fcb[0]  = (unsigned char)fcb_drive;  /* BDOS may overwrite the
+                                                    * drive; re-assert parsed */
     s_fop_fp->fcb[32] = 0;               /* CR = 0 */
     s_fop_fp->mode    = s_fop_write ? 2 : 1;
 
@@ -193,7 +187,7 @@ HFILE *fp;
 {
     s_fw_fp = fp;
     bdos_disk(26, (int)s_fw_fp->buf);
-    bdos_disk(21, (int)s_fw_fp->fcb);   /* BDOS 21: Write Sequential */
+    dsk_u(21, (int)s_fw_fp->fcb, s_fw_fp->user);  /* Write Sequential */
     s_fw_fp->buf_pos = 0;
     s_fw_fp->dirty   = 0;
 }
@@ -226,12 +220,14 @@ long   sect;
 {
     s_rs_fp   = fp;        /* cache params before any bdos call */
     s_rs_sect = sect;
-    s_rs_fp->fcb[32] = (unsigned char)(s_rs_sect & 0x7FL);
-    s_rs_fp->fcb[33] = (unsigned char)( s_rs_sect        & 0xFFL);
-    s_rs_fp->fcb[34] = (unsigned char)((s_rs_sect >>  8) & 0xFFL);
-    s_rs_fp->fcb[35] = (unsigned char)((s_rs_sect >> 16) & 0x7FL);
+    /* r0/r1/r2 straight from the long's little-endian bytes: no
+     * 32-bit shift/mask library calls in the hot hvi_fgetc refill. */
+    s_rs_fp->fcb[32] = ((unsigned char *)&s_rs_sect)[0] & 0x7F;
+    s_rs_fp->fcb[33] = ((unsigned char *)&s_rs_sect)[0];
+    s_rs_fp->fcb[34] = ((unsigned char *)&s_rs_sect)[1];
+    s_rs_fp->fcb[35] = ((unsigned char *)&s_rs_sect)[2] & 0x7F;
     bdos_disk(26, (int)s_rs_fp->buf);
-    return bdos_disk(33, (int)s_rs_fp->fcb);   /* BDOS 33: Read Random */
+    return dsk_u(33, (int)s_rs_fp->fcb, s_rs_fp->user);  /* Read Random */
 }
 
 /* s_fcl_fp is static: bdos calls may corrupt IX-relative auto vars. */
@@ -245,7 +241,7 @@ HFILE *fp;
     if (s_fcl_fp->mode == 2) {
         flush_write(s_fcl_fp);
         bdos_disk(26, (int)s_fcl_fp->buf);
-        bdos_disk(16, (int)s_fcl_fp->fcb);   /* BDOS 16: Close File */
+        dsk_u(16, (int)s_fcl_fp->fcb, s_fcl_fp->user);   /* Close File */
     }
     /* Skip BDOS 16 for read-only files: some emulators write back the FCB's
      * CR/EX fields to the directory on close, which corrupts the on-disk
@@ -398,7 +394,7 @@ int    whence;
     if (!s_fsk_fp || s_fsk_fp->mode != 1) return -1;
 
     /* Low 7 bits = byte position within the 128-byte sector. */
-    s_fsk_byte_off = (int)(s_fsk_offset & 0x7FL);
+    s_fsk_byte_off = ((unsigned char *)&s_fsk_offset)[0] & 0x7F;
 
     /* Sector number = offset >> 7 as a long shift: a 16-bit cast before
      * shifting would truncate for offsets >= 32 KB. */
@@ -470,24 +466,28 @@ char *name;
 {
     unsigned char fcb[36];
     fill_fcb(fcb, name);
-    bdos_disk(19, (int)fcb);                /* BDOS 19: Erase File */
+    dsk_u(19, (int)fcb, fcb_user);          /* BDOS 19: Erase File */
 }
 
 /*
  * Rename oldname to newname.
  * BDOS 23 (Rename) takes a 32-byte buffer: bytes 0-15 = old FCB name,
  * bytes 16-31 = new FCB name (first 16 bytes of each FCB).
+ * BDOS renames within one drive and user area only, so the operation
+ * runs in oldname's user area (gb_save creates its temp file with the
+ * destination's du: prefix precisely so both sides match here).
  */
 void hvi_rename(oldname, newname)
 char *oldname, *newname;
 {
     unsigned char ren[32], tmp[36];
-    int i;
+    int u;
 
     fill_fcb(tmp, oldname);
-    for (i = 0; i < 16; i++) ren[i]      = tmp[i];
+    u = fcb_user;
+    gb_memmove(ren, tmp, 16);
     fill_fcb(tmp, newname);
-    for (i = 0; i < 16; i++) ren[i + 16] = tmp[i];
+    gb_memmove(ren + 16, tmp, 16);
 
-    bdos_disk(23, (int)ren);                /* BDOS 23: Rename File */
+    dsk_u(23, (int)ren, u);                 /* BDOS 23: Rename File */
 }
