@@ -47,10 +47,13 @@
 /* Search pattern buffer */
 #define SEARCH_MAX  64
 
-/* Marks: slots 0-25 hold `a-`z; MARK_PREV holds the position before the
- * last jump (used by ``).  A mark value of -1 means "not set". */
+/* Marks: slot 0 (MARK_PREV) holds the position before the last jump
+ * (used by ``); slots 1-26 hold `a-`z.  The layout mirrors ASCII:
+ * slot = mark char - '`' (0x60), so '`' and a-z resolve with a single
+ * subtraction and one unsigned range test (motion_endpoint '`').
+ * A mark value of -1 means "not set". */
 #define NMARKS      27
-#define MARK_PREV   26
+#define MARK_PREV   0
 
 /* Filename/status buffer */
 #define PATH_MAX    64

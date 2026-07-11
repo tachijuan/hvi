@@ -23,6 +23,7 @@ void mv_bnb();
 void mv_eol();
 int  motion_endpoint();
 extern int me_cw;
+extern int me_mkc;
 void apply_op();
 void status_show();
 int  line_span();
@@ -131,6 +132,7 @@ int count;
 
     if (!ed.dot_cmd) return;
     n  = (count > 0) ? count : ed.dot_count;
+    me_mkc = ed.dot_arg;   /* mark char when a d/c motion is '`' */
 
     /* Note: x, X, D, C, s, S never appear as dot_cmd -- they expand
      * through op_motion() and replay as 'd' or 'c' with a motion. */

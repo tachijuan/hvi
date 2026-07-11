@@ -135,10 +135,12 @@ Unprefixed names use the drive and user area HVI was started from.
 | `d$` | Delete to end of line               |
 | `d0` | Delete to beginning of line         |
 | `dG` | Delete to end of file               |
+| `` d`a `` | Delete to mark `a` (exclusive; `` d`` `` = to previous jump) |
 | `D`  | Delete to end of line (same as `d$`)|
 | `cc` | Change current line                 |
 | `cw` | Change word                         |
 | `c$` | Change to end of line               |
+| `` c`a `` | Change to mark `a` (exclusive)      |
 | `C`  | Change to end of line (same as `c$`)|
 | `r`  | Replace single character            |
 | `J`  | Join line below to current line     |
@@ -152,6 +154,7 @@ Unprefixed names use the drive and user area HVI was started from.
 | `Y`  | Yank current line (same as `yy`)              |
 | `yw` | Yank word                                     |
 | `y$` | Yank to end of line                           |
+| `` y`a `` | Yank to mark `a` (exclusive)             |
 | `p`  | Put (paste) after cursor / below current line |
 | `P`  | Put before cursor / above current line        |
 
@@ -177,6 +180,7 @@ the search genuinely wraps past the end (or beginning) of the file.
 | `m{a-z}`  | Set mark `{a-z}` at the cursor position                 |
 | `` `{a-z} `` | Jump to mark `{a-z}` (exact line **and** column)     |
 | `` `` ``  | Jump back to the position before the last jump          |
+| `` d`{a-z} `` | Delete from the cursor to the mark (also `c`, `y`, and `` `` ``) |
 
 A jump — for the purpose of `` `` `` — is `` ` ``, `G`, `gg`, `:N`, `:$`, or a
 successful search (`/`, `?`, `n`, `N`). Pressing `` `` `` twice toggles between
@@ -187,7 +191,13 @@ shifts it so it stays on the same character. A mark is cleared when the text
 it points to is deleted, and all marks are cleared when a new file is loaded
 (`:e`) or, in a large file, when the sliding window moves to a different part
 of the file. Jumping to a cleared or never-set mark reports `Mark not set`.
-Marks are not available as operator motions (`` d`a `` is not supported).
+
+Marks also work as operator motions: `` d`a ``, `` c`a `` and `` y`a ``
+operate on the exclusive character range between the cursor and the mark
+(either side may come first), and `` d`` `` uses the previous-jump
+position. Operating toward a cleared or never-set mark reports
+`Mark not set` and leaves the buffer untouched. `.` repeats a `` d`x ``
+or `` c`x `` change against the mark's current (edit-adjusted) position.
 
 ### Normal Mode — Character Search (current line)
 
@@ -412,6 +422,39 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.5 → 2.6
+
+Feature release: **marks as operator motions**. All 147 + 13 tests in
+`tests/` pass (7 operator-mark tests and 1 screen test were added).
+
+- **`` ` `` is now a motion for `d`, `c` and `y`.** `` d`a `` deletes the
+  exclusive character range between the cursor and mark `a` (vi
+  semantics: whichever side is earlier in the buffer starts the range),
+  `` c`a `` changes it, `` y`a `` yanks it, and `` d`` `` uses the
+  previous-jump position. A count is accepted and ignored, as in vi.
+  An unset (or edit-cleared) mark reports `Mark not set` and aborts the
+  operator; an invalid mark character (e.g. `ESC`) aborts silently.
+- **`.` replays mark-motion changes.** The mark character is recorded in
+  `dot_arg`, so the repeat re-resolves the mark at its current
+  (edit-adjusted) position rather than reusing a stale offset.
+- One copy of the resolution logic: the mark motion lives in
+  `motion_endpoint()` (emove.c) and the standalone `` `x `` jump now
+  calls it instead of carrying its own resolve/validate code; the
+  "Unknown motion" message also moved into `motion_endpoint()` so every
+  caller just tests for a negative endpoint.
+- `MARK_PREV` moved from slot 26 to slot 0, making the slot layout
+  mirror ASCII (`slot = char - 0x60`): the whole resolve is one
+  subtraction plus one unsigned range test.
+- Size offsets so the feature fits without growing the binary: the
+  mark-slot remap above, unsigned range tests instead of signed
+  double compares, shared copies of the `"TOP"`/`"BOTTOM"` (edit.c)
+  and `"rb"`/`"wb"` (gap.c) literals that HI-TECH C stored per use,
+  and a file-static resolve temporary (absolute stores instead of
+  IX-relative spills).
+
+Binary size: 229 CP/M records (~29K) — identical to 2.5; the feature
+nets +1 byte of text+data.
 
 ### 2.4 → 2.5
 

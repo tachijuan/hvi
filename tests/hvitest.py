@@ -381,6 +381,22 @@ def main():
               "jjmaggdd`arX", "two\nXhree\n")
     file_test(sess, "mark tracks insert", "one\ntwo\n",
               "jmaggOnew\x1b`arX", "new\none\nXwo\n")
+    # operators accept mark motions: d`a / c`a / y`a, exclusive charwise
+    file_test(sess, "del d`a forward", "alpha bravo charlie\n",
+              "wma0d`a", "bravo charlie\n")
+    file_test(sess, "del d`a backward", "alpha bravo charlie\n",
+              "ma2wd`a", "charlie\n")
+    file_test(sess, "chg c`a", "alpha bravo\n",
+              "wma0c`aX \x1b", "X bravo\n")
+    file_test(sess, "yank y`a p", "alpha bravo\n",
+              "wma0y`a$p", "alpha bravoalpha \n")
+    # d`` uses the previous-jump position (G recorded it)
+    file_test(sess, "del d`` prev jump", BASIC, "Gd``",
+              "mike november oscar\n")
+    # unset mark aborts the operator; buffer untouched
+    file_test(sess, "del d`z unset", "abc\n", "d`z", "abc\n")
+    # dot repeat re-resolves the mark at its adjusted position
+    file_test(sess, "dot d`a.", "xxab\nxxcd\n", "llma0d`aj0.", "xxcd\n")
 
     # ---------- screen checks ----------
     rm_file("T.TXT"); put_file("T.TXT", BASIC)
@@ -580,6 +596,10 @@ def main():
     sess.keys("`z")                        # never set
     lines = sess.screen_lines()
     check("screen mark unset", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys("d`z")                       # operator + unset mark
+    lines = sess.screen_lines()
+    check("screen op mark unset", "Mark not set" in (lines[23] or ""),
           "row23=%r" % lines[23])
     sess.quit_expect_prompt(":q!\r")
 

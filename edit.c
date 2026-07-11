@@ -66,6 +66,7 @@ void mv_word();
 void mv_find();
 int  motion_endpoint();
 extern int me_cw;
+extern int me_mkc;
 void apply_op();
 int  read_line();
 int  read_pattern();
@@ -383,6 +384,9 @@ void dot_replay();
 static int  sm_pos;
 static long sm_win;   /* win_start before search -- detects buffer reload */
 
+/* HI-TECH C stores repeated literals once per use -- share these. */
+static char s_top[] = "TOP", s_bot[] = "BOTTOM";
+
 /* Shared search-result handler: move to match or report not found. */
 static void do_search_move()
 {
@@ -401,8 +405,8 @@ static void do_search_move()
         }
         if (ed.search_wrapped) {
             hvi_sprintf(ed.status, "search hit %s, continuing at %s",
-                (int)(ed.search_dir == SEARCH_FWD ? "BOTTOM" : "TOP"),
-                (int)(ed.search_dir == SEARCH_FWD ? "TOP" : "BOTTOM"));
+                (int)(ed.search_dir == SEARCH_FWD ? s_bot : s_top),
+                (int)(ed.search_dir == SEARCH_FWD ? s_top : s_bot));
             status_show();
         }
     } else {
@@ -483,21 +487,16 @@ int c, count, size;
     case 'm':
         mk_c = term_getch();
         if (mk_c >= 'a' && mk_c <= 'z')
-            ed.marks[mk_c - 'a'] = ed.cur_pos;
+            ed.marks[mk_c - '`'] = ed.cur_pos;  /* slot = char - 0x60 */
         break;
 
     case '`':
-        mk_c = term_getch();
-        if (mk_c == '`')
-            mk_pos = ed.marks[MARK_PREV];
-        else if (mk_c >= 'a' && mk_c <= 'z')
-            mk_pos = ed.marks[mk_c - 'a'];
-        else
-            break;
-        if (mk_pos < 0 || mk_pos > size) {
-            status_msg("Mark not set");
-            break;
-        }
+        /* motion_endpoint('`') resolves and validates the mark -- the
+         * same code the d/c/y operators use (mk_c is a dummy linewise
+         * out-param). */
+        me_mkc = term_getch();
+        mk_pos = motion_endpoint('`', 1, &mk_c);
+        if (mk_pos < 0) break;
         ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         ed.cur_pos  = mk_pos;
         ed.cur_vrow = -1;
@@ -843,14 +842,12 @@ int c;
         /* motion character */
         linewise = 0;
         if (op == 'c' && c == 'w') me_cw = 1;
+        me_mkc = (c == '`') ? term_getch() : 0;
         endpoint = motion_endpoint(c, count, &linewise);
-        if (endpoint < 0) {
-            hvi_sprintf(ed.status, "Unknown motion: %c", c, 0);
-            status_show();
+        if (endpoint < 0)       /* motion_endpoint showed any message */
             return;
-        }
         if (op != 'y')
-            set_dot(op, c, count, 0);
+            set_dot(op, c, count, me_mkc);
         if (op == 'c') g_ins_cmd = 'c';
         apply_op(op, ed.cur_pos, endpoint, linewise);
         return;

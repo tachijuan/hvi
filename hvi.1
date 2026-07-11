@@ -365,9 +365,28 @@ All marks are cleared when a new file is loaded or when, in a large file,
 the sliding window moves to a different part of the file.
 Jumping to a cleared or never-set mark reports
 .BR "Mark not set" .
-Marks cannot be used as operator motions
-.RB ( d`a
-is not supported).
+Marks are also motions for the
+.BR d ,
+.B c
+and
+.B y
+operators:
+.B d`a
+deletes the exclusive character range between the cursor and mark
+.I a
+(either may come first in the buffer),
+.B c`a
+changes it,
+.B y`a
+yanks it, and
+.B d``
+uses the previous-jump position.
+An unset mark reports
+.B "Mark not set"
+and leaves the buffer untouched.
+The
+.B .
+command repeats a mark-motion change against the mark's current position.
 .\"
 .SS Miscellaneous Normal-Mode Commands
 .TP

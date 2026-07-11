@@ -2,7 +2,7 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.5  
+**Version:** 2.6  
 **Date:** 2026-07-11
 
 ---
@@ -332,14 +332,25 @@ backing file:
 
 ### 6.10 Marks
 
-`ed.marks[NMARKS]` holds 27 buffer positions: slots 0–25 for `` `a``–`` `z``
-(set with `m{a-z}`) and slot 26 (`MARK_PREV`) for `` ``` `` — the position
-before the last jump.  −1 means "not set".  Every `gb_insert`/`gb_delete`
+`ed.marks[NMARKS]` holds 27 buffer positions: slot 0 (`MARK_PREV`) for
+`` ``` `` — the position before the last jump — and slots 1–26 for
+`` `a``–`` `z`` (set with `m{a-z}`).  The layout mirrors ASCII
+(`slot = mark char − 0x60`, `` ` `` = 0x60), so `motion_endpoint('`')`
+resolves any mark char with one subtraction and one unsigned range test.
+−1 means "not set".  Every `gb_insert`/`gb_delete`
 runs `mk_adjust()` so marks keep pointing at the same characters; a mark
 inside a deleted range is cleared.  All marks are cleared when the
 large-file window slides or a new file is loaded (buffer positions no
 longer describe the same text).  `G`, `gg`, `:N`, `:$`, searches, and
 `` `x`` jumps record `MARK_PREV` first, so `` ``` `` returns to the origin.
+
+Marks are also operator motions (v2.6): `` d`x ``, `` c`x `` and `` y`x ``
+apply the operator to the exclusive character range between the cursor and
+the mark (`apply_op` orders the endpoints), and `` d`` `` uses
+`MARK_PREV`.  Resolution and validation live in the `motion_endpoint()`
+'`' case, shared by the operators, the `.` replay (the mark char is
+recorded in `dot_arg` and re-resolved at repeat time via `me_mkc`), and
+the standalone `` `x`` jump in edit.c.
 
 ### 6.11 Drive and User-Area File Access (v2.5)
 
@@ -608,7 +619,7 @@ function; no handle is held open across function call boundaries.
 | `STATUS_MAX` | 128 | Maximum status message length |
 | `CMD_MAX` | 128 | Maximum ex command-line length |
 | `NMARKS` | 27 | Mark slots: `a`–`z` plus `MARK_PREV` |
-| `MARK_PREV` | 26 | Slot holding the position before the last jump (`` ``` ``) |
+| `MARK_PREV` | 0 | Slot holding the position before the last jump (`` ``` ``); a–z occupy slots 1–26 so `slot = char − 0x60` |
 | `HEOF` | −1 | End-of-file sentinel returned by `hvi_fgetc()` (replaces `stdio` EOF) |
 | `MAX_HFILES` | 3 | Number of HFILE slots in the static pool in `cpmio.c` |
 | `OUT_BUF_SZ` | 256 | Terminal output buffer (term.c), flushed via `con_write` |
@@ -723,6 +734,7 @@ All accept a count prefix (`3;` = skip to third match).
 | `m{a-z}` | Set mark at the cursor position |
 | `` `{a-z} `` | Jump to mark (exact position); "Mark not set" if unset or invalidated |
 | `` `` `` | Jump to the position before the last jump (`G`, `gg`, `:N`, `:$`, search, or a mark jump) |
+| `` d`{a-z} `` / `` c`{a-z} `` / `` y`{a-z} `` | Operate on the exclusive range between cursor and mark (either order); `` d`` `` etc. use the previous-jump position; "Mark not set" aborts the operator |
 
 Marks track edits (§6.10) and are cleared when the large-file window slides
 or a new file is loaded.
@@ -748,6 +760,7 @@ The `.` command repeats the last **change** at the current cursor position:
 | `~` | Toggle case of same count of characters |
 | `J` | Join same count of lines |
 | `dd` / `dw` / `d$` etc. | Re-apply same delete motion |
+| `` d`x `` / `` c`x<text>ESC `` | Re-resolve mark `x` at its current position and re-apply (mark char kept in `dot_arg`) |
 | `cw<text>ESC` / `cc<text>ESC` | Delete same motion range and re-insert same text |
 | `C<text>ESC` | Change to EOL and re-insert same text |
 | `i<text>ESC` | Re-insert same text at current position |
@@ -901,7 +914,9 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 - `'c'`: saves undo, saves to yank buffer, deletes range, calls `undo_save_insert`, enters insert mode
 - `'y'`: saves to yank buffer only
 
-`motion_endpoint(ch, count, &linewise)` computes the endpoint position for a given motion character and count. Supported motions: `h`, `l`, `w`, `b`, `e`, `$`, `0`, `^`, `j`, `k`, `G`.
+`motion_endpoint(ch, count, &linewise)` computes the endpoint position for a given motion character and count. Supported motions: `h`, `l`, `w`, `b`, `e`, `$`, `0`, `^`, `j`, `k`, `G`, and `` ` `` (mark; exclusive charwise).
+
+For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit.c reads it from the keyboard; erepeat.c replays `ed.dot_arg`): an invalid character returns −1 silently, an unset/invalidated mark shows "Mark not set" and returns −1.  The "Unknown motion: %c" message for an unrecognised `ch` is also shown inside `motion_endpoint()` (default case), so callers only test for a negative return.
 
 ---
 

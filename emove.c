@@ -11,6 +11,7 @@
 #include "hvi.h"
 
 extern Editor ed;
+extern char s_rb[];      /* "rb" fopen mode, defined in gap.c */
 
 int motion_endpoint();   /* fwd decl: used by the word motions below */
 
@@ -301,6 +302,11 @@ int ch, dir, count;
  * changes the word only, while dw deletes through the following spaces. */
 int me_cw;
 
+/* Mark char for the '`' motion.  The caller sets it before invoking
+ * motion_endpoint('`', ...): edit.c stores the char it read from the
+ * keyboard, erepeat.c replays ed.dot_arg. */
+int me_mkc;
+
 /*
  * Word-character class of the char at pos: 1 = word, 0 = blank/newline,
  * 2 = other punctuation (past-the-end reads as 2, matching the old
@@ -317,6 +323,10 @@ int pos;
     if (isspacech(cht_c)) return 0;
     return 2;
 }
+
+/* Mark-resolve temp: static (3-byte absolute stores) beats an auto
+ * (6-byte IX-relative spills) under HI-TECH C. */
+static int me_mk_n;
 
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
@@ -434,7 +444,26 @@ int *linewise;
         ed.cur_pos = find_bol(pos);
         return size;
 
+    /* `{a-z} / ``: exclusive charwise motion to a mark (vi: d`a deletes
+     * from the cursor up to, not including, the mark).  Serves both the
+     * d/c/y operators and the standalone jump in edit.c.  A bad char
+     * aborts silently; an unset mark reports "Mark not set". */
+    case '`':
+        me_mk_n = me_mkc - '`'; /* '`' -> MARK_PREV (0), a-z -> 1-26 */
+        if ((unsigned)me_mk_n >= NMARKS)
+            return -1;          /* not a mark char: abort silently */
+        me_mk_n = ed.marks[me_mk_n];
+        /* unsigned test: catches unset (-1) and past-the-end in one */
+        if ((unsigned)me_mk_n > (unsigned)size) {
+            status_msg("Mark not set");
+            return -1;
+        }
+        return me_mk_n;
+
     default:
+        /* Message shown here so every caller can just test for < 0. */
+        hvi_sprintf(ed.status, "Unknown motion: %c", ch, 0);
+        status_show();
         return -1;
     }
 }
@@ -673,7 +702,7 @@ int  dir;
     if (sif_from < 0L)        sif_from = 0L;
     if (sif_from >= sif_to)   return -1L;
 
-    sif_fp = hvi_fopen(ed.tail_file, "rb");
+    sif_fp = hvi_fopen(ed.tail_file, s_rb);
     if (!sif_fp) return -1L;
     if (hvi_fseek(sif_fp, sif_from, 0) != 0) {
         hvi_fclose(sif_fp);

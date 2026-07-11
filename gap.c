@@ -36,6 +36,11 @@ extern int gb_memrchr(/* char *p, int len, int c */);
 static char swp_name[] = "HVISWP.TMP";
 static char tmp_name[] = "HVITMP.TMP";
 
+/* HI-TECH C stores repeated literals once per use -- share these
+ * (s_rb is also used by the file-scan search in emove.c). */
+char s_rb[] = "rb";
+static char s_wb[] = "wb";
+
 /* ------------------------------------------------------------------ */
 /*  Marks (m / ` commands)                                              */
 /* ------------------------------------------------------------------ */
@@ -391,7 +396,7 @@ HFILE *fp;
     s_gbl_fn = filename;   /* cache before any bdos call */
     s_gbl_fp = fp;
     if (!s_gbl_fp) {
-        s_gbl_fp = hvi_fopen(s_gbl_fn, "rb");
+        s_gbl_fp = hvi_fopen(s_gbl_fn, s_rb);
         if (!s_gbl_fp) return 0;
     }
     ed.gb.gstart    = 0;
@@ -466,7 +471,7 @@ int n;
 
     show_loading();
 
-    glm_f = hvi_fopen(ed.tail_file, "rb");
+    glm_f = hvi_fopen(ed.tail_file, s_rb);
     if (!glm_f) return 0;
     if (hvi_fseek(glm_f, ed.tail_offset, 0) != 0) { hvi_fclose(glm_f); return 0; }
 
@@ -554,7 +559,7 @@ long offset;
     }
 #endif
 
-    grf_f = hvi_fopen(ed.tail_file, "rb");
+    grf_f = hvi_fopen(ed.tail_file, s_rb);
     if (!grf_f) return 0;
 
     /* Position without a BDOS 33 pre-load.  grf_offset is sector-aligned so
@@ -597,7 +602,7 @@ long from, to;
     gcp_f  = f;            /* cache before any BDOS call */
     gcp_to = to;
     if (from >= gcp_to || !ed.tail_file[0]) return;
-    gcp_tf = hvi_fopen(ed.tail_file, "rb");
+    gcp_tf = hvi_fopen(ed.tail_file, s_rb);
     if (!gcp_tf) return;
     if (from > 0L && hvi_fseek(gcp_tf, from, 0) != 0) {
         hvi_fclose(gcp_tf);
@@ -697,10 +702,10 @@ char *filename;
     if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {
         gsv_mk_tmp();
-        gsv_f = hvi_fopen(gsv_tmp, "wb");
+        gsv_f = hvi_fopen(gsv_tmp, s_wb);
         gsv_using_tmp = 1;
     } else {
-        gsv_f = hvi_fopen(gsv_fn, "wb");
+        gsv_f = hvi_fopen(gsv_fn, s_wb);
     }
     if (!gsv_f) return 0;
 
@@ -859,7 +864,7 @@ int  stop_n;
     gsl_to   = to;
     gsl_n    = stop_n;
     if (!ed.tail_file[0]) return -1L;
-    gsl_f = hvi_fopen(ed.tail_file, "rb");
+    gsl_f = hvi_fopen(ed.tail_file, s_rb);
     if (!gsl_f) return -1L;
     if (gsl_from > 0L && hvi_fseek(gsl_f, gsl_from, 0) != 0) {
         hvi_fclose(gsl_f);
