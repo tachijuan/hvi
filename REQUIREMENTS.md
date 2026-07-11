@@ -2,8 +2,8 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.0  
-**Date:** 2026-05-16
+**Version:** 2.5  
+**Date:** 2026-07-11
 
 ---
 
@@ -26,13 +26,17 @@ This document specifies the complete requirements, architecture, design decision
 - `int` is **2 bytes** on Z80 (not 4)
 - `long` is **4 bytes**
 - `char` is **1 byte**, default **unsigned** when used via `unsigned char` cast
-- No `memmove` in the standard library — must be provided by the application
-- `malloc` and `free` are available but with important limitations (see Section 7)
-- `fopen`, `fclose`, `fgetc`, `fputc`, `fseek`, `ftell`, `fprintf`, `sprintf` are available
-- `stdin`/`stdout`/`stderr` are available; `stderr` maps to the CP/M console
-- `bios(fn, bc, de)` and `bdos(fn, de)` are available via `<cpm.h>` for direct system calls
-- `getch()` is in the HI-TECH C runtime — reads a raw keypress without echo
-- The compiler driver is named `C` (not `cc`); the linker is named `LINQ` (not `link`)
+- No `memmove` in the standard library — provided in assembly (`gb_memmove`, cstart.as)
+- The library's `fopen`/`malloc`/`getch`/`sprintf` exist but HVI links **none** of
+  them: file I/O, allocation, console I/O, and formatting are all replaced by
+  `cpmio.c`, `util.c`, `term.c`, and `cstart.as` (see §7.2).  The only libc
+  symbols that survive the link are the arithmetic helpers (`imul`, the 32-bit
+  shift/add/compare routines) — `imul` is always present, so `* 10` costs
+  nothing extra over shift-adds
+- All BDOS traffic goes through `bdos_disk` / `dsk_u` in cstart.as, which
+  preserve IX across `CALL 5` (disk BDOS functions corrupt IX on some hosts)
+- The compiler driver is named `C` (not `cc`); the linker is named `LINQ`
+  (renamed to `L` in the build environment)
 - CP/M filenames are 8.3 uppercase; HI-TECH C upcases filenames automatically
 
 ### 2.3 Terminal
@@ -47,18 +51,24 @@ This document specifies the complete requirements, architecture, design decision
 
 | File | Purpose |
 |------|---------|
-| `cstart.as` | Custom Z80 startup: sets stack, heap_base, bdos_base; replaces CRTCPM.OBJ |
+| `cstart.as` | Custom Z80 startup (stack, BSS zeroing, `heap_base`/`bdos_base`; replaces CRTCPM.OBJ) **plus the assembly core**: fixed `csv`/`cret`/`ncsv` frame routines, IX-safe `bdos_disk`, `dsk_u` (BDOS call inside a user area), `fill_fcb` (FCB build + `du:` prefix parse), `gb_memmove` (LDIR/LDDR), `gb_char_at`, `gb_memchr`/`gb_memrchr` (CPIR/CPDR byte scans), `gb_cntnl` (CPIR newline count), `con_write` (block console output via BDOS 6) |
 | `hvi.c` | Main entry point, argument parsing, startup sequence |
 | `hvi.h` | Shared types, constants, and extern declarations |
-| `gap.c` | Gap buffer: allocation, load, save, insert, delete, large-file paging |
-| `cpmio.c` | Direct BDOS file I/O and heap allocator (replaces stdio and malloc) |
+| `gap.c` | Gap buffer: allocation, load, save, insert, delete, `find_bol`/`find_eol`, marks, large-file paging |
+| `cpmio.c` | Direct BDOS file I/O, user-area plumbing, and heap allocator (replaces stdio and malloc) |
 | `util.c` | String utilities and `hvi_sprintf` (replaces `<string.h>` and `<stdio.h>` sprintf) |
-| `term.c` | Terminal I/O: ANSI escape output, raw input, size query |
+| `term.c` | Terminal I/O: buffered ANSI output, BDOS-6 raw input, arrow keys, size query |
 | `screen.c` | Viewport rendering: line drawing, cursor placement, status bar |
 | `emove.c` | Cursor movement, operator application (`apply_op`), search |
 | `edit.c` | VI normal mode, insert mode, ex command-line mode |
-| `erepeat.c` | Dot-repeat: `dot_ins_position`, `dot_replay_c`, `dot_replay` |
+| `erepeat.c` | Dot-repeat: `ins_position`, `dot_replay_c`, `dot_replay`, `cur_back_nl` |
 | `ex.c` | Ex command execution (`:q`, `:w`, `:r`, `:N`, etc.) |
+
+The `tests/` directory holds an end-to-end harness (not part of the CP/M
+build): `build.py` drives the five compiler passes inside a RunCPM emulator,
+`hvitest.py` (139 tests) and `bigtest.py` (13 tests) run HVI through a pty,
+scrape the screen with a VT100 emulator, and verify saved files — including
+the drive/user-area prefixes via RunCPM's user-area subdirectories.
 
 ---
 
@@ -125,6 +135,14 @@ HVI [filename]
 - If `filename` is given but does not exist, the editor starts with an empty buffer and the status shows `[New File]`.
 - If no filename is given, the editor starts with an empty unnamed buffer.
 
+Every filename — on the command line and in `:w`, `:e`, `:r` — accepts an
+optional ZCPR-style `du:` drive/user prefix: `B:FILE.TXT` (drive B, current
+user), `3:FILE.TXT` (current drive, user area 3), `B3:FILE.TXT` (both).
+Drives A–P and user areas 0–15 are accepted; anything else (user > 15,
+three or more digits, or no terminating `:`) is treated as part of the
+filename.  Unprefixed names use the drive and user area HVI was started
+from.  See §6.11 for the implementation.
+
 ---
 
 ## 6. Editor Architecture
@@ -158,12 +176,15 @@ Key functions:
 - `gb_init()` — allocates the buffer
 - `gb_free()` — releases the buffer
 - `gb_content_len()` — returns logical content length
-- `gb_char_at(pos)` — returns character at logical position (handles gap transparently)
-- `gb_insert(pos, text, len)` — insert text at logical position
+- `gb_char_at(pos)` — character at logical position (handles the gap transparently).  **Assembly** in cstart.as: it is the hottest function in the editor (every per-character scanner calls it), frameless, reading the GapBuf fields at fixed offsets from `ed` — GapBuf must stay the first member of `Editor`
+- `find_bol(pos)` / `find_eol(pos)` — line boundaries around pos, via backward/forward CPIR scans (`gb_memrchr`/`gb_memchr`, 21 T-states/byte) over the raw gap segments; these back every line motion
+- `gb_count_nl(pos, len)` / `gb_copy_out(dst, pos, len)` — newline count and bulk copy over a logical range; both split the range at the gap with a shared clamp helper (`gb_split`) and run the CPIR counter / LDIR mover per raw segment
+- `gb_insert(pos, text, len)` — insert text at logical position (also maintains the line/row caches and marks)
 - `gb_delete(pos, len)` — delete len bytes at logical position (expands gap)
-- `gb_load(filename, fp)` — opens and loads a file; when `fp` is non-NULL, uses that already-open handle instead of calling `fopen()` (see Section 7.2)
-- `gb_save(filename)` — saves buffer to file
-- `gb_load_more(n)` — loads next n bytes from tail (large-file paging)
+- `gb_load(filename, fp)` — opens and loads a file; when `fp` is non-NULL, uses that already-open handle
+- `gb_save(filename)` — saves buffer to file (head + window + tail for large files)
+- `gb_load_more(n)` / `gb_reload_from(off)` / `gb_load_last()` / `gb_load_prev()` — large-file paging (§6.4)
+- `gb_goto_line(n)` / `gb_make_room()` — large-file line navigation and buffer-overflow recovery
 
 ### 6.4 Large File Support (Sliding Window)
 
@@ -212,12 +233,13 @@ by binary search with BDOS 33 probes to determine the sector-rounded file size
 in O(log N) seeks (~21 for a 1 MB file). This avoids BDOS 35 (Compute File
 Size), which is not implemented on some CP/M emulators.
 
-**Save:** `gb_save(filename)` reconstructs the full file by calling
-`gb_write_head()` (bytes 0..`win_start`−1 from `tail_file`), `gb_write_buf()`
-(the in-memory buffer, LF→CR+LF), and `gb_write_tail()` (bytes
-`tail_offset`..end from `tail_file`). When saving to the same file that holds
-the tail, `HVITMP.TMP` is used as an intermediate to prevent reading and
-writing the same file simultaneously.
+**Save:** `gb_save(filename)` reconstructs the full file: `gb_copy_file()`
+copies the head (bytes 0..`win_start`−1 from `tail_file`), `gb_write_buf()`
+writes the in-memory buffer (LF→CR+LF, walking the two raw gap segments
+with a pointer), and `gb_copy_file()` copies the unloaded tail (bytes
+`tail_offset`..end).  When saving to the same file that holds the tail,
+`HVITMP.TMP` — built with the destination's `du:` prefix — is used as an
+intermediate to prevent reading and writing the same file simultaneously.
 
 **Temporary files:**
 
@@ -302,8 +324,51 @@ backing file:
 - **Visual rows**: lines wider than `scr_cols` wrap to additional terminal rows. The unit of vertical measurement is one terminal line of content. `top_pos` may point to the middle of a logical line (start of any visual row).
 - `TAB_STOP = 8`: tab characters expand to the next multiple of 8.
 - Lines past the end of the file are shown as `~` in column 0 (except row 0).
-- Status line shows: filename, `[+]` if modified, current line number, or a transient message (search result, error, mode indicator).
-- `line_cnt_cached` in the `Editor` struct caches the total line count computed by `scr_line_count()`. Set to 0 (invalid) by `gb_insert()` and `gb_delete()` whenever buffer content changes; recomputed on the next status bar update. This avoids an O(buffer) scan on every cursor movement.
+- Status line shows: filename, `[+]` if modified, or a transient message (search result, error, mode indicator).  No line numbers (see §11.3).
+- Three incremental caches in `Editor` keep per-keystroke work O(1):
+  - `line_cnt_cached` — total line count; **adjusted** (not invalidated) by `gb_insert()`/`gb_delete()` using their newline tallies; 0 = recompute.
+  - `cur_line`/`cur_line_pos` — line number of the cursor, updated by `scr_cur_line()` with a CPIR count over just the moved-over span.
+  - `cur_vrow` — the cursor's visual row within the viewport, maintained by `mv_up`/`mv_down` and invalidated (−1) whenever an edit or jump may have moved the cursor across a visual-row boundary.  Staleness here is the classic screen-corruption trap: anything that moves the cursor across a vrow boundary must set `cur_vrow = -1`.
+
+### 6.10 Marks
+
+`ed.marks[NMARKS]` holds 27 buffer positions: slots 0–25 for `` `a``–`` `z``
+(set with `m{a-z}`) and slot 26 (`MARK_PREV`) for `` ``` `` — the position
+before the last jump.  −1 means "not set".  Every `gb_insert`/`gb_delete`
+runs `mk_adjust()` so marks keep pointing at the same characters; a mark
+inside a deleted range is cleared.  All marks are cleared when the
+large-file window slides or a new file is loaded (buffer positions no
+longer describe the same text).  `G`, `gg`, `:N`, `:$`, searches, and
+`` `x`` jumps record `MARK_PREV` first, so `` ``` `` returns to the origin.
+
+### 6.11 Drive and User-Area File Access (v2.5)
+
+Every file operation accepts the `du:` prefix described in §5.  The
+implementation is concentrated in cstart.as and `cpmio.c`:
+
+- **Parsing** happens inside `fill_fcb` (assembly, cstart.as) while the FCB
+  is built: the drive code (0 = current, 1 = A …) lands in FCB byte 0 and
+  is also left in the C global `fcb_drive`; the user area (−1 = current,
+  0–15) lands in `fcb_user`.  An invalid prefix leaves the whole string as
+  the filename.
+- **Drive** needs nothing further — CP/M's FCB carries it.
+- **User area** has no FCB field.  Each `HFILE` records its file's user
+  area in a `user` member (−1 for unprefixed names), and every directory or
+  data BDOS call on that file (open 15, close 16, erase 19, write 21,
+  make 22, rename 23, read-random 33) goes through `dsk_u(fn, arg, user)`
+  in cstart.as, which brackets the operation with BDOS 32 set-user calls
+  and restores the process user afterwards.  The process user number is
+  fetched lazily with one BDOS 32 get on the first prefixed operation
+  (`du_cur`, a data-psect byte initialised to 80h = unknown, because BSS
+  zeroing would read as "user 0").
+- **Zero overhead when unused:** `user < 0` makes `dsk_u` call straight
+  through — an unprefixed session never issues a single BDOS 32.
+- **Rename constraint:** BDOS 23 renames within one drive and user area
+  only.  `gb_save` therefore builds its `HVITMP.TMP` staging name with the
+  *destination's* `du:` prefix (`gsv_mk_tmp` in gap.c), so the final
+  erase + rename happens entirely inside the target drive/user area.
+- `hvi_fopen` re-asserts `fcb_drive` into FCB byte 0 after open — some
+  BDOS implementations overwrite the drive byte.
 
 ---
 
@@ -337,15 +402,25 @@ recycle memory, making repeated allocations unpredictable.
 with direct CP/M BDOS calls. It provides:
 
 - `HFILE` — a file handle struct with its own 128-byte sector buffer (no heap
-  allocation needed per open)
+  allocation needed per open) and the file's user area (§6.11)
 - `hvi_fopen` / `hvi_fclose` — BDOS 15 (Open), 16 (Close), 22 (Make)
-- `hvi_fgetc` / `hvi_fputc` — BDOS 20 (Read Sequential), 21 (Write Sequential)
+- `hvi_fgetc` — refills its sector buffer with BDOS 33 (Read Random), never
+  BDOS 20: the sector number is always derived from the self-tracked `pos`
+  field (`pos >> 7`), eliminating all dependence on the FCB's CR/EX/S2
+  state, which BDOS 33 does not reliably update across implementations
+- `hvi_fputc` — BDOS 21 (Write Sequential)
 - `hvi_fseek` — BDOS 33 (Read Random) for direct sector seek
 - `hvi_ftell` — returns the cached `pos` field
 - `hvi_remove` / `hvi_rename` — BDOS 19 (Erase), 23 (Rename)
 - `hvi_fsize` — exponential+binary search via BDOS 33
 - `hvi_malloc` / `hvi_free` — single-shot allocator from the free TPA between
   BSS end and the BDOS base (set by `cstart.as`)
+- `fill_fcb` — FCB builder + `du:` prefix parser, in assembly (cstart.as)
+
+The FCB random-record fields (`CR`, `r0`–`r2`) are written from the sector
+number's **little-endian bytes** (`((unsigned char *)&sect)[n]`) rather than
+32-bit shift/mask expressions — each `long` shift/mask compiles to a library
+call (~50 bytes) and this sits in the per-sector hot path.
 
 A static pool of `MAX_HFILES = 3` HFILE slots serves all concurrent file
 opens. At most two handles are ever open simultaneously (one write, one read)
@@ -379,29 +454,49 @@ stores it in `bdos_base`; it also sets `heap_base` to the first byte after BSS
 The stack is initialised to `bdos_base` (growing downward) so the full free
 TPA between BSS and BDOS is available for the gap buffer.
 
-### 7.3 IX Frame Elimination (Binary Size Optimisation)
+### 7.3 Static Locals, IX Frames, and the csv History
 
-HI-TECH C V3.09 generates an IX-register stack frame in every function that has at least one `auto` (stack-allocated) local variable. The prologue/epilogue sequence (`PUSH IX` / `LD IX,0` / `ADD IX,SP` / one `DEC SP` per local byte / `LD SP,IX` / `POP IX`) costs 12–16 bytes per function. For a codebase with many small functions this overhead is significant.
+HI-TECH C V3.09 generates an IX-register stack frame in every function that
+has at least one `auto` (stack-allocated) local variable.  The
+prologue/epilogue costs 12–16 bytes per function, so most HVI functions
+declare their locals `static` (BSS, fixed addresses, no frame).  This is
+safe because all HVI functions are non-recursive and CP/M is
+single-process/single-thread; inner-block declarations are hoisted to
+function scope for the same reason.
 
-**Solution:** Declare local variables as `static` instead of `auto`. File-level `static` variables and function-scope `static` variables are placed in BSS (fixed addresses) and accessed without IX. If **all** locals in a function are `static` (or if the function has no locals), the compiler emits no IX frame at all.
+**Historical note (the "-O corrupts autos" myth, fixed in v2.1):** many
+static-local conversions were originally made because auto variables
+appeared to be corrupted across function calls under `-O`.  The real cause
+was a bug in the custom `csv` in cstart.as: it left SP two bytes above IX
+at function-body entry, so the deepest auto local sat below SP and was
+clobbered by the next argument push.  The v2.1 `csv`/`ncsv`/`cret` match
+the real HI-TECH frame (saves IX **and IY**, arguments at IX+6, SP == IX
+at body entry), and **auto locals are fully reliable now**.  Statics are
+retained purely as the size optimisation above; new code should not add
+static-local "workarounds" for correctness reasons.  Statics genuinely
+needed for state that must survive BDOS calls are those in cpmio.c where
+IX itself could be corrupted — but `bdos_disk`/`dsk_u` also protect IX,
+so this is defence in depth.
 
-**Constraints:**
-- Only safe for non-recursive, single-threaded functions (all functions in HVI satisfy this — CP/M is single-process, single-thread).
-- Inner-block declarations (inside `switch` cases, `if` blocks) also contribute to the IX frame and must be hoisted to function-scope `static`.
-- Functions with `static` locals are not re-entrant. This is intentional and safe here.
+### 7.3a Assembly Core (cstart.as)
 
-**Affected functions (v1.3):**
+Beyond startup and the frame routines, cstart.as holds hand-written Z80 for
+the hot paths and for code where compiled K&R C is ~2.5× the size:
 
-| File | Functions |
-|------|-----------|
-| `screen.c` | `next_vrow`, `vrow_start_of`, `scr_vrow_col`, `scr_pos_line`, `scr_cur_line`, `scr_pos_col`, `scr_line_start`, `scr_line_count`, `draw_row_at`, `scr_show_status`, `scr_update_after_move` |
-| `edit.c` | `get_count`, `do_find`, `insert_key` |
-| `emove.c` | `undo_save_delete`, `pos_at_col`, `mv_bnb`, `mv_eol`, `mv_right`, `mv_up`, `mv_down`, `mv_word_fwd`, `mv_word_back`, `mv_word_end`, `apply_op`, `read_pattern`, `do_search_from` |
+| Routine | Purpose |
+|---------|---------|
+| `bdos_disk(fn, arg)` | BDOS call that saves/restores IX around `CALL 5` (disk functions corrupt IX on some hosts) |
+| `dsk_u(fn, arg, user)` | `bdos_disk` bracketed by BDOS 32 user-area switches (§6.11); `user < 0` calls straight through |
+| `fill_fcb(fcb, name)` | 36-byte FCB build + `du:` prefix parse; results in `fcb_user`/`fcb_drive` |
+| `gb_memmove(dst, src, len)` | Overlap-safe LDIR/LDDR block move — every gap move |
+| `gb_char_at(pos)` | Frameless logical byte fetch through the gap; reads GapBuf fields at `_ed+0/2/4/6` |
+| `gb_memchr` / `gb_memrchr` | CPIR/CPDR first/last index-of over a raw range (21 T-states/byte) — back `find_eol`/`find_bol` |
+| `gb_cntnl(p, len)` | CPIR newline counter — backs `gb_count_nl`, line caches, yank/undo newline checks |
+| `con_write(buf, len)` | Block console output via BDOS 6 — one call per flushed output buffer |
 
-**Additional dead code removed (v1.3):**
-- `gb_load_fp()` — merged into `gb_load(filename, fp)` via an optional `FILE*` parameter. When `fp` is non-NULL it is used directly; otherwise `fopen()` is called internally. Eliminates the entire function body and its IX frame.
-- `scr_redraw_cur_vrow()` — single-visual-row redraw used only by `r` (replace character). Replaced with `scr_redraw_cur_line()`, which redraws the full logical line. The result is identical for single-width lines and correct for wrapped lines. Eliminates ~60 bytes.
-- `scr_line_end()` — declared in `hvi.h` and defined in `screen.c` but never called anywhere. Eliminated as dead code (~40 bytes).
+All are frameless or save IX themselves, and none touch IY.  `gb_char_at`
+depends on `GapBuf` being the **first member** of `Editor` (offsets are
+`EQU`s at the top of cstart.as).
 
 ### 7.4 HI-TECH C Compiler Limits
 
@@ -411,8 +506,8 @@ HI-TECH C V3.09 generates an IX-register stack frame in every function that has 
 **Solution:** Keep all functions small. When a function grows too large (typically beyond ~80–120 lines with many local variables and branches), split it into multiple smaller static helper functions.
 
 **Affected functions in this codebase:**
-- `gap.c::gb_save()` — split into `gb_write_head()`, `gb_write_buf()`, `gb_write_tail()`
-- `gap.c::gb_load()` — split out `gb_record_tail()`
+- `gap.c::gb_save()` — split into `gb_copy_file()` (head/tail) and `gb_write_buf()`/`gwb_seg()`
+- `gap.c::gb_load()` / `gb_reload_from()` — share the split-out read loop `gb_fill()`
 - `gap.c::gb_load_more()` — split out `gb_discard_head()`
 - `edit.c::normal_cmd()` — split into `normal_edit_cmd()`, `normal_delchg_cmd()`, `normal_misc_cmd()`, `normal_find_cmd()`, `normal_page_cmd()`
 
@@ -424,7 +519,7 @@ This is distinct from the optimizer memory limit: splitting a large function int
 **Solution:** Move code to a **new source file**. Choose a logically cohesive cluster of functions and extract them into a separate `.C` file that is compiled and linked independently.
 
 **Affected in this codebase:**
-- `erepeat.c` was created to hold `dot_ins_position()`, `dot_replay_c()`, and `dot_replay()`, which were extracted from `edit.c` to reduce `edit.c`'s total label count.
+- `erepeat.c` was created to hold `ins_position()`, `dot_replay_c()`, and `dot_replay()`, which were extracted from `edit.c` to reduce `edit.c`'s total label count.
 
 ### 7.5 Variable Declaration Rules (K&R C)
 All variable declarations must appear at the **top** of their enclosing block, before any statements. Declaring a variable after a statement in the same block is illegal in K&R C and will cause a compile error.
@@ -447,24 +542,32 @@ This applies inside `switch` case bodies as well — use explicit `{ }` blocks t
 **Special caution with `long`:** Declaring a `long` variable inside a nested block (rather than at the function top) has been observed to cause optimizer failures on HI-TECH C. All `long` variables should be declared at the top of their function.
 
 ### 7.6 No `memmove()`
-HI-TECH C V3.09 does not include `memmove()` in its library. The gap buffer requires an overlapping-safe memory copy for gap movement. A private implementation named `gb_memmove()` is provided in `gap.c`.
+HI-TECH C V3.09 does not include `memmove()` in its library. The gap buffer requires an overlapping-safe memory copy for gap movement. `gb_memmove()` is provided in assembly (cstart.as) using LDIR/LDDR — 21 T-states/byte versus well over 100 for a compiled loop; this runs on every gap move.
 
 ### 7.7 Integer Width
 On Z80, `int` is 2 bytes (range −32768 to 32767). Buffer positions and sizes are stored as `int`, which limits the effective buffer to 32 KB. This is acceptable given CP/M TPA constraints. File offsets (e.g., `tail_offset`, `win_start`) are stored as `long` (4 bytes) to support files larger than 32 KB.
 
 ### 7.8 Terminal Input
-CP/M does not have a `termios`-style raw mode API. HI-TECH C's `getch()` function reads a single character without echo using the BIOS CONIN call directly. No setup or teardown is required for raw mode.
+CP/M does not have a `termios`-style raw mode API.  `term_getch()` reads
+raw keys with **BDOS function 6** (Direct Console I/O, E = FFh: no echo,
+non-blocking), polling **BDOS 11** (Console Status) first to avoid a busy
+read loop.  Both go through `bdos_disk` so IX is preserved.  No BIOS calls
+are used anywhere.
 
-### 7.9 Terminal Size Query and BIOS CONIN
-**Problem:** The ANSI CPR response (`ESC[rows;colsR`) is fragmented on CP/M emulators running under a Unix host with canonical (line-buffered) terminal mode. The ESC byte arrives immediately, but the remaining bytes are buffered until Enter is pressed.
+A bare ESC is disambiguated from an ANSI arrow sequence by a bounded
+countdown poll (`con_wait`): if `[` follows quickly, `ESC[A/B/C/D` are
+translated to synthetic key codes `KEY_UP`/`KEY_DOWN`/`KEY_LEFT`/`KEY_RIGHT`
+(> 0xFF, never produced by raw input); any other quick byte is **pushed
+back** as the next keystroke rather than swallowed.
 
-**Solution:** `term_getsize()` uses a two-phase approach:
-1. **Phase 1:** Poll BIOS CONST (`bios(2,0,0)`) up to 30,000 times waiting for any byte.
-2. **Phase 2:** Read the full CPR sequence using BIOS CONIN (`bios(3,0,0)`) directly, bypassing BDOS buffering. No BDOS console output is performed between CONIN reads.
-
-All debug output from the size query is deferred until after Phase 2 completes, because BDOS console-write calls between reads can consume buffered response bytes on some CP/M implementations.
-
-If the terminal does not respond, `DEF_ROWS = 24` and `DEF_COLS = 80` are used.
+### 7.9 Terminal Size Query
+`term_getsize()` parks the cursor at `ESC[999;999H` (the terminal clamps to
+its real size) and requests a cursor-position report with `ESC[6n`, sent as
+one `con_write` block.  The `ESC[rows;colsR` reply is parsed with the same
+`con_wait` countdown polling (BDOS 11/6); every byte is guarded by a
+timeout so a non-responding terminal falls back to `DEF_ROWS = 24`,
+`DEF_COLS = 80`.  Any pty harness driving HVI must answer the `ESC[6n`
+query (the test harness replies `ESC[24;80R`).
 
 ### 7.10 File I/O Handle Count
 `cpmio.c` provides a static pool of `MAX_HFILES = 3` HFILE slots. Each HFILE
@@ -501,11 +604,15 @@ function; no handle is held open across function call boundaries.
 | `YANK_MAX` | 1024 | Maximum bytes in the yank buffer |
 | `TAB_STOP` | 8 | Tab stop width in columns |
 | `SEARCH_MAX` | 64 | Maximum search pattern length |
-| `PATH_MAX` | 64 | Maximum filename length |
+| `PATH_MAX` | 64 | Maximum filename length (including any `du:` prefix) |
 | `STATUS_MAX` | 128 | Maximum status message length |
 | `CMD_MAX` | 128 | Maximum ex command-line length |
+| `NMARKS` | 27 | Mark slots: `a`–`z` plus `MARK_PREV` |
+| `MARK_PREV` | 26 | Slot holding the position before the last jump (`` ``` ``) |
 | `HEOF` | −1 | End-of-file sentinel returned by `hvi_fgetc()` (replaces `stdio` EOF) |
 | `MAX_HFILES` | 3 | Number of HFILE slots in the static pool in `cpmio.c` |
+| `OUT_BUF_SZ` | 256 | Terminal output buffer (term.c), flushed via `con_write` |
+| `SPRINTF_SMAX` | 100 | Per-`%s` expansion cap in `hvi_sprintf` (keeps any status message inside `STATUS_MAX`) |
 
 ---
 
@@ -532,6 +639,7 @@ function; no handle is held open across function call boundaries.
 | `Ctrl-B` | Scroll backward one page; cursor lands at the middle row of the new page (first non-blank). No-op if `top_pos == 0` (file beginning already displayed). |
 | `Ctrl-D` | Scroll forward half page |
 | `Ctrl-U` | Scroll backward half page |
+| `↑` `↓` `←` `→` | ANSI arrow keys, translated to `k` `j` `h` `l` |
 
 Vertical movement maintains a "wanted column" (`want_col`) so that `j`/`k` through short lines returns to the original column when a longer line is reached.
 
@@ -608,6 +716,17 @@ message is shown only when the search crossed a true file boundary.
 
 All accept a count prefix (`3;` = skip to third match).
 
+### 10.6a Normal Mode — Marks
+
+| Key | Action |
+|-----|--------|
+| `m{a-z}` | Set mark at the cursor position |
+| `` `{a-z} `` | Jump to mark (exact position); "Mark not set" if unset or invalidated |
+| `` `` `` | Jump to the position before the last jump (`G`, `gg`, `:N`, `:$`, search, or a mark jump) |
+
+Marks track edits (§6.10) and are cleared when the large-file window slides
+or a new file is loaded.
+
 ### 10.7 Normal Mode — Miscellaneous
 
 | Key | Action |
@@ -615,7 +734,7 @@ All accept a count prefix (`3;` = skip to third match).
 | `.` | Repeat last change |
 | `u` | Undo last change (single level) |
 | `:` | Enter ex command mode |
-| `Ctrl-L` | Redraw screen |
+| `Ctrl-L` | Redraw screen (re-establishes the scroll region) |
 
 ### 10.8 Dot-Repeat (`.`) Behavior
 
@@ -661,6 +780,7 @@ Most commands accept a numeric count prefix that repeats or scales the operation
 | `Backspace` / `Ctrl-H` / `DEL` | Delete previous character |
 | `Ctrl-W` | Delete previous word |
 | `Ctrl-U` | Delete to start of line |
+| `↑` `↓` `←` `→` | Move the cursor without leaving insert mode |
 | `ESC` | Return to normal mode |
 
 Insert mode optimises terminal output on slow (9600 baud) connections:
@@ -688,6 +808,8 @@ Insert mode optimises terminal output on slow (9600 baud) connections:
 | `:r filename` | Read file and insert after current line |
 | `:N` | Go to line number N (1-based) |
 | `:$` | Go to last line (loads entire tail for large files) |
+
+All `filename` arguments accept the `du:` drive/user prefix (§5, §6.11).
 
 On quit (`ed.quit = 1`), the screen is **not** redrawn — the editor exits immediately after `term_restore()`.
 
@@ -719,12 +841,14 @@ All screen output is sized to the minimum needed for the operation. From cheapes
 
 | Tier | Function | When used |
 |------|----------|-----------|
-| Cursor move only | `scr_update_cursor()` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport unchanged; terminal cursor repositioned (~10 bytes) |
+| Single cell / span | `scr_fix_char()` / `scr_fix_span()` | `r` and `~` on printable, non-wrapping cells — the new character(s) are emitted in place (2–4 bytes) |
+| Cursor move only | `scr_update_cursor()` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG`, `` `x `` — viewport unchanged; terminal cursor repositioned (~10 bytes) |
 | Cursor move only | `scr_show_status()` | `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` — text unchanged, cursor stays on-screen |
-| Terminal scroll + 1 row | `scr_update_after_move(old_top)` | `j`, `k`, `Enter`, `w`, `b`, `e`, `/`, `?`, `n`, `N`, `gg`, `nG` — viewport shifts by exactly ±1 visual row (~53 bytes vs ~1200 for full refresh) |
-| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `r`, `x`, `X`, `D`, `~`, `s`, `S`, `C`, insert-mode Ctrl-U, Ctrl-W (within line) |
-| Cursor row to bottom | `scr_redraw_from_cur()` | `J`, `o`, `O`, `p`, `P`, `u`, `dw`/`dd`/`cw`/etc., insert-mode Enter/BS-over-newline/Ctrl-W-across-newline, dot-repeat of insert/join — content above cursor unchanged |
-| Full screen | `scr_refresh()` | `G`, Ctrl-F/B/D/U, `:` commands, large file tail load, viewport shift after any operation |
+| Terminal scroll + N rows | `scr_update_after_move(old_top)` | Any move where the viewport shifts by fewer than a screenful of visual rows — the scroll region scrolls and only the rows that came into view are painted (Ctrl-D/U half-pages use this too) |
+| One screen row | `scr_edit_end(1)` | Charwise edits confined to a single-row line with no newline change (`x`, small `p`, in-line `d`/`c`, undo of same) — repaints exactly one row plus the status bar |
+| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `r`, `~` fallbacks, insert-mode Ctrl-U, Ctrl-W (within line), tab edits |
+| Cursor row to bottom | `scr_redraw_from_cur()` | `J`, `o`, `O`, `p`, `P`, `u`, `dw`/`dd`/`cw`/etc. (when not single-row), insert-mode Enter/BS-over-newline/Ctrl-W-across-newline, dot-repeat of insert/join — content above cursor unchanged |
+| Full screen | `scr_refresh()` | `G`, Ctrl-F/B, `:` commands, large-file window reloads, viewport shift after any operation |
 
 The `scr_redraw_from_cur()` tier (added in v1.1) is the key level: for any operation that modifies content at or below the cursor without moving `top_pos`, it skips all rows above the cursor. On a 24-row terminal with the cursor at the middle, this halves the terminal output compared to a full refresh.
 
@@ -736,20 +860,37 @@ The `scr_redraw_from_cur()` tier (added in v1.1) is the key level: for any opera
 
 ## 12. Terminal Interface (`term.c`)
 
-All output uses `putchar()` to `stdout`. ANSI escape sequences used:
+All output accumulates in a 256-byte buffer (`OUT_BUF_SZ`) and is flushed
+as one `con_write` block (BDOS 6 loop in cstart.as) just before blocking on
+input — many BDOS calls become one, which matters when the link is
+baud-rate limited.  Two further output optimisations:
+
+- **Cursor tracking** — `s_trow`/`s_tcol` shadow the terminal cursor so
+  `term_goto()` can emit `\r` (1 byte), backspaces, `ESC[C`, or `\r`+`\n`s
+  instead of the full 7–10 byte `ESC[r;cH` when the move is small.  Any
+  untracked control byte invalidates the shadow.
+- **Scroll region** — set once at startup to the text area
+  (`ESC[1;(rows-1)r`) so `term_scroll_up()`/`term_scroll_dn()` scroll by
+  one visual row in 2–3 bytes; re-established by Ctrl-L after its
+  `ESC[2J`.
+
+ANSI escape sequences used:
 
 | Sequence | Purpose |
 |----------|---------|
-| `ESC[2J` | Clear screen |
+| `ESC[2J` + `ESC[H` | Clear screen and home |
 | `ESC[K` | Clear to end of line |
 | `ESC[r;cH` | Move cursor to row r, column c (1-based) |
-| `ESC[1m` | Bold attribute |
-| `ESC[7m` | Reverse video |
-| `ESC[0m` | Reset attributes |
+| `ESC[7m` / `ESC[0m` | Reverse video on / attributes off (status bar) |
+| `ESC[1;Nr` / `ESC[r` | Set scroll region to the text area / reset at exit |
+| `ESC M` | Reverse Index (scroll down one row) |
+| `ESC[@` / `ESC[P` | Insert / delete one character cell (mid-line insert-mode typing) |
+| `ESC[C` | Cursor right (short moves under cursor tracking) |
 | `ESC[999;999H` + `ESC[6n` | Terminal size query (CPR) |
 | `ESC[r;cR` | Terminal size response (parsed in `term_getsize`) |
 
-Input uses `getch()` from the HI-TECH C runtime, which calls BIOS CONIN directly and returns immediately without echo. Terminal size reads use `bios(3,0,0)` (BIOS CONIN) to bypass BDOS buffering.
+Input is described in §7.8 (BDOS 6/11 via `bdos_disk`; no BIOS, no libc
+`getch()`).
 
 ---
 
@@ -767,7 +908,7 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 ## 14. Known Limitations
 
 1. **Single-level undo.** Only the most recent change can be undone. `u` after `u` is a no-op.
-2. **`nG` scans sequentially from byte 0.** Navigating to line 1000 reads roughly 1000 lines from disk; navigating to line 29000 in a 30K-line file reads most of the file. The scan uses sequential BDOS 20 reads, each requiring a BDOS call.
+2. **`nG` scans sequentially from byte 0.** Navigating to line 1000 reads roughly 1000 lines from disk; navigating to line 29000 in a 30K-line file reads most of the file. The scan reads byte-by-byte via `hvi_fgetc` (one BDOS 33 per 128-byte sector).
 3. **Dot-repeat text truncated at 128 bytes.** Long insertions are truncated silently.
 4. **No visual/block selection mode.**
 5. **No macro recording or playback.**
@@ -775,8 +916,8 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 7. **No regex search** — plain substring match only.
 8. **`~` (toggle case) is single-level undo per character.** With a count, only the last character's toggle is undoable.
 9. **No `:s` (substitute) command.**
-10. **Terminal size query may require Enter on some CP/M setups** if the BIOS CONIN is still line-buffered.
-11. **Filenames limited to `PATH_MAX = 64` characters**, which exceeds CP/M's 8.3 limit but may be relevant on cross-platform use.
+10. **Terminal size query may require Enter on some CP/M setups** if the host console is line-buffered (the countdown polls expire and the 80×24 defaults are used; the buffered reply may then leak into the input stream).
+11. **Filenames limited to `PATH_MAX = 64` characters**, which exceeds CP/M's 8.3 + `du:` prefix limit but may be relevant on cross-platform use.
 12. **Swap file not cleaned up on abnormal exit.** `HVISWP.TMP` and `HVITMP.TMP` are left on disk if HVI is terminated abnormally (e.g., power loss or warm boot). They can be deleted manually.
 13. **Cross-boundary pattern miss.** If a search pattern spans the boundary between the loaded buffer and an unloaded file section (e.g., the first half of the pattern is the last bytes of the buffer and the second half is the first bytes of the tail), `scan_file_for_match` will not find it — it starts scanning from `tail_offset` and the partial match start is in the buffer. This edge case is rare in practice and is a known limitation of the sequential-scan approach.
 
@@ -795,7 +936,7 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | `erepeat.c` extracted from `edit.c` | HI-TECH C has a per-file total label limit; moving dot-repeat functions to a new file reduced `edit.c` below the limit |
 | `long` variables at function top | Inner-block `long` declarations have been observed to cause optimizer failures |
 | `gb_memmove()` in gap.c | HI-TECH C V3.09 does not include `memmove()` |
-| BIOS CONIN for size query reads | BDOS console output between reads can consume buffered terminal response bytes |
+| Size-query reads defer all other console output | BDOS console-write calls between response reads can consume buffered terminal response bytes on some hosts; the whole `ESC[6n` handshake is one `con_write` block followed only by `con_wait` polls |
 | No `scr_refresh()` on quit | Avoids unnecessary terminal I/O when the user is about to see the shell prompt |
 | `HVITMP.TMP` for large-file saves | Prevents reading and writing the same file simultaneously when saving to the tail source |
 | Dot-repeat captures text at ESC | At ESC time the inserted text is contiguous in the buffer at `undo.pos`; simple loop copies it |
@@ -813,29 +954,42 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 | `mv_eol()` returns immediately on `\n` | When the cursor is already on a newline (empty line), `mv_eol()` previously walked forward past the `\n` onto the next line's content, causing `A` and `$` to land on the wrong line. An early return when `gb_char_at(cur_pos) == '\n'` corrects this |
 | `G` uses `scr_refresh()` instead of `scr_update_after_move()` | After `gb_reload_from(0L)` resets `ed.top_pos` to 0, the saved `old_top` is also 0. `scr_update_after_move(0)` sees no viewport change and only calls `scr_update_cursor()`, leaving the screen blank. Using `scr_refresh()` unconditionally after `G` fixes this and is always correct since `G` is a large-distance jump |
 | Static locals eliminate IX frames | HI-TECH C generates a 12–16 byte PUSH/POP IX stack frame for every function with at least one `auto` local. Declaring all locals `static` moves them to BSS and eliminates the frame. Safe because all HVI functions are non-recursive and CP/M is single-threaded. See Section 7.3 |
-| `gb_load_fp()` merged into `gb_load()` | Both functions were nearly identical. Adding a `FILE *fp` parameter to `gb_load()` (NULL = fopen internally) eliminates the entire `gb_load_fp()` function body and its IX frame |
+| `gb_load_fp()` merged into `gb_load()` | Both functions were nearly identical. Adding an optional handle parameter to `gb_load()` (NULL = `hvi_fopen` internally; now an `HFILE *`) eliminates the entire `gb_load_fp()` function body and its IX frame |
 | `scr_redraw_cur_vrow()` removed | Used only by `r` (replace). `scr_redraw_cur_line()` is a correct superset: it redraws the full logical line, which is identical for single-width lines and also handles wrapped lines. Removes ~60 bytes |
 | `scr_line_end()` removed as dead code | Declared in `hvi.h`, defined in `screen.c`, but never called from anywhere in the codebase. Removing dead declarations and definitions reduces binary size without any functional change |
 | `cpmio.c` replaces all stdio and malloc | HI-TECH C's `fopen()` allocates a heap buffer per handle; after `gb_init()` consumes the TPA there is no heap left. Direct BDOS calls with a static 3-slot HFILE pool eliminate the problem entirely and reduce binary size by avoiding buffered-I/O library code |
-| `hvi_fseek` uses long shifts for sector number | The sector number for BDOS 33 is `offset >> 7`. Casting `offset` to `unsigned int` before shifting truncates files > 32 KB to the wrong sector. All shifts are performed on the raw `long` value; only then are the three FCB bytes extracted |
+| FCB sector fields from little-endian bytes | The sector number for BDOS 33 is `offset >> 7`, a `long`. A 16-bit cast before shifting truncates files > 32 KB (a historical bug); 32-bit shift/mask expressions are correct but each compiles to a ~50-byte library call in the per-sector hot path. `rd_sector`/`hvi_fseek` shift the `long` once and then read its little-endian bytes directly via `((unsigned char *)&sect)[n]` |
 | `hvi_fsize` uses exponential+binary search | BDOS 35 (Compute File Size) is not implemented by all CP/M emulators. Doubling the probe offset until BDOS 33 fails, then binary-searching the final interval, finds the sector-rounded file size in O(log N) seeks (~21 for 1 MB) without relying on BDOS 35 |
 | `gb_reload_from` flushes edits before discarding buffer | Without the flush, navigating to a new window in a large file silently discards all in-memory edits. `gb_reload_from` calls `gb_save("HVISWP.TMP")` when `ed.modified` is set, making `tail_file` point to a complete, up-to-date snapshot before the buffer is cleared |
 | `s_reload_skip_flush` flag prevents double save | `gb_make_room()` saves to the swap file itself before calling `gb_reload_from()`. Setting `s_reload_skip_flush = 1` before the call prevents `gb_reload_from` from saving a second time (which would overwrite the complete swap with only the partial in-memory window) |
 | `gb_goto_line` for `nG` in large files | The previous `nG` implementation reloaded from byte 0 and clamped to `scr_line_count()`, which is the buffer-local line count. For a large file mid-scroll this always landed at the end of the loaded buffer. `gb_goto_line(n)` scans `tail_file` from byte 0 to find the exact byte offset of line N, positions the window there, and uses a second short scan to find the local buffer line |
-| `gb_count_lines` uses `hvi_fseek` + sequential read | After a BDOS 33 random seek, BDOS 20 continues sequentially from the next record. This allows `gb_count_lines` to seek to `win_off` with one BDOS 33 call and then read to `target_off` with BDOS 20 calls, avoiding a full scan from byte 0 for the local line number |
+| One `gb_scan_lines()` file scanner | The line-offset lookup (`stop_n >= 0`: offset just past the Nth LF) and the range line-count (`stop_n < 0`) were the same seek+`hvi_fgetc` loop with different stop conditions — merged into one scanner serving both `gb_goto_line` needs |
 | Skip BDOS 16 for read-mode HFILE handles | Some CP/M emulators write the FCB's `CR`/`EX` fields back to the directory on BDOS 16, corrupting the extent record. The next BDOS 15 (open) then loads a wrong allocation map, causing BDOS 33 to return sector-0 data for all subsequent random reads. Skipping BDOS 16 for `mode == 1` handles eliminates the corruption entirely |
 | Explicit FCB CR field write before BDOS 33 | CP/M 2.2 specifies `r0`/`r1`/`r2` (FCB bytes 33–35) as the random record number for BDOS 33. Some emulators also key off byte 32 (`CR`). Writing the sector number into byte 32 alongside the standard `r0`/`r1`/`r2` fields ensures correct operation on both conforming and non-conforming implementations |
 | `do_search_full` for whole-file search | `do_search_from` only searches the in-memory buffer. To find matches in unloaded sections, `do_search_full` adds a Phase 2 that calls `scan_file_for_match` on the unloaded tail (FWD) or head (BWD), then reloads the window if a file match is found. This preserves the fast in-buffer path for the common case while enabling whole-file search |
 | `dsf_file_wrapped` flag for correct wrap reporting | A match found in the file's tail section (FWD search) is genuinely ahead of the cursor in file order and is not a wrap, but a match in the head section is. Tracking which `scan_file_for_match` call succeeded allows `do_search_full` to set `ed.search_wrapped` correctly — tail match → no wrap message; head match → "search hit BOTTOM" message |
-| `scan_file_for_match` uses sequential BDOS reads | Reading the file section byte-by-byte via `hvi_fgetc` after a single `hvi_fseek` is simple and correct. Random access (BDOS 33) has emulator compatibility issues (CR field); sequential BDOS 20 reads after an initial seek are more reliable and avoid repeated sector-address calculations |
+| `scan_file_for_match` uses sequential `hvi_fgetc` | Reading the file section byte-by-byte via `hvi_fgetc` after a single `hvi_fseek` is simple and correct; `hvi_fgetc` itself derives every sector refill from its self-tracked position (BDOS 33), so no CR/EX/S2 state is trusted |
 | `do_search_from` uses `pos <= sp` for wrap detection | The last iteration of the scan loop (i == size) sets `pos == sp` (the start position). The old `pos < sp` check missed this case, leaving `search_wrapped = 0` when the cursor sat exactly on the only match. `do_search_full` then saw a "found without wrap" result and returned immediately instead of scanning the unloaded file sections. The `<=` change ensures Phase 2 is triggered whenever the result required a full buffer traversal |
 | Ctrl-F load trigger uses `top_line + n + text_rows > total` | The old condition (`top_line + n >= total - 1`) triggered a load only when the new top row hit the last buffer line, but the new viewport still needed `text_rows` more lines below it, causing a screen of `~`. The new condition fires whenever the bottom of the new viewport would fall past the buffer end |
-| Ctrl-F recomputes `top_line` after `gb_load_more` | `gb_load_more` calls `gb_discard_head` which adjusts `ed.top_pos`. Using the pre-load `top_line` for `scr_line_start(new_top)` after a discard produced an offset into stale line numbering. Recomputing `top_line = scr_pos_line(ed.top_pos)` after the load uses the correct adjusted value |
+| Ctrl-F recomputes `top_line` after `gb_load_more` | `gb_load_more` calls `gb_discard_head` which adjusts `ed.top_pos`. Using the pre-load `top_line` for `scr_line_start(new_top)` after a discard produced an offset into stale line numbering. Recomputing `top_line = gb_count_nl(0, ed.top_pos)` after the load uses the correct adjusted value |
 | No line count in status bar | Computing an accurate total requires scanning the entire file (O(N) BDOS reads), which is too slow on a real CP/M machine. A buffer-local count is misleading when the window is mid-file. The status bar shows only the filename and modified flag |
 | Bitwise arithmetic for `TAB_STOP` | Tab-stop alignments historically use compiler-injected modulo/division code. We switched this block `((col / TAB_STOP + 1) * TAB_STOP)` to a hardware bitwise OR block `((col \| (TAB_STOP - 1)) + 1)` which compiles drastically smaller since `TAB_STOP` is 8 (a power of 2). |
 | `begin_hmove`/`end_hmove` abstraction | Horizontal motion commands abstractly bracket updates to `ed.cur_pos`. The `end_hmove` block natively catches if a visual boundary crossing occurs on the physical screen (line wrap text) and correctly invalidates `ed.cur_vrow` to snap the UI rendering context back without redundant checks scattered. |
 | Extract newline scans to `find_bol`/`find_eol` | 16+ inline while-loops repeating newline scanning logic across the code base were refactored into `gap.c` exports to cut binary block duplication via central CALL jumps. |
 | Encapsulate `mv_find` inline command | The `f/F/;/;` character-find routines were moved from `edit.c` to `emove.c` (`mv_find()`) so they could operate under the secure caching brackets of `begin_hmove`, stopping UI freezing. We removed the "f_" status prompt to replicate pure vi mechanics. |
+| Fixed `csv`/`ncsv`/`cret` frame (v2.1) | The original custom `csv` left SP two bytes above IX at body entry, silently clobbering the deepest auto local on the next argument push (the "-O corrupts autos" myth). The fixed routines match the real HI-TECH frame — save IX **and** IY, arguments at IX+6, SP == IX — making auto locals fully reliable |
+| `gb_char_at` in assembly (v2.5) | The hottest function in the editor — every per-character scanner calls it once per byte. Frameless assembly reading the GapBuf fields at fixed offsets from `ed` roughly halves its cost; requires GapBuf to stay `Editor`'s first member |
+| `find_bol`/`find_eol` on CPIR/CPDR scanners (v2.5) | `gb_memchr`/`gb_memrchr` scan at 21 T-states/byte vs ~300 for the compiled `gb_char_at` loop. These two functions back every line motion (`j`/`k`, `dd`, `J`, `o`, `G`, `:N`, `line_span`), so line scans in a full buffer are an order of magnitude faster; `scr_line_start` hops lines via `find_eol` instead of scanning every byte |
+| Newline counting funnels into `gb_cntnl` | One CPIR counter backs `gb_count_nl`, the line caches, `gb_insert`'s tally, and the yank/undo/dot-replay "does it contain a newline" checks — one copy of the loop, 8× faster than per-byte C |
+| `:r` reads through a 128-byte staging chunk | One `gb_insert` per sector instead of per character; each per-character insert paid a full gap move plus the 27-slot mark sweep |
+| `con_write` (BDOS 6) for all console output | One assembly loop flushes the whole output buffer; BDOS 6 also skips BDOS 2's ^S/^P polling. `bdos_puts` and the size query share it |
+| Input via BDOS 6/11, never BIOS | All console I/O goes through `bdos_disk`, preserving IX; BIOS CONIN is not used anywhere (earlier versions used it and hit line-buffering and IX-corruption issues on emulated hosts) |
+| `dsk_u` brackets user-area BDOS calls (v2.5) | CP/M has no per-FCB user number. One assembly routine does set-user / operation / restore-user in a single call; `user < 0` (unprefixed names) calls straight through, so normal operation never issues a BDOS 32. Six C-level bracket pairs collapsed into one routine |
+| `fill_fcb` + `du:` parser in assembly (v2.5) | Compiled K&R C is ~2.5× the size of hand Z80 for this kind of byte-pushing; moving the FCB build and prefix parse to cstart.as paid for the entire user-area feature (v2.5 ships at the same 229 records as v2.4) |
+| Prefixed temp name for cross-user saves (v2.5) | BDOS 23 renames within one drive and user area only; `gb_save` builds `HVITMP.TMP` with the destination's `du:` prefix so the erase + rename never crosses a boundary |
+| `du_cur` is a data-psect byte, not BSS | BSS is zeroed at startup, and 0 is a valid user number; the "not yet fetched" sentinel (80h) must therefore be an initialised data byte |
+| `gb_split` shared clamp/split helper | `gb_copy_out` and `gb_count_nl` duplicated ~250 bytes of range-clamp and split-at-gap arithmetic; one helper emits the two raw segments for both |
+| `gb_load_last`/`gb_load_prev` window jumps | The `G`-to-EOF and `^B`/`k`-at-top window reloads each inlined ~50 bytes of 32-bit clamp arithmetic at two or three call sites; shared helpers in gap.c hold the only copies |
 
 ---
 
