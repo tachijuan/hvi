@@ -160,7 +160,9 @@ typedef struct {
     char    filename[PATH_MAX];
     int     modified;       /* non-zero if buffer differs from disk */
 
-    /* Cursor: byte offset in logical buffer */
+    /* Cursor: byte offset in logical buffer.
+     * cstart.as reads/writes this at the fixed offset _ed+74 (EDCURP,
+     * used by gb_insert_room) -- keep the members above in sync. */
     int     cur_pos;
 
     /* Display */
@@ -240,6 +242,7 @@ int  gb_char_at(/* int pos */);  /* assembly, cstart.as: reads GapBuf
                                   * GapBuf must stay Editor's 1st member */
 int  find_bol(/* int pos */);
 int  find_eol(/* int pos */);
+int  gb_find_ch(/* int pos, int c */);  /* find_eol for any byte */
 int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);
 void gb_copy_out(/* char *dst, int pos, int len */);
@@ -251,6 +254,7 @@ int  gb_reload_from(/* long offset */);
 void gb_load_last();   /* window to file tail, cursor to last line */
 void gb_load_prev();   /* window back one LOAD_CHUNK from win_start */
 int  gb_make_room();
+int  gb_insert_room();  /* args in gir_pos/gir_text/gir_len globals */
 int  gb_goto_line(/* int n */);
 
 /* ---- util.c ---- */

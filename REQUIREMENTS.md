@@ -2,7 +2,7 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.6  
+**Version:** 2.7  
 **Date:** 2026-07-11
 
 ---
@@ -220,6 +220,24 @@ buffer is full (gap < `GAP_MIN`), `gb_make_room()` is called. It saves the
 complete file to `HVISWP.TMP`, then calls `gb_reload_from()` with a window
 centred on `ed.cur_pos`. The cursor position is restored by scanning the new
 buffer. Editing can then continue without interruption.
+
+**Block inserts larger than the gap (v2.6.1):** a freshly loaded window
+keeps only `GAP_MIN` bytes of gap, and `gb_make_room()`'s reload restores
+no more than that — so a put larger than the gap cannot be satisfied by a
+single retry. `gb_insert_room()` (assembly, cstart.as; state declared in
+gap.c) inserts in gap-sized chunks, calling `gb_make_room()` between
+chunks. Its arguments live in globals (`gir_pos`/`gir_text`/`gir_len`):
+`gir_pos` doubles as input and output so consecutive inserts chain, and a
+failure (-1, disk full) passes through the chain so the caller checks once
+after the last call. It sets `gb_roomed` when a swap happened — the reload
+invalidated marks and the undo record, so the caller skips the undo save
+and repaints the screen from scratch. All block-insert paths go through
+it: `put_yank()` (`p`/`P`), `nl_room()` (the `o`/`O` newline, reachable
+with a zero-byte gap after insert-mode typing exactly fills the window),
+and `dot_ins()` (the `.` replay of insert/change text, up to 128 bytes).
+Before v2.6.1 these called `gb_insert()` unchecked and an insert larger
+than the free gap was silently dropped (put also set the modified flag
+and a bogus undo record).
 
 **Line navigation in large files:** `gb_goto_line(n)` finds line N by
 sequentially scanning `tail_file` from byte 0, counting LF characters until
@@ -688,6 +706,7 @@ Vertical movement maintains a "wanted column" (`want_col`) so that `j`/`k` throu
 | `cw` | Change word |
 | `c$` | Change to end of line |
 | `C` | Change to end of line (alias for `c$`) |
+| `` >> `` / `` << `` | Shift line(s) one tab stop right / left (count = lines; also `>{motion}`, `<{motion}` incl. `` >`a ``) |
 | `r` | Replace single character under cursor |
 | `J` | Join line below to current line (inserts space) |
 | `~` | Toggle case of character under cursor |
@@ -761,6 +780,7 @@ The `.` command repeats the last **change** at the current cursor position:
 | `J` | Join same count of lines |
 | `dd` / `dw` / `d$` etc. | Re-apply same delete motion |
 | `` d`x `` / `` c`x<text>ESC `` | Re-resolve mark `x` at its current position and re-apply (mark char kept in `dot_arg`) |
+| `>>` / `<<` / `>{motion}` | Re-apply the same shift |
 | `cw<text>ESC` / `cc<text>ESC` | Delete same motion range and re-insert same text |
 | `C<text>ESC` | Change to EOL and re-insert same text |
 | `i<text>ESC` | Re-insert same text at current position |
@@ -821,8 +841,44 @@ Insert mode optimises terminal output on slow (9600 baud) connections:
 | `:r filename` | Read file and insert after current line |
 | `:N` | Go to line number N (1-based) |
 | `:$` | Go to last line (loads entire tail for large files) |
+| `:[range]s/old/new/[g]` | Substitute (v2.7): plain-text, case-sensitive |
+| `:[range]>` / `:[range]<` | Shift the range's lines one tab stop right / left (v2.7) |
 
 All `filename` arguments accept the `du:` drive/user prefix (§5, §6.11).
+
+### 10.11a Substitute (`:s`, v2.7)
+
+`:[range]s/old/new/[g]` replaces `old` with `new` -- a plain-text,
+**case-sensitive** match, no regular expressions.  Without `g` only the
+first occurrence in each line is replaced; with `g`, every occurrence.
+The trailing `/` may be omitted; an empty `new` deletes `old`; `/`
+cannot appear in either text (no escape syntax).
+
+The range is one address or `addr1,addr2` (order-independent); the
+default is the cursor's line.  Addresses: a line number (clamped to the
+buffer), `.` (the cursor's line), `$` (the last line), or `'{a-z}` (the
+line containing the mark, resolved by the same `motion_endpoint('`')`
+code the operators use -- an unset mark reports "Mark not set").
+
+Implementation (`ex_subst`, ex.c): the parser runs before the other ex
+commands (a range can start with digits) and returns "not mine" so `:N`
+etc. fall through; the `:N` handler shares the same address parser.
+`old` cannot contain a newline (`read_line` stores printable characters
+only), so a match can never cross a line boundary -- the scan is one
+flat pass over `[addr1's line start, addr2's line end)` with no
+per-line loop: `gb_find_ch` CPIRs to each candidate first character,
+the candidate is staged with `gb_copy_out` (two LDIRs) and compared
+with one `hvi_strcmp` (no per-character `gb_char_at` calls).  The end
+position is adjusted by `new-old` length per replacement; after a
+replacement the scan continues past the inserted text (never rescanning
+it), and without `g` it skips to the next line.  On a zero-match run
+the status shows "Pattern not found"; if the gap fills mid-run
+(`new` longer than `old`), completed substitutions are kept and
+"Buffer full" is shown.  The cursor moves to the start of the last
+substituted line (vi).  A substitute is **not undoable**: the edits are
+scattered, so the single-slot undo record is invalidated.  Marks track
+the edits as usual (`mk_adjust`); a mark inside a replaced `old` is
+cleared.
 
 On quit (`ed.quit = 1`), the screen is **not** redrawn — the editor exits immediately after `term_restore()`.
 
@@ -916,6 +972,8 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 
 `motion_endpoint(ch, count, &linewise)` computes the endpoint position for a given motion character and count. Supported motions: `h`, `l`, `w`, `b`, `e`, `$`, `0`, `^`, `j`, `k`, `G`, and `` ` `` (mark; exclusive charwise).
 
+The `>` and `<` operators (v2.7) ride the same model: `apply_op` routes them to `apply_shift` (arguments in the `sh_op`/`sh_from`/`sh_to` globals -- frameless, like `gb_insert_room`), which shifts every line touched by the range one `TAB_STOP` right (insert one tab; empty lines skipped; `room1`/`gb_insert_room` recovers a full gap) or left (remove up to `TAB_STOP` columns of leading blanks).  Always linewise regardless of the motion; an exclusive endpoint in column 0 leaves that line out (vim's rule).  Lines are processed bottom-up so the positions of the lines still to do are unaffected by the edits below them -- this also survives a window swap, since the loop is driven by a line count.  The cursor lands on the first non-blank of the topmost shifted line.  A single-line shift is undoable; multi-line shifts invalidate the undo record (scattered edits, like `:s`).  A shift that changes nothing (e.g. `<<` on an unindented line) does not set the modified flag.  `:[range]>` and `:[range]<` (ex.c) call the same engine through the shared range parser.
+
 For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit.c reads it from the keyboard; erepeat.c replays `ed.dot_arg`): an invalid character returns −1 silently, an unset/invalidated mark shows "Mark not set" and returns −1.  The "Unknown motion: %c" message for an unrecognised `ch` is also shown inside `motion_endpoint()` (default case), so callers only test for a negative return.
 
 ---
@@ -930,8 +988,8 @@ For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit
 6. **No window splitting.**
 7. **No regex search** — plain substring match only.
 8. **`~` (toggle case) is single-level undo per character.** With a count, only the last character's toggle is undoable.
-9. **No `:s` (substitute) command.**
-10. **Terminal size query may require Enter on some CP/M setups** if the host console is line-buffered (the countdown polls expire and the 80×24 defaults are used; the buffered reply may then leak into the input stream).
+9. **Terminal size query may require Enter on some CP/M setups** if the host console is line-buffered (the countdown polls expire and the 80×24 defaults are used; the buffered reply may then leak into the input stream).
+10. **`:r` into a full window truncates the read.** The `:r` staging loop stops when `gb_insert()` fails instead of room-swapping; existing buffer content is never lost. All other insert paths (typing, put, `o`/`O`, dot replay) recover via `gb_make_room` / `gb_insert_room`.
 11. **Filenames limited to `PATH_MAX = 64` characters**, which exceeds CP/M's 8.3 + `du:` prefix limit but may be relevant on cross-platform use.
 12. **Swap file not cleaned up on abnormal exit.** `HVISWP.TMP` and `HVITMP.TMP` are left on disk if HVI is terminated abnormally (e.g., power loss or warm boot). They can be deleted manually.
 13. **Cross-boundary pattern miss.** If a search pattern spans the boundary between the loaded buffer and an unloaded file section (e.g., the first half of the pattern is the last bytes of the buffer and the second half is the first bytes of the tail), `scan_file_for_match` will not find it — it starts scanning from `tail_offset` and the partial match start is in the buffer. This edge case is rare in practice and is a known limitation of the sequential-scan approach.

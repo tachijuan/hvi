@@ -141,6 +141,7 @@ Unprefixed names use the drive and user area HVI was started from.
 | `cw` | Change word                         |
 | `c$` | Change to end of line               |
 | `` c`a `` | Change to mark `a` (exclusive)      |
+| `>>` / `<<` | Shift line(s) one tab stop right / left (count and all motions work: `>j`, `>G`, `` >`a ``, ...) |
 | `C`  | Change to end of line (same as `c$`)|
 | `r`  | Replace single character            |
 | `J`  | Join line below to current line     |
@@ -249,6 +250,17 @@ Both repeat commands accept a count prefix (e.g. `3;` skips to the third next ma
 | `:r filename`| Read file and insert after current line     |
 | `:N`         | Go to line number N                         |
 | `:$`         | Go to last line                             |
+| `:[range]s/old/new/[g]` | Substitute: plain text, case-sensitive; `g` = all occurrences in a line |
+| `:[range]>` / `:[range]<` | Shift the range's lines one tab stop right / left |
+
+`:s` matches plain text (no regular expressions), **case-sensitively**.
+Without `g` the first occurrence in each line is replaced. The range is
+one address or `addr1,addr2` (either order): a line number, `.` (the
+cursor's line), `$` (the last line), or `'{a-z}` (the mark's line);
+the default is the cursor's line. The trailing `/` may be omitted, and
+an empty `new` deletes `old`. The cursor moves to the last substituted
+line. A substitute cannot be undone with `u` (the edits are scattered;
+the single-slot undo record is invalidated).
 
 ---
 
@@ -422,6 +434,90 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.6.1 → 2.7
+
+Feature release: **`:[range]s/old/new/[g]` substitute** and the
+**`>` / `<` shift operators**. All 187 + 18 tests pass (18 substitute
+and 22 shift tests added).
+
+- **`>>` and `<<`** shift lines one tab stop right/left, riding the
+  existing operator-motion model — counts (`3>>`), every motion
+  (`>j`, `>G`, `` >`a ``, ...) and `.` repeat come from the shared
+  `apply_op`/dot machinery. Always linewise (vi); an exclusive motion
+  ending in column 0 leaves that line out. `>` inserts one tab (empty
+  lines skipped; the full-gap recovery from 2.6.1 applies), `<`
+  removes up to one tab stop of leading blanks. The cursor lands on
+  the first non-blank of the topmost shifted line. Single-line shifts
+  are undoable; multi-line shifts invalidate the undo record (like
+  `:s`). `:[range]>` and `:[range]<` drive the same engine through
+  the ex range parser (numbers, `.`, `$`, `'a`–`'z`, either order).
+- The shift engine walks lines bottom-up, so line positions above are
+  unaffected by edits already made below — that also makes it safe
+  across a large-file window swap (the loop is count-driven).
+- Size pass for the release: the shift engine takes its arguments in
+  globals (frameless, like `gb_insert_room`); the 1-byte room-making
+  insert (`room1`) is one copy shared by put, `o`/`O` and the shift's
+  tab; dot-replay's `d`/`>`/`<` cases collapsed into one; and several
+  provable-invariant relationals became cheap equality tests. The
+  shift feature nets 492 bytes (down from 647 before the pass) —
+  binary lands on exactly 239 records (30,592 bytes).
+
+- Plain-text and case-sensitive (no regex); `g` replaces every
+  occurrence in a line, else the first. Ranges take line numbers,
+  `.`, `$`, and `'{a-z}` marks in either order; default is the
+  cursor's line. Zero matches report `Pattern not found`; if the gap
+  fills mid-run, completed substitutions are kept and `Buffer full`
+  is shown. Not undoable (scattered edits invalidate the single-slot
+  undo record); marks track the edits as usual.
+- Efficient scan: because the pattern cannot contain a newline, a
+  match can never cross a line boundary — one flat pass over the
+  range with no per-line loop. `find_eol` was generalised into
+  `gb_find_ch(pos, c)` (CPIR, 21 T-states/byte) to hop between
+  candidate first characters; candidates are staged with two LDIRs
+  (`gb_copy_out`) and compared with one `hvi_strcmp` — no
+  per-character `gb_char_at` calls anywhere in the scan.
+- Size offsets: the `:N` handler now shares the substitute's address
+  parser (one copy of the clamp/walk), `:r` uses `find_eol` instead
+  of a hand-rolled byte loop, mark addresses resolve through the
+  operators' `motion_endpoint('`')`, and `:e`/`:w` share one
+  filename-recording helper. Net feature cost: 685 bytes — 230 → 235
+  records.
+
+### 2.6 → 2.6.1
+
+Bug-fix release: **inserts larger than the free gap were silently
+dropped** — `p`/`P` of a big yank, `o`/`O` at a zero-byte gap, and the
+`.` replay of insert/change text. All 147 + 18 tests pass (5 large-file
+regressions added).
+
+- In a large (window-slid) file the buffer loads full, leaving only
+  `GAP_MIN` (256) bytes of gap. `put_yank` called `gb_insert()` without
+  checking the result, so putting a yank bigger than the gap did
+  nothing — while still setting the modified flag and a bogus undo
+  record. Easy to hit since 2.6: `y`a` yanks arbitrarily large ranges.
+- Fixed with `gb_insert_room()` (gap.c): inserts in gap-sized chunks and
+  swaps the window out (`gb_make_room`) between chunks — the same
+  recovery insert-mode typing uses, generalised to block inserts. A
+  single retry would not be enough: `gb_make_room`'s reload also leaves
+  only a `GAP_MIN` gap.
+- When a swap happens the reload invalidates marks and the undo record,
+  so the put skips the undo save (`u` is then a no-op, as after any
+  window shift) and repaints from scratch. On a mid-put disk-full error
+  the put reports `Buffer full`.
+- The same recovery now covers `o`/`O` (their newline is inserted
+  through `nl_room`, reachable with a zero-byte gap after insert-mode
+  typing exactly fills the window) and the `.` replay of insert/change
+  text (`dot_ins` in erepeat.c, deduplicating the two copies of the
+  replay-insert tail). Only `:r` still stops early at a full window
+  (documented limitation; nothing is lost).
+- Size: all three fixes cost 107 bytes net — one record, 229 → 230.
+  `gb_insert_room` is hand assembly in cstart.as (args in globals,
+  `gir_pos` chains consecutive inserts, a −1 failure passes through
+  the chain); offsets came from deduplicating the o/O open-line code,
+  the replay-insert tail, the `c`-operator's insert-mode entry
+  (`enter_insert` now shared with `apply_op`), and the put's undo
+  start derived as `end − total` instead of being tracked.
 
 ### 2.5 → 2.6
 

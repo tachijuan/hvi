@@ -116,11 +116,16 @@ static void chk_multi()
     if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
 }
 
+/* Shared status literals (HI-TECH C stores repeated literals per use;
+ * s_full and s_nopat are also used by the :s substitute in ex.c). */
+char s_full[]  = "Buffer full";
+char s_nopat[] = "Pattern not found";
+
 static void ins_full_retry(tmp)
 char *tmp;
 {
     if (!gb_make_room() || !gb_insert(ed.cur_pos, tmp, 1)) {
-        status_msg("Buffer full");
+        status_msg(s_full);
         return;
     }
     ed.cur_pos++;
@@ -410,7 +415,7 @@ static void do_search_move()
             status_show();
         }
     } else {
-        status_msg("Pattern not found");
+        status_msg(s_nopat);
     }
 }
 
@@ -428,51 +433,100 @@ static int yank_has_nl()
  * 0 is 'P' (above the line / at the cursor).
  * The undo record covers exactly the bytes inserted, including any
  * newline added around the yank (py_start / py_total).
+ *
+ * Inserts go through gb_insert_room: with a window-slid large file the
+ * gap can be smaller than the yank (as little as GAP_MIN bytes), and a
+ * bare gb_insert would silently drop the put.  When room-making swapped
+ * the window (gb_roomed), the reload invalidated marks and the undo
+ * record, so the undo save is skipped and the screen fully repainted.
  */
-static int  py_pos, py_light, py_start, py_total;
-static char py_nl[1] = { '\n' };   /* 1 data byte beats a store per call */
+extern char  gb_roomed;
+extern int   gir_pos, gir_len;
+extern char *gir_text;
+static int   py_pos, py_light, py_total, py_end, py_sz;
+static char  py_nl[1] = { '\n' };  /* 1 data byte beats a store per call */
+
+/* Room-making failed (disk full/IO error) mid-insert: part of the text
+ * may already be in the buffer -- repaint and report.  Shared by put
+ * and the dot-replay insert (erepeat.c). */
+void full_fail()
+{
+    ed.modified = 1;
+    scr_refresh();
+    status_msg(s_full);
+}
+
+/* Insert one byte (gir_text[0], at gir_pos -- both preset by the
+ * caller) making room when the gap is exhausted: a window packed to a
+ * zero-byte gap otherwise drops it silently.  Does not clear
+ * gb_roomed, so a command's calls accumulate the flag.  Returns the
+ * position just past the byte (== the updated gir_pos, so consecutive
+ * calls chain), or -1 on failure (reported; this call inserted
+ * nothing).  Shared by the newline inserts here (put, o/O) and the
+ * shift operators' tab insert (apply_shift, emove.c). */
+int room1()
+{
+    gir_len = 1;
+    if (gb_insert_room() < 0) {
+        status_msg(s_full);
+        return -1;
+    }
+    return gir_pos;
+}
 
 static void put_yank(after)
 int after;
 {
-    if (ed.yank_len <= 0) return;
+    if (ed.yank_len == 0) return;   /* never negative: cheap equality */
     py_light = 0;
     py_total = ed.yank_len;
+    py_sz    = gb_content_len();   /* all uses are pre-insert */
+    gb_roomed = 0;
+    /* gb_insert_room chains through gir_pos and passes a failure (-1)
+     * through, so one py_end check at the bottom covers every insert. */
     if (ed.yank_line) {
         if (after) {
-            py_pos = find_eol(ed.cur_pos);
-            if (py_pos < gb_content_len()) py_pos++;
-            py_start = py_pos;
-            if (py_pos >= gb_content_len() && py_pos > 0 &&
-                gb_char_at(py_pos - 1) != '\n') {
+            gir_pos = find_eol(ed.cur_pos);
+            if (gir_pos < py_sz) {
+                gir_pos++;          /* past the newline */
+            } else if (gir_pos > 0 && gb_char_at(gir_pos - 1) != '\n') {
                 /* Pasting below a last line that lacks its newline:
                  * add one first so the yank starts on a fresh line
-                 * instead of being glued onto this one. */
-                gb_insert(py_pos, py_nl, 1);
-                py_pos++;
+                 * instead of being glued onto this one.  (Only reachable
+                 * when find_eol hit buffer end: after the ++ above the
+                 * previous char is always '\n'.) */
+                gir_text = py_nl;
+                if (room1() < 0) return;
                 py_total++;
             }
         } else {
-            py_pos = find_bol(ed.cur_pos);
-            py_start = py_pos;
-        }
-        gb_insert(py_pos, ed.yank, ed.yank_len);
-        if (ed.yank[ed.yank_len - 1] != '\n') {
-            gb_insert(py_pos + ed.yank_len, py_nl, 1);
-            py_total++;
+            gir_pos = find_bol(ed.cur_pos);
         }
     } else {
         py_light = scr_line_is_1row(ed.cur_pos) && !yank_has_nl();
-        py_pos = ed.cur_pos;
-        if (after && py_pos < gb_content_len() && gb_char_at(py_pos) != '\n')
-            py_pos++;
-        py_start = py_pos;
-        gb_insert(py_pos, ed.yank, ed.yank_len);
+        gir_pos = ed.cur_pos;
+        if (after && gir_pos < py_sz && gb_char_at(gir_pos) != '\n')
+            gir_pos++;
     }
-    undo_save_insert(py_start, py_total);
-    ed.cur_pos = py_pos;
+    gir_text = ed.yank; gir_len = ed.yank_len;
+    py_end = gb_insert_room();
+    py_pos = py_end - ed.yank_len;   /* window may have shifted */
+    if (ed.yank_line && ed.yank[ed.yank_len - 1] != '\n') {
+        gir_text = py_nl;
+        py_end = room1();
+        py_total++;
+    }
+    if (py_end < 0) { full_fail(); return; }
     ed.modified = 1;
-    scr_edit_end(py_light);
+    ed.cur_pos = py_pos;
+    if (gb_roomed) {
+        scr_refresh();      /* window moved: repaint from scratch */
+    } else {
+        /* The undo record covers exactly the py_total inserted bytes,
+         * which end at py_end -- no need to have tracked their start. */
+        undo_save_insert(py_end - py_total, py_total);
+        scr_edit_end(py_light);
+    }
 }
 
 /* Handle yank/put/search/undo/ex commands. */
@@ -595,10 +649,12 @@ int c, count, size;
 {
     switch (c) {
 
-    /* --- Operators --- */
+    /* --- Operators (>/< shift one TAB_STOP, always linewise) --- */
     case 'd':
     case 'c':
     case 'y':
+    case '>':
+    case '<':
         g_op = c; g_count = count; g_hcnt = 1; return;
 
     case 'D':  op_motion('d', count, '$'); break;
@@ -625,31 +681,63 @@ int c, count, size;
     }
 }
 
-/* Enter insert mode at the current position for entry command c. */
-static void enter_insert(c)
+/* Set up insert mode and show the mode indicator (shared tail of the
+ * insert-entry commands). */
+static void ins_start(c)
 int c;
 {
     g_ins_cmd = c;
-    undo_save_insert(ed.cur_pos, 0);
     ed.mode = MODE_INSERT;
     scr_show_status(msg_insert);
 }
 
-/* Open a new line at pos and enter insert mode (o and O). */
-static char ol_nl = '\n';
-
-static void open_line(cmd, pos)
-int cmd, pos;
+/* Enter insert mode at the current position for entry command c.
+ * Exported: apply_op (emove.c) shares it for the 'c' operator. */
+void enter_insert(c)
+int c;
 {
-    g_ins_cmd = cmd;
-    undo_save_insert(pos, 0);
-    gb_insert(pos, &ol_nl, 1);
+    undo_save_insert(ed.cur_pos, 0);
+    ins_start(c);
+}
+
+/* Open a new line and enter insert mode: 'O' above the cursor's line,
+ * 'o' below it (first adding the last line's missing newline when the
+ * buffer doesn't end in one). */
+static void open_line(cmd)
+int cmd;
+{
+    static int pos, sz;
+    gb_roomed = 0;
+    gir_text  = py_nl;          /* both room1 calls insert a newline */
+    if (cmd == 'O') {
+        mv_bol();
+        gir_pos = ed.cur_pos;
+    } else {
+        gir_pos = find_eol(ed.cur_pos);
+        sz = gb_content_len();
+        if (gir_pos < sz) {
+            gir_pos++;
+        } else if (sz > 0 && gb_char_at(sz - 1) != '\n') {
+            /* last line lacks its newline: add it first (room1
+             * leaves gir_pos just past it -- the calls chain) */
+            if (room1() < 0) return;
+        }
+    }
+    pos = room1();
+    if (pos < 0) return;        /* no room: don't enter insert mode */
+    pos--;                      /* cursor onto the fresh line */
     ed.cur_pos = pos;
-    ed.modified = 1;
-    ed.undo.len++;
-    scr_adj();
-    ed.mode = MODE_INSERT;
-    scr_show_status(msg_insert);
+    if (gb_roomed) {
+        /* Window swapped: the reload invalidated the undo record (as
+         * after any room-making during insert) -- full repaint. */
+        ed.modified = 1;
+        scr_refresh();
+    } else {
+        undo_save_insert(pos, 1);   /* the newline; typing extends it */
+        ed.modified = 1;
+        scr_adj();
+    }
+    ins_start(cmd);
 }
 
 static void normal_edit_cmd(c, count, size)
@@ -671,22 +759,8 @@ int c, count, size;
         break;
 
     case 'o':
-        {
-            int eol = find_eol(ed.cur_pos);
-            int sz  = gb_content_len();
-            if (eol < sz) eol++;
-            if (eol >= sz && sz > 0 && gb_char_at(sz - 1) != '\n') {
-                /* last line lacks its newline: add it first */
-                gb_insert(sz, &ol_nl, 1);
-                eol = sz + 1;
-            }
-            open_line('o', eol);
-        }
-        break;
-
     case 'O':
-        mv_bol();
-        open_line('O', ed.cur_pos);
+        open_line(c);
         break;
 
     case 's':  op_motion('c', count, 'l'); break;
@@ -834,7 +908,6 @@ int c;
                 nc_to--;
             if (op != 'y')
                 set_dot(op, op, count, 0);
-            if (op == 'c') g_ins_cmd = 'c';
             apply_op(op, nc_from, nc_to, 1);
             return;
         }
@@ -848,7 +921,6 @@ int c;
             return;
         if (op != 'y')
             set_dot(op, c, count, me_mkc);
-        if (op == 'c') g_ins_cmd = 'c';
         apply_op(op, ed.cur_pos, endpoint, linewise);
         return;
     }

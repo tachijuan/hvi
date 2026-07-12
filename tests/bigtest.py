@@ -138,6 +138,71 @@ def main():
     check("big: edits survive window shift", ok and got == want,
           "head=%r tail=%r" % ((got or "")[:15], (got or "")[-30:]))
 
+    # --- put larger than the free gap (v2.6.1 regression) ---
+    # A freshly loaded window keeps only GAP_MIN (256) bytes of gap; a
+    # put bigger than that must swap the window out (gb_insert_room),
+    # not silently drop the yank.
+    off20 = sum(len(l) + 1 for l in big_lines[:20])   # start of line 21
+    off25 = sum(len(l) + 1 for l in big_lines[:25])   # start of line 26
+    off1  = len(big_lines[0]) + 1                     # start of line 2
+
+    rm_file("BIG.TXT"); put_file("BIG.TXT", big)
+    sess.start_hvi("BIG.TXT")
+    sess.keys("ma20jy`ap")     # ~440-byte charwise yank, put at pos 1
+    ok = sess.quit_expect_prompt(":wq\r", timeout=120)
+    want = big[0] + big[0:off20] + big[1:]
+    got = get_file("BIG.TXT")
+    check("big: put > gap charwise (y`a p)", ok and got == want,
+          "lens got=%s want=%s" % (len(got or ""), len(want)))
+
+    rm_file("BIG.TXT"); put_file("BIG.TXT", big)
+    sess.start_hvi("BIG.TXT")
+    sess.keys("25Yp")          # ~520-byte linewise yank, put below line 1
+    ok = sess.quit_expect_prompt(":wq\r", timeout=120)
+    want = big[:off1] + big[:off25] + big[off1:]
+    got = get_file("BIG.TXT")
+    check("big: put > gap linewise (25Y p)", ok and got == want,
+          "lens got=%s want=%s" % (len(got or ""), len(want)))
+
+    # the window swap invalidated the undo record: u must be a no-op
+    rm_file("BIG.TXT"); put_file("BIG.TXT", big)
+    sess.start_hvi("BIG.TXT")
+    sess.keys("ma20jy`apu")
+    ok = sess.quit_expect_prompt(":wq\r", timeout=120)
+    want = big[0] + big[0:off20] + big[1:]
+    got = get_file("BIG.TXT")
+    check("big: put > gap then u (undo inert)", ok and got == want,
+          "lens got=%s want=%s" % (len(got or ""), len(want)))
+
+    # --- o at a zero-byte gap (v2.6.1 regression) ---
+    # Typing exactly the free gap (256 bytes) leaves gap 0; 'o' must then
+    # swap the window out for its newline, not silently stay on the line.
+    rm_file("BIG.TXT"); put_file("BIG.TXT", big)
+    sess.start_hvi("BIG.TXT")
+    sess.keys("i" + "Q" * 256 + "\x1b")   # fill the gap exactly
+    sess.keys("oNEW\x1b")                 # needs room for its newline
+    ok = sess.quit_expect_prompt(":wq\r", timeout=120)
+    want = "Q" * 256 + big[:off1] + "NEW\n" + big[off1:]
+    got = get_file("BIG.TXT")
+    check("big: o at zero gap", ok and got == want,
+          "lens got=%s want=%s" % (len(got or ""), len(want)))
+
+    # --- dot replay larger than the gap (v2.6.1 regression) ---
+    # 128-byte insert leaves gap 128; the first '.' fits exactly (gap 0),
+    # the second must swap the window out instead of dropping the text.
+    off2 = off1 + len(big_lines[1]) + 1               # start of line 3
+    rm_file("BIG.TXT"); put_file("BIG.TXT", big)
+    sess.start_hvi("BIG.TXT")
+    sess.keys("i" + "Q" * 128 + "\x1b")
+    sess.keys("j0.")                      # replay fits exactly: gap -> 0
+    sess.keys("j0.")                      # replay must make room
+    ok = sess.quit_expect_prompt(":wq\r", timeout=120)
+    Q = "Q" * 128
+    want = Q + big[:off1] + Q + big[off1:off2] + Q + big[off2:]
+    got = get_file("BIG.TXT")
+    check("big: dot replay > gap", ok and got == want,
+          "lens got=%s want=%s" % (len(got or ""), len(want)))
+
     sess.close()
     print("\n---- %d tests, %d failed ----" %
           (len(RESULTS), sum(1 for _, ok, _ in RESULTS if not ok)))

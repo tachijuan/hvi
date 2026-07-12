@@ -13,7 +13,8 @@
 extern Editor ed;
 extern char s_rb[];      /* "rb" fopen mode, defined in gap.c */
 
-int motion_endpoint();   /* fwd decl: used by the word motions below */
+int  motion_endpoint();  /* fwd decl: used by the word motions below */
+void enter_insert();     /* edit.c: insert-mode entry for the 'c' op */
 
 /* ------------------------------------------------------------------ */
 /*  Shared status-line helpers                                          */
@@ -328,6 +329,8 @@ int pos;
  * (6-byte IX-relative spills) under HI-TECH C. */
 static int me_mk_n;
 
+static char s_nomark[] = "Mark not set";
+
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
 int *linewise;
@@ -455,7 +458,7 @@ int *linewise;
         me_mk_n = ed.marks[me_mk_n];
         /* unsigned test: catches unset (-1) and past-the-end in one */
         if ((unsigned)me_mk_n > (unsigned)size) {
-            status_msg("Mark not set");
+            status_msg(s_nomark);
             return -1;
         }
         return me_mk_n;
@@ -509,14 +512,103 @@ int from, len, linewise;
     return yr_save;
 }
 
+/*
+ * Shift every line touched by [from, to) one TAB_STOP right ('>') or
+ * left ('<').  Always linewise (vi): the range expands to whole lines;
+ * an exclusive endpoint in column 0 leaves that line out.  '>' inserts
+ * one tab (empty lines are skipped, and gb_insert_room recovers when
+ * the gap is exhausted); '<' removes up to TAB_STOP columns of leading
+ * blanks.  Lines are walked bottom-up, so each line-start position is
+ * unaffected by the edits already made below it -- this also survives
+ * a window swap (the count, not positions, drives the loop).
+ * The cursor lands on the first non-blank of the topmost shifted line
+ * (vi).  A single-line shift is undoable; more are scattered edits, so
+ * the undo record is invalidated (like :s).  Returns non-zero when
+ * exactly one line was shifted (the caller's light-repaint hint).
+ */
+extern char  gb_roomed;
+
+static char sh_tab[1] = { '\t' };
+static int  sh_nl, sh_i, sh_n, sh_c, sh_ch, sh_ls;
+static char sh_did;
+
+/* edit.c: 1-byte insert (gir_pos/gir_text) via gb_insert_room. */
+int room1();
+extern int   gir_pos;
+extern char *gir_text;
+
+/* Arguments in globals (set by the caller, like gir_*): a paramless
+ * function compiles frameless, and the loop re-reads sh_op with 3-byte
+ * absolute loads instead of 6-byte IX-relative ones. */
+int sh_op, sh_from, sh_to;
+
+int apply_shift()
+{
+    gb_roomed = 0;
+    sh_did = 0;
+    if (sh_from > sh_to) { sh_i = sh_from; sh_from = sh_to; sh_to = sh_i; }
+    if (sh_to != sh_from) sh_to--;  /* last char (to >= from: equality) */
+    sh_ls   = find_bol(sh_to);      /* bottom line first */
+    sh_from = find_bol(sh_from);
+    sh_nl = gb_count_nl(sh_from, sh_ls - sh_from) + 1;
+    sh_i  = sh_nl;                  /* >= 1 always */
+    for (;;) {
+        if (sh_op == '>') {
+            sh_ch = gb_char_at(sh_ls);   /* -1 at buffer end */
+            if (sh_ch >= 0 && sh_ch != '\n') {
+                gir_pos = sh_ls; gir_text = sh_tab;
+                sh_n = room1();
+                if (sh_n < 0) break;
+                sh_ls = sh_n - 1;       /* window may have shifted */
+                undo_save_insert(sh_ls, 1);
+                sh_did = 1;
+            }
+        } else {
+            /* consume leading blanks up to one TAB_STOP of columns */
+            sh_n = sh_ls;
+            sh_c = 0;
+            while (sh_c < TAB_STOP) {
+                sh_ch = gb_char_at(sh_n);
+                if (sh_ch == ' ')       sh_c++;
+                else if (sh_ch == '\t') sh_c = TAB_STOP;  /* sh_c < 8:
+                                           (sh_c|7)+1 is always 8 */
+                else break;
+                sh_n++;
+            }
+            if (sh_n != sh_ls) {    /* sh_n >= sh_ls: cheap equality */
+                undo_save_delete(sh_ls, sh_n - sh_ls);
+                gb_delete(sh_ls, sh_n - sh_ls);
+                sh_did = 1;
+            }
+        }
+        if (--sh_i == 0) break;
+        sh_ls = find_bol(sh_ls - 1);
+    }
+    if (sh_nl != 1 || gb_roomed)    /* sh_nl >= 1: != 1 means > 1 */
+        ed.undo.type = UNDO_NONE;   /* scattered edits: not undoable */
+    ed.cur_pos  = bnb_of(sh_ls);    /* topmost line, first non-blank */
+    ed.cur_vrow = -1;
+    set_wcol();
+    if (sh_did) ed.modified = 1;
+    return sh_nl == 1;
+}
+
 void apply_op(op, from, to, linewise)
 int op, from, to, linewise;
 {
     static int len, save, t, size, light;
 
+    if (op == '>' || op == '<') {
+        sh_op = op; sh_from = from; sh_to = to;
+        t = apply_shift();
+        if (gb_roomed) scr_refresh();
+        else           scr_edit_end(t);
+        return;
+    }
+
     if (from > to) { t = from; from = to; to = t; }
     len = to - from;
-    if (len <= 0 && op != 'c') return;
+    if (len == 0 && op != 'c') return;  /* len >= 0 after the swap */
 
     /* Charwise edit confined to a single-row line: repaint one row
      * instead of cursor-to-bottom (checked before the delete). */
@@ -553,11 +645,8 @@ int op, from, to, linewise;
 
     scr_edit_end(light);
 
-    if (op == 'c') {
-        undo_save_insert(ed.cur_pos, 0);
-        ed.mode = MODE_INSERT;
-        scr_show_status(msg_insert);
-    }
+    if (op == 'c')
+        enter_insert('c');   /* edit.c: undo arm + insert-mode entry */
 }
 
 /* ------------------------------------------------------------------ */

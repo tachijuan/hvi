@@ -806,6 +806,27 @@ int gb_make_room()
     return 1;
 }
 
+/*
+ * State for gb_insert_room (cstart.as): insert even when the gap is
+ * smaller than gir_len -- fill the gap, swap the window out
+ * (gb_make_room) and continue; the recovery the insert-mode keystroke
+ * path uses, generalised to block inserts (put, o/O, dot replay).
+ *
+ * The arguments live in these globals (gir_pos / gir_text / gir_len,
+ * set by the caller): gir_pos is both input and output, so consecutive
+ * inserts chain without moving the position back and forth.  The
+ * function returns the position just past the inserted text (== the
+ * final gir_pos), or -1 when room cannot be made (disk full / I/O
+ * error) -- gir_pos is then -1 as well, and the entry guard passes the
+ * failure through the rest of a chain, so one check after the last
+ * call covers all of them.  gb_roomed is set when a swap happened (the
+ * reload invalidated marks and the undo record, and the caller must
+ * repaint from scratch); the caller clears it before the first call.
+ */
+char  gb_roomed;
+int   gir_pos, gir_len;
+char *gir_text;
+
 /* ------------------------------------------------------------------ */
 /*  Large-file line navigation                                          */
 /* ------------------------------------------------------------------ */
@@ -978,19 +999,33 @@ int pos;
  * or the content length.  Forward CPIR scan (gb_memchr), split at the
  * gap like find_bol.
  */
-static int feol_r, feol_size;
+/*
+ * Next occurrence of byte c at logical position >= pos: CPIR scans
+ * (gb_memchr, 21 T-states/byte) over the two gap segments.  Returns
+ * the position, or the content length when absent (pos itself when
+ * pos is already past the end).  Backs find_eol ('\n') and the :s
+ * substitute's candidate scan (ex.c).
+ */
+static int gfc_r, gfc_size;
+
+int gb_find_ch(pos, c)
+int pos, c;
+{
+    gfc_size = gb_content_len();
+    if (pos >= gfc_size) return pos;
+    if (pos < 0) pos = 0;
+    if (pos < ed.gb.gstart) {
+        gfc_r = gb_memchr(ed.gb.buf + pos, ed.gb.gstart - pos, c);
+        if (gfc_r >= 0) return pos + gfc_r;
+        pos = ed.gb.gstart;
+    }
+    gfc_r = gb_memchr(ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos,
+                      gfc_size - pos, c);
+    return (gfc_r >= 0) ? pos + gfc_r : gfc_size;
+}
+
 int find_eol(pos)
 int pos;
 {
-    feol_size = gb_content_len();
-    if (pos >= feol_size) return pos;
-    if (pos < 0) pos = 0;
-    if (pos < ed.gb.gstart) {
-        feol_r = gb_memchr(ed.gb.buf + pos, ed.gb.gstart - pos, '\n');
-        if (feol_r >= 0) return pos + feol_r;
-        pos = ed.gb.gstart;
-    }
-    feol_r = gb_memchr(ed.gb.buf + (ed.gb.gend - ed.gb.gstart) + pos,
-                       feol_size - pos, '\n');
-    return (feol_r >= 0) ? pos + feol_r : feol_size;
+    return gb_find_ch(pos, '\n');
 }

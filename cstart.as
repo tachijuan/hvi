@@ -65,6 +65,8 @@
     GLOBAL  _con_write, _gb_cntnl
     GLOBAL  _gb_char_at, _gb_memchr, _gb_memrchr, _ed
     GLOBAL  _dsk_u
+    GLOBAL  _gb_insert_room, _gb_insert, _gb_make_room
+    GLOBAL  _gb_roomed, _gir_pos, _gir_text, _gir_len
     GLOBAL  _fill_fcb, _fcb_user, _fcb_drive
 
 ; Editor-struct field offsets used by _gb_char_at.  GapBuf is the FIRST
@@ -76,6 +78,11 @@ GBBUF   equ 0
 GBSIZE  equ 2
 GBGST   equ 4
 GBGND   equ 6
+; _gb_insert_room also reads/writes ed.cur_pos at _ed+74
+; (= 8 GapBuf + 64 filename[PATH_MAX] + 2 modified).  If PATH_MAX or
+; the Editor members before cur_pos change, update EDCURP (hvi.h has a
+; matching reminder at the cur_pos field).
+EDCURP  equ 74
 
 start:
     ; --- Stack setup -------------------------------------------------
@@ -401,6 +408,83 @@ cnl_scan:
 cnl_done:
     ex      de,hl               ; return count in HL
     pop     ix
+    ret
+
+    ; --- gb_insert_room: block insert with room-making -----------------
+    ; int gb_insert_room(void)
+    ; Arguments in globals (set by the caller): _gir_pos / _gir_text /
+    ; _gir_len.  Inserts min(gap, len) bytes at a time via _gb_insert;
+    ; when the gap is exhausted it saves the insertion point in
+    ; ed.cur_pos, calls _gb_make_room (window swap: sets _gb_roomed so
+    ; the caller repaints and skips the invalidated undo record), and
+    ; continues at the re-mapped ed.cur_pos.  Returns HL = position
+    ; just past the inserted text (== final gir_pos), or -1 with
+    ; gir_pos = -1 when make_room fails (disk full / I/O error).  A
+    ; negative gir_pos on entry returns -1 immediately, so chained
+    ; calls propagate an earlier failure and need only one check.
+    ; Terminates: a successful make_room leaves a gap >= GAP_MIN
+    ; (gb_fill stops at size - GAP_MIN), so every pass makes progress.
+_gb_insert_room:
+    ld      hl,(_gir_pos)
+    bit     7,h
+    jr      nz,gib_bad          ; negative pos: propagate failure
+gib_loop:
+    ld      hl,(_ed+GBGND)      ; n = gap = gend - gstart  (>= 0)
+    ld      de,(_ed+GBGST)
+    or      a
+    sbc     hl,de
+    ld      de,(_gir_len)       ; if n > len then n = len
+    ld      a,h                 ;   (unsigned compare: both < 32768)
+    cp      d
+    jr      c,gib_n             ; gap < len: n = gap
+    jr      nz,gib_len          ; gap > len: n = len
+    ld      a,l
+    cp      e
+    jr      c,gib_n
+gib_len:
+    ex      de,hl
+gib_n:
+    push    hl                  ; save n
+    push    hl                  ; gb_insert(gir_pos, gir_text, n)
+    ld      hl,(_gir_text)
+    push    hl
+    ld      hl,(_gir_pos)
+    push    hl
+    call    _gb_insert          ; n <= gap: cannot fail
+    pop     bc
+    pop     bc
+    pop     bc
+    pop     de                  ; DE = n
+    ld      hl,(_gir_pos)       ; gir_pos += n
+    add     hl,de
+    ld      (_gir_pos),hl
+    ld      hl,(_gir_text)      ; gir_text += n
+    add     hl,de
+    ld      (_gir_text),hl
+    ld      hl,(_gir_len)       ; gir_len -= n
+    or      a
+    sbc     hl,de
+    ld      (_gir_len),hl
+    ld      a,h                 ; n was clamped to len, so == 0 is exact
+    or      l
+    jr      nz,gib_more
+    ld      hl,(_gir_pos)       ; done: return past-the-end position
+    ret
+gib_more:
+    ld      hl,(_gir_pos)       ; carry insertion point across the swap
+    ld      (_ed+EDCURP),hl
+    call    _gb_make_room
+    ld      a,h
+    or      l
+    jr      z,gib_bad
+    ld      a,1
+    ld      (_gb_roomed),a
+    ld      hl,(_ed+EDCURP)
+    ld      (_gir_pos),hl
+    jr      gib_loop
+gib_bad:
+    ld      hl,-1
+    ld      (_gir_pos),hl
     ret
 
     ; --- dsk_u: bdos_disk within a file's user area --------------------

@@ -25,8 +25,8 @@ pip3 install --user pyte
 ```sh
 cd /tmp/hvi-test
 python3 build.py      # copies repo sources (LF->CRLF), compiles, links HVI.COM
-python3 hvitest.py    # 147 functional tests (movement, edit, ex, undo, marks, screen)
-python3 bigtest.py    # 13 large-file sliding-window and paging tests
+python3 hvitest.py    # 187 functional tests (movement, edit, ex, :s, shift, undo, marks, screen)
+python3 bigtest.py    # 18 large-file sliding-window, paging and insert-recovery tests
 python3 genasm.py X   # dump OPTIM-stage assembly for module X (debugging)
 ```
 

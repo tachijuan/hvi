@@ -322,6 +322,86 @@ def main():
     check("ex :r file", ok and get_file("T.TXT") == "one\ntwo\nthree\n",
           "got %r" % get_file("T.TXT"))
 
+    # ---------- shift operators >> << ----------
+    file_test(sess, "shift >>", "one\ntwo\n", ">>", "\tone\ntwo\n")
+    file_test(sess, "shift 2>>", "a\nb\nc\n", "2>>", "\ta\n\tb\nc\n")
+    file_test(sess, "shift << tab", "\tone\n", "<<", "one\n")
+    file_test(sess, "shift << few spaces", "    one\n", "<<", "one\n")
+    file_test(sess, "shift << 8 of 10 spaces", "          x\n", "<<",
+              "  x\n")
+    file_test(sess, "shift << mixed to tabstop", "   \tx\n", "<<", "x\n")
+    file_test(sess, "shift << second tab stays", "\t\tx\n", "<<", "\tx\n")
+    file_test(sess, "shift << no indent no-op", "abc\n", "<<:q\r", "abc\n",
+              quit_seq="")           # no edit: :q must exit cleanly
+    file_test(sess, "shift >j", "a\nb\nc\n", ">j", "\ta\n\tb\nc\n")
+    file_test(sess, "shift >G", "a\nb\nc\n", "j>G", "a\n\tb\n\tc\n")
+    file_test(sess, "shift <k", "\ta\n\tb\n", "j<k", "a\nb\n")
+    file_test(sess, "shift > mark mid-line", "a\nb\ncd\n", "jjlmagg>`a",
+              "\ta\n\tb\n\tcd\n")
+    file_test(sess, "shift > mark col0 excl", "a\nb\nc\n", "jjmagg>`a",
+              "\ta\n\tb\nc\n")
+    file_test(sess, "shift >> empty line skipped", "a\n\nb\n", ">G",
+              "\ta\n\n\tb\n")
+    file_test(sess, "shift dot repeat", "a\nb\n", ">>j.", "\ta\n\tb\n")
+    file_test(sess, "shift single undo", "a\n", ">>u", "a\n")
+    file_test(sess, "shift cursor first non-blank", "a\nb\n", ">>rX",
+              "\tX\nb\n")
+    # ex-range form (same engine)
+    file_test(sess, "ex :> current line", "a\nb\n", "j:>\r", "a\n\tb\n")
+    file_test(sess, "ex :1,2>", "a\nb\nc\n", ":1,2>\r", "\ta\n\tb\nc\n")
+    file_test(sess, "ex :2,$<", "\ta\n\tb\n\tc\n", ":2,$<\r", "\ta\nb\nc\n")
+    file_test(sess, "ex :'a,.>", "a\nb\nc\n", "majj:'a,.>\r",
+              "\ta\n\tb\n\tc\n")
+    file_test(sess, "ex :3,1>", "a\nb\nc\n", ":3,1>\r", "\ta\n\tb\n\tc\n")
+
+    # ---------- :s substitute ----------
+    file_test(sess, "subst first only", "one two one\n", ":s/one/1/\r",
+              "1 two one\n")
+    file_test(sess, "subst g flag", "one two one\n", ":s/one/1/g\r",
+              "1 two 1\n")
+    file_test(sess, "subst case sensitive", "One one ONE\n", ":s/one/X/g\r",
+              "One X ONE\n")
+    file_test(sess, "subst current line only", "aa\naa\n", "j:s/aa/bb/\r",
+              "aa\nbb\n")
+    file_test(sess, "subst range numeric", "aa\naa\naa\naa\n",
+              ":2,3s/aa/bb/\r", "aa\nbb\nbb\naa\n")
+    file_test(sess, "subst range dot", "aa\naa\naa\n", "j:.,3s/aa/bb/\r",
+              "aa\nbb\nbb\n")
+    file_test(sess, "subst range mark", "aa\naa\naa\naa\n",
+              "jmaG:'a,.s/aa/bb/\r", "aa\nbb\nbb\nbb\n")
+    file_test(sess, "subst range dollar", "aa\naa\naa\n", ":2,$s/aa/bb/\r",
+              "aa\nbb\nbb\n")
+    file_test(sess, "subst backwards range", "aa\naa\naa\n",
+              ":3,1s/aa/bb/\r", "bb\nbb\nbb\n")
+    file_test(sess, "subst empty new deletes", "xabcy\n", ":s/abc//\r",
+              "xy\n")
+    file_test(sess, "subst longer new", "ab cd\n", ":s/ab/wxyz/\r",
+              "wxyz cd\n")
+    file_test(sess, "subst g per line", "zz zz\nzz\n", ":1,2s/zz/q/g\r",
+              "q q\nq\n")
+    file_test(sess, "subst no trailing slash", "abc\n", ":s/abc/xyz\r",
+              "xyz\n")
+    # cursor lands on the last substituted line
+    file_test(sess, "subst cursor at last line", "aa\naa\naa\n",
+              ":1,2s/aa/bb/\rrX", "bb\nXb\naa\n")
+    # marks survive and track a substitute made above them
+    file_test(sess, "subst keeps later mark", "one\ntwo\nthree\n",
+              "jjma:1s/one/longer/\r`arX", "longer\ntwo\nXhree\n")
+    # not-found and unknown-command reporting still intact
+    rm_file("T.TXT"); put_file("T.TXT", "abc\n")
+    sess.start_hvi("T.TXT")
+    sess.keys(":s/zzz/y/\r")
+    lines = sess.screen_lines()
+    check("subst not found msg", "Pattern not found" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys(":'#,1s/a/b/\r")             # invalid mark name in range
+    check("subst bad mark no-op", not sess.alive_prompt(), "editor died")
+    sess.keys(":1,'zs/a/b/\r")             # unset mark in range
+    lines = sess.screen_lines()
+    check("subst unset mark msg", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.quit_expect_prompt(":q!\r")
+
     # :N goto line
     file_test(sess, "ex :N goto line", BASIC, ":4\rrX",
               BASIC.replace("juliet", "Xuliet"))

@@ -338,6 +338,28 @@ Repeat the last search in the opposite direction.
 .PP
 Patterns are plain-text strings (no regular expressions).
 .\"
+.SS Shift
+.TP
+.B >>\fR, \fP<<
+Shift the current line (with a count: that many lines) one tab stop
+right or left.
+.B >
+and
+.B <
+also take any motion
+.RB ( >j ,
+.BR >G ,
+.BR >`a ,
+\&...) and always act on whole lines.
+.B >
+inserts a tab (empty lines are skipped);
+.B <
+removes up to one tab stop of leading blanks.
+The cursor moves to the first non-blank of the topmost shifted line.
+A single-line shift can be undone with
+.BR u ;
+multi-line shifts cannot.
+.\"
 .SS Marks
 .TP
 .BI m { a-z }
@@ -478,6 +500,43 @@ Go to line number
 .TP
 .B :$
 Go to the last line.
+.TP
+.BI :[range]s/ old / new /[g]
+Substitute
+.I old
+with
+.IR new :
+a plain-text, case-sensitive match (no regular expressions).
+Without
+.B g
+only the first occurrence in each line is replaced.
+The range is one address or
+.IR addr1,addr2
+(either order): a line number,
+.B .
+(the cursor's line),
+.B $
+(the last line), or
+.BI ' { a-z }
+(the mark's line); the default is the cursor's line.
+The trailing
+.B /
+may be omitted; an empty
+.I new
+deletes
+.IR old .
+The cursor moves to the last substituted line.
+A substitute cannot be undone with
+.BR u .
+.TP
+.BI :[range]> " or " :[range]<
+Shift the range's lines one tab stop right or left
+(the same engine as the
+.B >>
+and
+.B <<
+operators; the range forms are those of
+.BR :s ).
 .\"
 .\" ----------------------------------------------------------------
 .SH STATUS LINE

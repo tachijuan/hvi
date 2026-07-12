@@ -32,6 +32,11 @@ extern int ls_from;
 /* CPIR newline counter over raw memory (cstart.as). */
 extern int gb_cntnl();
 
+void full_fail();       /* room-making failed mid-insert (edit.c) */
+extern char  gb_roomed;
+extern int   gir_pos, gir_len;
+extern char *gir_text;
+
 /* ------------------------------------------------------------------ */
 
 /* Pull the cursor back off a trailing newline (shared post-edit fixup;
@@ -79,6 +84,32 @@ int cmd;
     }
 }
 
+/*
+ * Insert the recorded dot text at pos through gb_insert_room: a
+ * window-slid buffer can have a gap smaller than dot_len, and a bare
+ * gb_insert would silently drop the replay.  Sets cursor and modified;
+ * skips the undo record when the window swapped (the reload invalidated
+ * it -- callers then check gb_roomed and repaint from scratch).
+ * Returns the start of the inserted text, or -1 on failure (reported).
+ */
+static int dot_ins(pos)
+int pos;
+{
+    gb_roomed = 0;
+    gir_pos = pos; gir_text = ed.dot_text; gir_len = ed.dot_len;
+    if (gb_insert_room() < 0) {
+        full_fail();
+        return -1;
+    }
+    pos = gir_pos - ed.dot_len;     /* window may have shifted */
+    if (!gb_roomed)
+        undo_save_insert(pos, ed.dot_len);
+    ed.cur_pos = gir_pos;
+    cur_back_nl();
+    ed.modified = 1;
+    return pos;
+}
+
 /* Replay c/C: delete the range then re-insert stored text. */
 void dot_replay_c(n)
 int n;
@@ -108,10 +139,8 @@ int n;
         ed.modified = 1;
     }
     if (ed.dot_len > 0) {
-        undo_save_insert(ins_pos, ed.dot_len);
-        gb_insert(ins_pos, ed.dot_text, ed.dot_len);
-        ed.cur_pos = ins_pos + ed.dot_len;
-        cur_back_nl();
+        if (dot_ins(ins_pos) < 0) return;
+        if (gb_roomed) { scr_refresh(); return; }
     }
     scr_edit_end(light);
 }
@@ -202,15 +231,17 @@ int count;
         break;
 
     case 'd':
-        if (ed.dot_motion == 'd') {
-            /* Same line_span walk as dd in edit.c -- O(range). */
+    case '>':
+    case '<':
+        if (ed.dot_motion == ed.dot_cmd) {
+            /* dd / >> / <<: same line_span walk as edit.c -- O(range). */
             to = line_span(ed.dot_count);
-            apply_op('d', ls_from, to, 1);
+            apply_op(ed.dot_cmd, ls_from, to, 1);
         } else {
             linewise = 0;
             endpoint = motion_endpoint(ed.dot_motion, ed.dot_count, &linewise);
             if (endpoint >= 0)
-                apply_op('d', ed.cur_pos, endpoint, linewise);
+                apply_op(ed.dot_cmd, ed.cur_pos, endpoint, linewise);
         }
         break;
 
@@ -221,16 +252,14 @@ int count;
     default:
         if (ed.dot_len > 0) {
             ins_position(ed.dot_cmd);
-            ins_pos = ed.cur_pos;
             /* Check if inserted text crosses a line boundary. */
             has_nl = gb_cntnl(ed.dot_text, ed.dot_len) != 0;
-            del = !has_nl && scr_line_is_1row(ins_pos);   /* light path */
-            undo_save_insert(ins_pos, ed.dot_len);
-            gb_insert(ins_pos, ed.dot_text, ed.dot_len);
-            ed.cur_pos = ins_pos + ed.dot_len;
-            cur_back_nl();
-            ed.modified = 1;
-            if (has_nl) {
+            del = !has_nl && scr_line_is_1row(ed.cur_pos);  /* light path */
+            ins_pos = dot_ins(ed.cur_pos);
+            if (ins_pos < 0) break;
+            if (gb_roomed) {
+                scr_refresh();      /* window moved: repaint everything */
+            } else if (has_nl) {
                 /* Multi-line insert: redraw from insertion point. */
                 ed.cur_pos = ins_pos;
                 scr_adj();
