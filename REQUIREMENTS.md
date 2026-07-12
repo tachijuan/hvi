@@ -2,7 +2,7 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.7.1  
+**Version:** 2.7.2  
 **Date:** 2026-07-12
 
 ---
@@ -932,7 +932,7 @@ All screen output is sized to the minimum needed for the operation. From cheapes
 | Cursor move only | `scr_show_status()` | `h`, `l`, `0`, `^`, `$`, `f`, `F`, `;`, `,` — text unchanged, cursor stays on-screen |
 | Terminal scroll + N rows | `scr_update_after_move(old_top)` | Any move where the viewport shifts by fewer than a screenful of visual rows — the scroll region scrolls and only the rows that came into view are painted (Ctrl-D/U half-pages use this too) |
 | One screen row | `scr_edit_end(1)` | Charwise edits confined to a single-row line with no newline change (`x`, small `p`, in-line `d`/`c`, undo of same) — repaints exactly one row plus the status bar |
-| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `r`, `~` fallbacks, insert-mode Ctrl-U, Ctrl-W (within line), tab edits |
+| Current logical line [+ 1 extra] | `scr_redraw_cur_line()` | `r`, `~` fallbacks, insert-mode Ctrl-U, Ctrl-W (within line), tab edits, and mid-line typing/backspace when a tab lies between the cursor and end of line (`tail_has_tab()`, v2.7.2 — the one-column `ESC[@`/`ESC[P` shift would misplace the tab-aligned tail) |
 | Cursor row to bottom | `scr_redraw_from_cur()` | `J`, `o`, `O`, `p`, `P`, `u`, `dw`/`dd`/`cw`/etc. (when not single-row), insert-mode Enter/BS-over-newline/Ctrl-W-across-newline, dot-repeat of insert/join — content above cursor unchanged |
 | Full screen | `scr_refresh()` | `G`, Ctrl-F/B, `:` commands, large-file window reloads, viewport shift after any operation |
 
@@ -970,7 +970,7 @@ ANSI escape sequences used:
 | `ESC[7m` / `ESC[0m` | Reverse video on / attributes off (status bar) |
 | `ESC[1;Nr` / `ESC[r` | Set scroll region to the text area / reset at exit |
 | `ESC M` | Reverse Index (scroll down one row) |
-| `ESC[@` / `ESC[P` | Insert / delete one character cell (mid-line insert-mode typing) |
+| `ESC[@` / `ESC[P` | Insert / delete one character cell (mid-line insert-mode typing; only when no tab follows on the line — a tab's rendered width absorbs the one-column shift) |
 | `ESC[C` | Cursor right (short moves under cursor tracking) |
 | `ESC[999;999H` + `ESC[6n` | Terminal size query (CPR) |
 | `ESC[r;cR` | Terminal size response (parsed in `term_getsize`) |
@@ -1050,6 +1050,7 @@ For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit
 | `cpmio.c` replaces all stdio and malloc | HI-TECH C's `fopen()` allocates a heap buffer per handle; after `gb_init()` consumes the TPA there is no heap left. Direct BDOS calls with a static 3-slot HFILE pool eliminate the problem entirely and reduce binary size by avoiding buffered-I/O library code |
 | FCB sector fields from little-endian bytes | The sector number for BDOS 33 is `offset >> 7`, a `long`. A 16-bit cast before shifting truncates files > 32 KB (a historical bug); 32-bit shift/mask expressions are correct but each compiles to a ~50-byte library call in the per-sector hot path. `rd_sector`/`hvi_fseek` shift the `long` once and then read its little-endian bytes directly via `((unsigned char *)&sect)[n]` |
 | `hvi_fsize` uses exponential+binary search | BDOS 35 (Compute File Size) is not implemented by all CP/M emulators. Doubling the probe offset until BDOS 33 fails, then binary-searching the final interval, finds the sector-rounded file size in O(log N) seeks (~21 for 1 MB) without relying on BDOS 35 |
+| `tail_has_tab()` gates the `ESC[@`/`ESC[P` fast paths | The one-column insert/delete-character escapes assume a fixed-width tail; a tab between the cursor and end of line renders wider or narrower as text before it changes, so each mid-line insert-mode keystroke drifted the tab-aligned tail one column (v2.7.2, reported editing tab-separated assembly). Scanning the tail for a tab and falling back to `scr_redraw_cur_line()` keeps the cheap path for the common tab-free case |
 | `gb_reload_from` flushes edits before discarding buffer | Without the flush, navigating to a new window in a large file silently discards all in-memory edits. `gb_reload_from` calls `gb_save("HVISWP.TMP")` when `ed.modified` is set, making `tail_file` point to a complete, up-to-date snapshot before the buffer is cleared |
 | `s_reload_skip_flush` flag prevents double save | `gb_make_room()` saves to the swap file itself before calling `gb_reload_from()`. Setting `s_reload_skip_flush = 1` before the call prevents `gb_reload_from` from saving a second time (which would overwrite the complete swap with only the partial in-memory window) |
 | `gb_goto_line` for `nG` in large files | The previous `nG` implementation reloaded from byte 0 and clamped to `scr_line_count()`, which is the buffer-local line count. For a large file mid-scroll this always landed at the end of the loaded buffer. `gb_goto_line(n)` scans `tail_file` from byte 0 to find the exact byte offset of line N, positions the window there, and uses a second short scan to find the local buffer line |

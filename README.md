@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.7.1**
+**Version 2.7.2**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -434,6 +434,25 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.7.1 → 2.7.2
+
+One display fix, no size change (still 227 records). All 189 + 18
+tests pass (2 screen tests added).
+
+- **Fix: typing before a tab shifted the rest of the line out of
+  alignment** (reported editing tab-separated assembly columns: after
+  `cw` or `dw`+`i`, each typed character pushed the tail one screen
+  column right; `w` still moved to the correct place and `Ctrl-L`
+  repainted the truth — the buffer was never wrong, only the display).
+  Mid-line insert-mode typing uses the terminal's one-column
+  insert-character escape (`ESC[@`), and backspace its delete-character
+  twin (`ESC[P`); both assume every character in the tail occupies a
+  fixed width, but a tab's rendered width shrinks or grows as text
+  before it changes, so the on-screen tail drifted one column per
+  keystroke. Both fast paths now fall back to a whole-line repaint when
+  a tab lies between the cursor and the end of the line (`tail_has_tab`,
+  edit.c); tab-free lines keep the cheap 2–4 byte update.
 
 ### 2.7 → 2.7.1
 

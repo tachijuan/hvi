@@ -137,6 +137,26 @@ char *tmp;
 }
 
 /*
+ * Non-zero when a tab lies between cur_pos and the end of the line.
+ * The terminal's insert/delete-char escapes shift the on-screen tail
+ * by exactly one column, but a tab's rendered width absorbs (or, at
+ * a stop boundary, amplifies) the shift -- the fast paths below may
+ * only be used on a tab-free tail.
+ */
+static int tht_p, tht_sz, tht_c;
+
+static int tail_has_tab()
+{
+    tht_sz = gb_content_len();
+    for (tht_p = ed.cur_pos; tht_p < tht_sz; tht_p++) {
+        tht_c = gb_char_at(tht_p);
+        if (tht_c == '\n') break;
+        if (tht_c == '\t') return 1;
+    }
+    return 0;
+}
+
+/*
  * Handle one insert-mode keypress.
  * Returns 0 to stay in insert mode, 1 to return to normal mode.
  */
@@ -204,7 +224,7 @@ int c0;
             if (del_ch == '\n') {
                 scr_adj();
                 scr_show_status(msg_insert);
-            } else if (del_ch == '\t') {
+            } else if (del_ch == '\t' || tail_has_tab()) {
                 scr_redraw_cur_line();
             } else {
                 sz = gb_content_len();
@@ -310,7 +330,7 @@ int c0;
                 term_putch(c);
             }
         } else {
-            if (c == '\t') {
+            if (c == '\t' || tail_has_tab()) {
                 scr_redraw_cur_line();
             } else {
                 term_ins_char();

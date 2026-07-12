@@ -503,6 +503,21 @@ def main():
           "row0=%r" % lines[0])
     sess.quit_expect_prompt(":q\r")
 
+    # typing/backspacing before a tab must keep the tail tab-aligned:
+    # the 1-column ICH/DCH fast path is wrong when a tab absorbs the
+    # shift (assembly-editing report, v2.7.2)
+    rm_file("T.TXT"); put_file("T.TXT", "ld\ta,b\nret\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("cwdjnz\x1b")                # 'ld' -> 'djnz' before the tab
+    lines = sess.screen_lines()
+    check("screen insert before tab", lines[0] == "djnz" + " " * 4 + "a,b",
+          "row0=%r" % lines[0])
+    sess.keys("0lli\x08\x1b")              # BS deletes 'j' before the tab
+    lines = sess.screen_lines()
+    check("screen BS before tab", lines[0] == "dnz" + " " * 5 + "a,b",
+          "row0=%r" % lines[0])
+    sess.quit_expect_prompt(":q!\r")
+
     # long line wraps
     rm_file("T.TXT"); put_file("T.TXT", "x" * 100 + "\n" + "second\n")
     sess.start_hvi("T.TXT")
