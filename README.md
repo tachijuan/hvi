@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.5**
+**Version 2.7**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
