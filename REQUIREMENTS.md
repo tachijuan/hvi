@@ -2,7 +2,7 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.7  
+**Version:** 2.7.1  
 **Date:** 2026-07-12
 
 ---
@@ -578,10 +578,27 @@ On Z80, `int` is 2 bytes (range −32768 to 32767). Buffer positions and sizes a
 
 ### 7.8 Terminal Input
 CP/M does not have a `termios`-style raw mode API.  `term_getch()` reads
-raw keys with **BDOS function 6** (Direct Console I/O, E = FFh: no echo,
-non-blocking), polling **BDOS 11** (Console Status) first to avoid a busy
-read loop.  Both go through `bdos_disk` so IX is preserved.  No BIOS calls
-are used anywhere.
+raw keys by spinning on **BDOS function 6** (Direct Console I/O,
+E = FFh: no echo, non-blocking, returns 00h when no character is ready),
+through `bdos_disk` so IX is preserved.  No BIOS calls are used anywhere.
+
+Function 6 alone is the poll — deliberately (v2.7.1).  Earlier versions
+pre-polled **BDOS 11** (Console Status) and consumed its result
+unmasked.  Only register A carries the DRI-guaranteed byte result of a
+BDOS call; H mirrors B, which real BDOS implementations leave as
+internal junk (RunCPM returns a clean HL, which is why the emulator
+never showed the bug).  On real CP/M 2.2 the junk high byte made idle
+look "ready", function 6 then correctly returned 00h, and the editor
+received an endless stream of NUL keystrokes (reported on a North Star
+Horizon under both North Star and Lifeboat CP/M 2.2 — insert mode
+filled with characters by itself, and the byte after an operator
+arrived as a bogus "Unknown motion").  Two hardenings (v2.7.1):
+`bdos_disk` (cstart.as) now returns A zero-extended, cleaning every
+call site at once — including the `dsk_u` file-operation results — and
+the status pre-poll is gone entirely, which also sidesteps BIOSes
+whose CONST strays from the specified 00h/FFh.  The inherent
+trade-off: a real `^@` keystroke is indistinguishable from idle and is
+ignored (vi binds nothing to NUL).
 
 A bare ESC is disambiguated from an ANSI arrow sequence by a bounded
 countdown poll (`con_wait`): if `[` follows quickly, `ESC[A/B/C/D` are
@@ -593,7 +610,7 @@ back** as the next keystroke rather than swallowed.
 `term_getsize()` parks the cursor at `ESC[999;999H` (the terminal clamps to
 its real size) and requests a cursor-position report with `ESC[6n`, sent as
 one `con_write` block.  The `ESC[rows;colsR` reply is parsed with the same
-`con_wait` countdown polling (BDOS 11/6); every byte is guarded by a
+`con_wait` countdown polling (BDOS 6); every byte is guarded by a
 timeout so a non-responding terminal falls back to `DEF_ROWS = 24`,
 `DEF_COLS = 80`.  Any pty harness driving HVI must answer the `ESC[6n`
 query (the test harness replies `ESC[24;80R`).
@@ -1051,6 +1068,7 @@ For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit
 | Extract newline scans to `find_bol`/`find_eol` | 16+ inline while-loops repeating newline scanning logic across the code base were refactored into `gap.c` exports to cut binary block duplication via central CALL jumps. |
 | Encapsulate `mv_find` inline command | The `f/F/;/;` character-find routines were moved from `edit.c` to `emove.c` (`mv_find()`) so they could operate under the secure caching brackets of `begin_hmove`, stopping UI freezing. We removed the "f_" status prompt to replicate pure vi mechanics. |
 | Fixed `csv`/`ncsv`/`cret` frame (v2.1) | The original custom `csv` left SP two bytes above IX at body entry, silently clobbering the deepest auto local on the next argument push (the "-O corrupts autos" myth). The fixed routines match the real HI-TECH frame — save IX **and** IY, arguments at IX+6, SP == IX — making auto locals fully reliable |
+| Statics over autos and params, everywhere (v2.7.1) | HI-TECH C spills auto locals and parameters to IX-relative slots: 6 bytes / 38 T-states per int access vs 3 bytes / 32 T-states for a static. Since nothing in HVI is reentrant, all remaining auto locals became function statics, and parameters of hot functions read ~4+ times are copied to statics on entry (fewer-use copies measured as net losses and were not kept). Combined with `x > 0` → `x != 0` where operands are provably non-negative (a 7-byte inline test instead of a 13-byte `wrelop` call), the pass removed 1,604 bytes — 12 records |
 | `gb_char_at` in assembly (v2.5) | The hottest function in the editor — every per-character scanner calls it once per byte. Frameless assembly reading the GapBuf fields at fixed offsets from `ed` roughly halves its cost; requires GapBuf to stay `Editor`'s first member |
 | `find_bol`/`find_eol` on CPIR/CPDR scanners (v2.5) | `gb_memchr`/`gb_memrchr` scan at 21 T-states/byte vs ~300 for the compiled `gb_char_at` loop. These two functions back every line motion (`j`/`k`, `dd`, `J`, `o`, `G`, `:N`, `line_span`), so line scans in a full buffer are an order of magnitude faster; `scr_line_start` hops lines via `find_eol` instead of scanning every byte |
 | Newline counting funnels into `gb_cntnl` | One CPIR counter backs `gb_count_nl`, the line caches, `gb_insert`'s tally, and the yank/undo/dot-replay "does it contain a newline" checks — one copy of the loop, 8× faster than per-byte C |

@@ -284,6 +284,11 @@ _bdos_disk:
     ld      d,(ix+7)
     ld      (_bdos_disk_ix),ix  ; (2) save frame ptr to BSS before CALL 5
     call    5                   ; BDOS -- may corrupt IX
+    ld      l,a                 ; return A zero-extended: A is the only
+    ld      h,0                 ;  DRI-guaranteed byte result (H mirrors
+                                ;  B, which real BDOSes leave as junk --
+                                ;  RunCPM returns clean HL, so unmasked
+                                ;  C-side checks passed only there)
     ld      ix,(_bdos_disk_ix)  ; (3) restore frame ptr from BSS
     pop     ix                  ; (4) restore caller's IX from stack
     ret

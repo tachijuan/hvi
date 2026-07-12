@@ -58,9 +58,12 @@ static int nvs_p, nvs_next;                  /* vrow_start_of statics */
  * When the buffer does end with '\n', position size is genuinely a
  * new empty line and is returned via the from+1 path as before.
  */
-int next_vrow(from)
-int from;
+int next_vrow(from0)
+int from0;
 {
+    static int from;        /* param copy (absolute beats IX) */
+
+    from = from0;
     nvr_size = gb_content_len();
     nvr_col  = 0;
     while (from < nvr_size) {

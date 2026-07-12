@@ -89,8 +89,8 @@ int pos, len, del;
  */
 int gb_init()
 {
-    int   alloc;
-    char *p;
+    static int   alloc;
+    static char *p;
 
     p = (char *)0;
     for (alloc = BUF_MAX + GAP_MIN; alloc >= 4096; alloc -= 2048) {
@@ -132,28 +132,30 @@ int gb_content_len()
  * Move the gap so that gstart == pos.
  * This is the core operation: O(n) move of characters.
  */
+static int gmg_gap, gmg_move;
+
 static void gb_move_gap(pos)
 int pos;
 {
-    int gap_len = ed.gb.gend - ed.gb.gstart;
+    gmg_gap = ed.gb.gend - ed.gb.gstart;
     if (pos == ed.gb.gstart)
         return;
     if (pos < ed.gb.gstart) {
         /* move gap left: shift text right */
-        int move = ed.gb.gstart - pos;
-        gb_memmove(ed.gb.buf + ed.gb.gend - move,
+        gmg_move = ed.gb.gstart - pos;
+        gb_memmove(ed.gb.buf + ed.gb.gend - gmg_move,
                 ed.gb.buf + pos,
-                move);
+                gmg_move);
         ed.gb.gstart = pos;
-        ed.gb.gend   = pos + gap_len;
+        ed.gb.gend   = pos + gmg_gap;
     } else {
         /* move gap right: shift text left */
-        int move = pos - ed.gb.gstart;
+        gmg_move = pos - ed.gb.gstart;
         gb_memmove(ed.gb.buf + ed.gb.gstart,
                 ed.gb.buf + ed.gb.gend,
-                move);
+                gmg_move);
         ed.gb.gstart = pos;
-        ed.gb.gend   = pos + gap_len;
+        ed.gb.gend   = pos + gmg_gap;
     }
 }
 
@@ -171,11 +173,15 @@ int pos;
  */
 static int gbi_nl_added;
 
-int gb_insert(pos, text, len)
-int   pos;
+int gb_insert(pos0, text, len0)
+int   pos0;
 char *text;
-int   len;
+int   len0;
 {
+    /* Params copied to statics (absolute beats IX; never nests). */
+    static int pos, len;
+
+    pos = pos0; len = len0;
     if (len <= 0) return 1;
     if (ed.gb.gend - ed.gb.gstart < len)
         return 0;   /* buffer is pre-allocated; cannot grow */
@@ -212,9 +218,12 @@ int   len;
 static char *sp1, *sp2;
 static int   sl1, sl2, spl_cl;
 
-static void gb_split(pos, len)
-int pos, len;
+static void gb_split(pos0, len0)
+int pos0, len0;
 {
+    static int pos, len;    /* param copies (absolute beats IX) */
+
+    pos = pos0; len = len0;
     sl1 = 0;
     sl2 = 0;
     spl_cl = gb_content_len();
@@ -274,10 +283,13 @@ int pos, len;
 static int gbd_clen;
 static int gbd_nl_del;
 
-int gb_delete(pos, len)
-int pos;
-int len;
+int gb_delete(pos0, len0)
+int pos0;
+int len0;
 {
+    static int pos, len;    /* param copies (absolute beats IX) */
+
+    pos = pos0; len = len0;
     gbd_clen = gb_content_len();
     if (pos < 0 || pos >= gbd_clen)
         return 0;
@@ -981,9 +993,12 @@ int n;
  * gb_char_at call per character.
  */
 static int fbol_r;
-int find_bol(pos)
-int pos;
+int find_bol(pos0)
+int pos0;
 {
+    static int pos;         /* param copy (absolute beats IX) */
+
+    pos = pos0;
     if (pos <= 0) return pos;
     if (pos > ed.gb.gstart) {
         /* logical [gstart, pos) lives at raw buf + gend */
@@ -1008,9 +1023,12 @@ int pos;
  */
 static int gfc_r, gfc_size;
 
-int gb_find_ch(pos, c)
-int pos, c;
+int gb_find_ch(pos0, c)
+int pos0, c;
 {
+    static int pos;         /* param copy (absolute beats IX) */
+
+    pos = pos0;
     gfc_size = gb_content_len();
     if (pos >= gfc_size) return pos;
     if (pos < 0) pos = 0;

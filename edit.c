@@ -140,17 +140,19 @@ char *tmp;
  * Handle one insert-mode keypress.
  * Returns 0 to stay in insert mode, 1 to return to normal mode.
  */
-static int insert_key(c)
-int c;
+static int insert_key(c0)
+int c0;
 {
+    static int c;       /* param copy: absolute beats IX (never nests) */
     static char tmp[2];
     static int del_ch, cur_col, new_col, sz;
     static int old_top, i, ilen;
     static int start, del, had_nl, sol;
 
+    c = c0;
     if (c == KEY_ESC) {
         ed.mode = MODE_NORMAL;
-        if (g_ins_cmd && ed.undo.type == UNDO_INSERT && ed.undo.len > 0) {
+        if (g_ins_cmd && ed.undo.type == UNDO_INSERT && ed.undo.len != 0) {
             ilen = ed.undo.len;
             if (ilen > DOT_TEXT_MAX) ilen = DOT_TEXT_MAX;
             gb_copy_out(ed.dot_text, ed.undo.pos, ilen);
@@ -191,13 +193,13 @@ int c;
     }
 
     if (c == KEY_BS || c == KEY_DEL || c == KEY_CTRL_H) {
-        if (ed.cur_pos > 0) {
+        if (ed.cur_pos != 0) {  /* cur_pos >= 0: cheap equality */
             chk_multi();
             del_ch = gb_char_at(ed.cur_pos - 1);
             ed.cur_pos--;
             gb_delete(ed.cur_pos, 1);
             ed.modified = 1;
-            if (ed.undo.type == UNDO_INSERT && ed.undo.len > 0)
+            if (ed.undo.type == UNDO_INSERT && ed.undo.len != 0)
                 ed.undo.len--;
             if (del_ch == '\n') {
                 scr_adj();
@@ -219,9 +221,9 @@ int c;
     if (c == KEY_CTRL_W) {
         chk_multi();
         start = ed.cur_pos;
-        while (ed.cur_pos > 0 && isspacech(gb_char_at(ed.cur_pos - 1)))
+        while (ed.cur_pos != 0 && isspacech(gb_char_at(ed.cur_pos - 1)))
             ed.cur_pos--;
-        while (ed.cur_pos > 0 && !isspacech(gb_char_at(ed.cur_pos - 1)))
+        while (ed.cur_pos != 0 && !isspacech(gb_char_at(ed.cur_pos - 1)))
             ed.cur_pos--;
         del = start - ed.cur_pos;
         if (del > 0) {
@@ -666,7 +668,8 @@ int c, count, size;
         /* Same implementation as its '.' replay (one copy of the logic,
          * like J and ~): record the dot state and run the replay. */
         {
-            int repl = term_getch();
+            static int repl;
+            repl = term_getch();
             if (repl != KEY_ESC && ed.cur_pos < size) {
                 if (repl == KEY_CR) repl = '\n';
                 set_dot('r', 0, 1, repl);
@@ -803,10 +806,13 @@ int new_top, total;
  * Handle G, Ctrl+F/B/D/U -- page and large-motion commands.
  * Half-page sizes use >> 1 instead of / 2 to avoid the division library.
  */
-static void normal_page_cmd(c, count, had_count)
-int c, count, had_count;
+static void normal_page_cmd(c0, count0, had_count)
+int c0, count0, had_count;
 {
+    static int c, count;    /* param copies (absolute beats IX) */
     static int n, top_line, total, text_rows, new_top;
+
+    c = c0; count = count0;
 
     switch (c) {
 
@@ -870,14 +876,19 @@ int c, count, had_count;
     }
 }
 
-static void normal_cmd(c)
-int c;
+static void normal_cmd(c0)
+int c0;
 {
+    /* c copied to a static (absolute beats IX).  normal_cmd recurses
+     * through op_motion, but the outer invocation never reads c after
+     * its switch dispatch, so the clobber is harmless. */
+    static int  c;
     static int  count, size, linewise, endpoint;
     static int  had_count, old_top;
     static int  op, nc_from, nc_to;
     static int  gg_line;
 
+    c = c0;
     /* ---- digit prefix ---- */
     if (c >= '1' && c <= '9' && !g_op) {
         g_count = g_hcnt ? g_count * 10 + (c - '0') : (c - '0');

@@ -43,7 +43,7 @@ extern char *gir_text;
  * also used by the insert-mode ESC handler in edit.c). */
 void cur_back_nl()
 {
-    if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos - 1) != '\n')
+    if (ed.cur_pos != 0 && gb_char_at(ed.cur_pos - 1) != '\n')
         ed.cur_pos--;
 }
 
@@ -55,7 +55,7 @@ void cur_back_nl()
 void ins_position(cmd)
 int cmd;
 {
-    int sz, eol;
+    static int sz, eol;
     switch (cmd) {
     case 'a':
         sz = gb_content_len();
@@ -114,8 +114,8 @@ int pos;
 void dot_replay_c(n)
 int n;
 {
-    int from, to, ins_pos, linewise, endpoint;
-    int light;
+    static int from, to, ins_pos, linewise, endpoint;
+    static int light;
     linewise = 0;
     if (ed.dot_motion == 'c') {          /* cc / S: whole-line change */
         from = find_bol(ed.cur_pos);
@@ -138,7 +138,7 @@ int n;
         ed.cur_pos = from;
         ed.modified = 1;
     }
-    if (ed.dot_len > 0) {
+    if (ed.dot_len != 0) {  /* >= 0: cheap equality */
         if (dot_ins(ins_pos) < 0) return;
         if (gb_roomed) { scr_refresh(); return; }
     }
@@ -154,10 +154,10 @@ static char dr_sp[1] = { ' ' };   /* J's separating space (1 data byte) */
 void dot_replay(count)
 int count;
 {
-    int  n, sz, k, linewise, endpoint;
-    int  from, to, ins_pos, ch, eol, del;
-    int  has_nl;
-    char tmp_c[1];
+    static int  n, sz, k, linewise, endpoint;
+    static int  from, to, ins_pos, ch, eol, del;
+    static int  has_nl;
+    static char tmp_c[1];
 
     if (!ed.dot_cmd) return;
     n  = (count > 0) ? count : ed.dot_count;
@@ -198,7 +198,7 @@ int count;
         }
         to = ed.cur_pos;
         /* don't leave the cursor on the newline / past the end */
-        if (ed.cur_pos > 0 &&
+        if (ed.cur_pos != 0 &&
             (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') &&
             gb_char_at(ed.cur_pos - 1) != '\n')
             ed.cur_pos--;
@@ -206,7 +206,7 @@ int count;
         break;
 
     case 'J':
-        k = (n > 1) ? n - 1 : 1;
+        k = (n != 1) ? n - 1 : 1;   /* n >= 1: cheap equality */
         while (k-- > 0) {
             sz = gb_content_len();
             eol = find_eol(ed.cur_pos);
@@ -250,7 +250,7 @@ int count;
         break;
 
     default:
-        if (ed.dot_len > 0) {
+        if (ed.dot_len != 0) {
             ins_position(ed.dot_cmd);
             /* Check if inserted text crosses a line boundary. */
             has_nl = gb_cntnl(ed.dot_text, ed.dot_len) != 0;

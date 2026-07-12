@@ -30,12 +30,14 @@ char *s;
 /*  String utilities                                                    */
 /* ------------------------------------------------------------------ */
 
+static int hsl_n;
+
 int hvi_strlen(s)
 char *s;
 {
-    int n = 0;
-    while (s[n]) n++;
-    return n;
+    hsl_n = 0;
+    while (s[hsl_n]) hsl_n++;
+    return hsl_n;
 }
 
 void hvi_strcpy(d, s)
@@ -77,7 +79,7 @@ int   n;
     /* Initialised static: costs 10 bytes of stored data psect but saves
      * the ~40 bytes of code five per-call stores compiled to. */
     static int pows[5] = { 10000, 1000, 100, 10, 1 };
-    int i, d, started;
+    static int i, d, started;
 
     if (n < 0) { *buf++ = '-'; n = -n; }
     if (n == 0) { *buf++ = '0'; return buf; }
@@ -118,8 +120,8 @@ void hvi_sprintf(buf, fmt, a0, a1)
 char *buf, *fmt;
 int   a0, a1;
 {
-    char *out, *fp, *s;
-    int   args[2], ai, sn;
+    static char *out, *fp, *s;
+    static int   args[2], ai, sn;
 
     out = buf;
     fp  = fmt;

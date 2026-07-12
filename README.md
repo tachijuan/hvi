@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.7**
+**Version 2.7.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
@@ -434,6 +434,52 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.7 → 2.7.1
+
+Size release plus one real-hardware portability fix. All 187 + 18
+tests pass unchanged.
+
+- **Fix: keyboard input unusable on real CP/M 2.2** (reported on a
+  North Star Horizon under both North Star and Lifeboat CP/M 2.2:
+  insert mode inserted characters by itself endlessly, and `d`/`c`
+  operators failed with a flash of "Unknown motion"). Only register A
+  carries the DRI-guaranteed byte result of a BDOS call — H mirrors
+  B, which real BDOS implementations leave as internal junk (RunCPM
+  returns a clean HL, which is why the test harness never caught
+  it). `term_getch` consumed the BDOS 11 (Console Status) result
+  unmasked: idle looked "ready", the BDOS 6 read then returned 00h,
+  and the editor ate an endless stream of NUL keystrokes. Two
+  hardenings: `bdos_disk` now returns A zero-extended (cleaning every
+  BDOS result in the editor, file operations included), and input
+  spins on BDOS 6 alone (E=FFh is non-blocking, 00h when idle) with
+  no status pre-poll — also sidestepping BIOSes whose CONST strays
+  from the specified 00h/FFh. Trade-off: a real `^@` keystroke is
+  indistinguishable from idle and is ignored (vi binds nothing to
+  NUL).
+
+The size work: no new commands and no behavior change — every edit is
+a provably equivalent, smaller (and on Z80, faster) form. Binary: 30,592 → 29,056 bytes, **239 → 227
+records** (−1,604 bytes, −12 records) — smaller than v2.5 despite the
+three feature releases since.
+
+- **Auto locals became function statics** across every module
+  (motion_endpoint, dot_replay, ex_execute, hvi_sprintf, gb_move_gap,
+  hvi_rename, main, ...). HI-TECH C spills autos to 6-byte IX-relative
+  accesses (19 T-states/byte); statics are 3-byte absolute (16
+  T-states/byte) — smaller *and* faster, safe because nothing in HVI
+  is reentrant. This alone bought 1,208 bytes.
+- **Hot-function parameters copied to statics on entry** (insert_key,
+  normal_cmd, apply_op, gb_insert, gb_delete, find_bol, gb_find_ch,
+  gb_split, next_vrow, term_goto, term_putch, normal_page_cmd) — same
+  IX-vs-absolute arithmetic, applied only where a parameter is read
+  ~4+ times (measurement showed fewer-use copies cost more than they
+  save, and those were reverted).
+- **Relational tests became equality tests** where an operand is
+  provably non-negative (`x > 0` ≡ `x != 0` for buffer positions,
+  lengths, counts): each conversion trades a 13-byte `wrelop` library
+  call for a 7-byte inline test.
+- `:e`'s two load messages share one `"%s" %s` format.
 
 ### 2.6.1 → 2.7
 

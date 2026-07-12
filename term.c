@@ -103,9 +103,12 @@ void term_flush()
  * Any other byte (ESC etc.) invalidates tracking because its effect on
  * cursor position depends on the full escape sequence.
  */
-void term_putch(c)
-int c;
+void term_putch(c0)
+int c0;
 {
+    static int c;           /* param copy (absolute beats IX) */
+
+    c = c0;
     raw_byte(c);
     if (c >= 0x20 && c != 0x7F) {
         if (s_tcol >= 0) s_tcol++;
@@ -166,9 +169,14 @@ void term_normal()
  *
  * All other cases fall back to the full ANSI CSI sequence.
  */
-void term_goto(row, col)
-int row, col;
+void term_goto(row0, col0)
+int row0, col0;
 {
+    /* Params copied to statics: read ~16 times below, and term_goto
+     * runs on every cursor move (absolute beats IX; never nests). */
+    static int row, col;
+
+    row = row0; col = col0;
     /* No-op when already there. */
     if (row == s_trow && col == s_tcol) return;
 
@@ -318,22 +326,37 @@ void term_clear()
 /* ------------------------------------------------------------------ */
 
 /*
- * Poll console status (BDOS 11) up to n times, then read one character
- * with BDOS 6 (Direct Console Input, no echo).  Returns the character,
- * or -1 when the countdown expires with nothing available.  Shared by
- * the ESC-sequence disambiguation and the terminal-size handshake.
- * n cached in a static: bdos_disk calls follow.
+ * Poll BDOS 6 (Direct Console Input, E=0xFF: non-blocking, no echo) up
+ * to n times.  Returns the character, or -1 when the countdown expires
+ * with nothing available.  Shared by the ESC-sequence disambiguation
+ * and the terminal-size handshake.
+ *
+ * Function 6 alone is the poll: it returns 0x00 when no character is
+ * ready, so no separate status call is needed.  The previous BDOS 11
+ * (Console Status) pre-poll broke on real CP/M 2.2 (North Star Horizon,
+ * both North Star and Lifeboat brands): its result was consumed
+ * unmasked, and only A holds the DRI-guaranteed byte result -- H
+ * mirrors B, which real BDOS implementations leave as junk (RunCPM
+ * returns a clean HL, hiding the bug).  Idle then looked "ready",
+ * function 6 returned 0x00, and HVI saw an endless stream of NUL
+ * keystrokes.  bdos_disk now zero-extends A (cstart.as) so every
+ * result is clean, and the redundant status call is gone entirely --
+ * which also sidesteps BIOSes whose CONST strays from the specified
+ * 00h/FFh.  The trade-off is inherent to function 6: a real ^@
+ * keystroke is indistinguishable from idle and is ignored (vi binds
+ * nothing to NUL).
  */
-static int cw_n;
+static int cw_n, cw_c;
 
 static int con_wait(n)
 int n;
 {
     cw_n = n;
-    while (bdos_disk(11, 0) == 0) {
+    for (;;) {
+        cw_c = bdos_disk(6, 0xFF) & 0xFF;
+        if (cw_c != 0) return cw_c;
         if (--cw_n == 0) return -1;
     }
-    return bdos_disk(6, 0xFF) & 0xFF;
 }
 
 static int s_tgc_c, s_tgc_c2;
@@ -349,11 +372,13 @@ int term_getch()
         return s_tgc_c;
     }
 
-    /* BDOS 6, 0xFF = Direct Console Input (no echo, non-blocking).
-     * Poll via BDOS 11 (Console Status) first to reduce spin time, then read.
-     * Both go through bdos_disk to preserve IX around CALL 5. */
-    while (bdos_disk(11, 0) == 0) ;            /* wait for key available */
-    s_tgc_c = bdos_disk(6, 0xFF) & 0xFF;
+    /* Spin on BDOS 6, E=0xFF (Direct Console Input: no echo,
+     * non-blocking, 0x00 = nothing ready) through bdos_disk to
+     * preserve IX around CALL 5.  See con_wait for why no BDOS 11
+     * status pre-poll is used (North Star CONST incompatibility). */
+    do {
+        s_tgc_c = bdos_disk(6, 0xFF) & 0xFF;
+    } while (s_tgc_c == 0);
 
     if (s_tgc_c == KEY_ESC) {
         s_tgc_c2 = con_wait(8000);
@@ -420,7 +445,7 @@ int term;
  *   2. ESC[6n        -- report cursor position.
  *   3. Read ESC[r;cR -- parse rows and cols.
  *
- * Uses bdos_disk(2/6/11) exclusively (never BIOS CONIN) to preserve IX
+ * Uses bdos_disk(6) exclusively (never BIOS CONIN) to preserve IX
  * across every I/O call.  Each character read is guarded by a countdown
  * (con_wait) so a non-responding terminal falls back to DEF_ROWS/COLS.
  */

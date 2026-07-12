@@ -70,7 +70,7 @@ unsigned int heap_base;   /* set to __Hbss by cstart.as */
 char *hvi_malloc(size)
 int size;
 {
-    unsigned int free_end;
+    static unsigned int free_end;
 
     if (s_heap_used) return (char *)0;
 
@@ -464,7 +464,7 @@ char *name;
 void hvi_remove(name)
 char *name;
 {
-    unsigned char fcb[36];
+    static unsigned char fcb[36];   /* static: BSS is free, IX is not */
     fill_fcb(fcb, name);
     dsk_u(19, (int)fcb, fcb_user);          /* BDOS 19: Erase File */
 }
@@ -480,8 +480,8 @@ char *name;
 void hvi_rename(oldname, newname)
 char *oldname, *newname;
 {
-    unsigned char ren[32], tmp[36];
-    int u;
+    static unsigned char ren[32], tmp[36];
+    static int u;
 
     fill_fcb(tmp, oldname);
     u = fcb_user;

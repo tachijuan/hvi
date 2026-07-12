@@ -177,7 +177,7 @@ char *p;
      * never cross a line boundary -- no per-line loop is needed.  The
      * 'g' flag only decides whether a match skips to the next line. */
     sb_cnt = 0;
-    if (sb_olen > 0) {
+    if (sb_olen != 0) {  /* olen >= 0: cheap equality */
         sb_c0  = (int)(unsigned char)sb_old[0];
         sb_tmp[sb_olen] = '\0';         /* stage terminator, set once */
         sb_pos = sb_p1;
@@ -223,11 +223,11 @@ char *p;
 int ex_execute(cmd)
 char *cmd;
 {
-    char *p;
-    int   force;
-    int   do_write;
-    int   do_quit;
-    int   rc;
+    static char *p;
+    static int   force;
+    static int   do_write;
+    static int   do_quit;
+    static int   rc;
 
     p = skip_space(cmd);
 
@@ -247,7 +247,7 @@ char *cmd;
 
     /* :$ -- go to last line (loads entire tail for large files) */
     if (*p == '$') {
-        int clen;
+        static int clen;
         ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
         while (ed.tail_offset > 0L) {
             clen = gb_content_len();
@@ -269,11 +269,11 @@ char *cmd;
         /* 128-byte staging chunk: one gb_insert (gap move + mark sweep)
          * per sector instead of per character. */
         static char rbuf[128];
-        char  *fname;
-        HFILE *f;
-        int    c;
-        int    rn;
-        int    ins_pos, old_len, new_len;
+        static char  *fname;
+        static HFILE *f;
+        static int    c;
+        static int    rn;
+        static int    ins_pos, old_len, new_len;
 
         p++;
         fname = skip_space(p);
@@ -304,7 +304,7 @@ char *cmd;
                 rn = 0;
             }
         }
-        if (rn > 0)
+        if (rn != 0)
             gb_insert(ins_pos, rbuf, rn);
         hvi_fclose(f);
         new_len = gb_content_len();
@@ -315,7 +315,7 @@ char *cmd;
 
     /* :e[!] filename -- abandon current buffer and edit a new file */
     if (*p == 'e' && (p[1] == ' ' || p[1] == '\t' || p[1] == '!' || p[1] == '\0')) {
-        char *fname;
+        static char *fname;
         p++;
         force = (*p == '!') ? (p++, 1) : 0;
         fname = skip_space(p);
@@ -354,10 +354,9 @@ char *cmd;
         rc = gb_load(fname, (HFILE *)0);
         if (rc == 0)
             hvi_sprintf(ed.status, fmt_newfile, (int)fname, 0);
-        else if (rc == 2)
-            hvi_sprintf(ed.status, "\"%s\" (partial load)", (int)fname, 0);
         else
-            hvi_sprintf(ed.status, "\"%s\" loaded", (int)fname, 0);
+            hvi_sprintf(ed.status, "\"%s\" %s", (int)fname,
+                        (int)(rc == 2 ? "(partial load)" : "loaded"));
         return 1;
     }
 
@@ -374,8 +373,8 @@ char *cmd;
     p = skip_space(p);
 
     if (do_write) {
-        char *dest;
-        int   ok;
+        static char *dest;
+        static int   ok;
         dest = (*p) ? p : ed.filename;
         if (!dest || !dest[0]) {
             hvi_strcpy(ed.status, "No filename: use :w filename");

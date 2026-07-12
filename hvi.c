@@ -30,9 +30,9 @@ main(cmdlen, cmdtail)
 int   cmdlen;
 char *cmdtail;
 {
-    char *cmdp;
-    int   i, has_file;
-    int   partial;        /* auto is safe: bdos_disk preserves IX throughout */
+    static char *cmdp;
+    static int   i, has_file;
+    static int   partial;   /* statics: 3-byte absolute vs 6-byte IX */
 
     /* ed is zero-initialised by cstart.as */
     ed.scr_rows     = DEF_ROWS;

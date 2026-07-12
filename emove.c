@@ -335,10 +335,10 @@ int motion_endpoint(ch, count, linewise)
 int  ch, count;
 int *linewise;
 {
-    int pos  = ed.cur_pos;
-    int size = gb_content_len();
-    int n;
-    int cw;
+    static int pos, size, n, cw;
+
+    pos  = ed.cur_pos;
+    size = gb_content_len();
 
     cw = me_cw;
     me_cw = 0;
@@ -359,7 +359,8 @@ int *linewise;
     case 'w':
         n = count;
         while (n-- > 0) {
-            int type = chtype(pos);
+            static int type;
+            type = chtype(pos);
             while (pos < size) {
                 if (chtype(pos) != type) break;
                 pos++;
@@ -379,7 +380,8 @@ int *linewise;
                 while (pos > 0 && isspacech(gb_char_at(pos))) pos--;
                 if (pos == 0) break;
                 {
-                    int type = chtype(pos);
+                    static int type;
+                    type = chtype(pos);
                     while (pos > 0) {
                         if (chtype(pos - 1) != type) break;
                         pos--;
@@ -392,7 +394,7 @@ int *linewise;
     case 'e':
         n = count;
         while (n-- > 0) {
-            int type;
+            static int type;
             if (pos >= size - 1) break;
             pos++;
             while (pos < size && isspacech(gb_char_at(pos))) pos++;
@@ -418,7 +420,8 @@ int *linewise;
     case 'j':
         *linewise = 1;
         {
-            int to = pos;
+            static int to;
+            to = pos;
             n = count + 1;      /* this line plus count lines below */
             while (n-- > 0) {
                 to = find_eol(to);
@@ -432,8 +435,9 @@ int *linewise;
     case 'k':
         *linewise = 1;
         {
-            int from = find_bol(pos);
-            int to   = find_eol(pos);
+            static int from, to;
+            from = find_bol(pos);
+            to   = find_eol(pos);
             if (to < size) to++;
             n = count;
             while (n-- > 0 && from > 0)
@@ -593,10 +597,15 @@ int apply_shift()
     return sh_nl == 1;
 }
 
-void apply_op(op, from, to, linewise)
-int op, from, to, linewise;
+void apply_op(op0, from0, to0, linewise)
+int op0, from0, to0, linewise;
 {
+    /* Params copied to statics: 3-byte absolute accesses (also fewer
+     * T-states than IX-relative) -- apply_op never nests. */
+    static int op, from, to;
     static int len, save, t, size, light;
+
+    op = op0; from = from0; to = to0;
 
     if (op == '>' || op == '<') {
         sh_op = op; sh_from = from; sh_to = to;
@@ -625,7 +634,7 @@ int op, from, to, linewise;
         return;
     }
 
-    if (len > 0) {
+    if (len != 0) {     /* len >= 0 after the swap: cheap equality */
         undo_save_delete(from, len);
         yank_range(from, len, linewise);
         gb_delete(from, len);
@@ -638,7 +647,7 @@ int op, from, to, linewise;
      * exactly where the text was removed (before the newline). */
     if (op != 'c') {
         if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
-        if (ed.cur_pos > 0 && gb_char_at(ed.cur_pos) == '\n')
+        if (ed.cur_pos != 0 && gb_char_at(ed.cur_pos) == '\n')
             if (gb_char_at(ed.cur_pos - 1) != '\n')
                 ed.cur_pos--;
     }
