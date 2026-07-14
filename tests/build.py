@@ -8,6 +8,11 @@ Pass chain for `C -CPM -O -C X.C` (recovered from $$EXEC.$$$):
   CGEN T2.TMP T1.TMP
   OPTIM T1.TMP T2.TMP
   ZAS -J -N -oX.OBJ $CTMP2.$$$
+
+Terminal family (compile-time, see termcfg.h):
+  python3 build.py            -> ANSI/VT100, output HVI.COM (default)
+  python3 build.py VT52       -> -DTERM_VT52, output HVIVT52.COM
+  python3 build.py OSB1 TERM_ROWS=24   -> extra -D defines after the family
 """
 import sys, time, os, glob
 sys.path.insert(0, "/tmp/hvi-test")
@@ -15,6 +20,34 @@ from cpm import CPM
 
 SRCS = ["hvi", "gap", "term", "screen", "emove", "edit",
         "erepeat", "ex", "util", "cpmio"]
+
+# terminal token -> (compile define, 8.3 output .COM name)
+TERMS = {
+    "VT52":    ("TERM_VT52",    "HVIVT52.COM"),
+    "H19":     ("TERM_H19",     "HVIH19.COM"),
+    "ADM3A":   ("TERM_ADM3A",   "HVIADM3.COM"),
+    "TVI":     ("TERM_TVI",     "HVITVI.COM"),
+    "WYSE50":  ("TERM_WYSE50",  "HVIWY50.COM"),
+    "HAZ1500": ("TERM_HAZ1500", "HVIHZ15.COM"),
+    "OSB1":    ("TERM_OSB1",    "HVIOSB1.COM"),
+}
+
+# extra -D flags for the CPP pass, and the target .COM name, from argv
+def term_config():
+    defs = ""
+    comname = "HVI.COM"
+    args = sys.argv[1:]
+    if args:
+        tok = args[0].upper()
+        if tok not in TERMS:
+            print("unknown terminal %r; choose from %s or none (ANSI)"
+                  % (args[0], ", ".join(sorted(TERMS))))
+            sys.exit(2)
+        d, comname = TERMS[tok]
+        defs = " -D" + d
+        for extra in args[1:]:           # e.g. TERM_ROWS=24
+            defs += " -D" + extra
+    return defs, comname
 
 def clean_temps():
     for p in set(glob.glob("/tmp/hvi-test/A/0/$*") +
@@ -32,6 +65,9 @@ def run(c, cmdline, timeout=600):
     return out
 
 def main():
+    termdefs, comname = term_config()
+    if termdefs:
+        print("== terminal build:%s -> %s" % (termdefs, comname))
     clean_temps()
     log = open("/tmp/hvi-test/build.log", "wb")
     c = CPM(log=log)
@@ -51,7 +87,7 @@ def main():
         u = s.upper()
         print("== compiling %s.c" % s)
         t0 = time.time()
-        o1 = run(c, "CPP -DCPM -DHI_TECH_C -Dz80 -I %s.C T1.TMP" % u)
+        o1 = run(c, "CPP -DCPM -DHI_TECH_C -Dz80%s -I %s.C T1.TMP" % (termdefs, u))
         o2 = run(c, "P1 T1.TMP T2.TMP T3.TMP")
         o3 = run(c, "CGEN T2.TMP T1.TMP")
         o4 = run(c, "OPTIM T1.TMP T2.TMP")
@@ -81,9 +117,9 @@ def main():
     out = run(c, "GAP.OBJ TERM.OBJ SCREEN.OBJ EMOVE.OBJ EREPEAT.OBJ EX.OBJ EDIT.OBJ HVI.OBJ LX.LIB", 300)
     print(out)
 
-    run(c, "ERA HVI.COM")
-    print(run(c, "REN HVI.COM=H.COM"))
-    print(run(c, "STAT HVI.COM"))
+    run(c, "ERA %s" % comname)
+    print(run(c, "REN %s=H.COM" % comname))
+    print(run(c, "STAT %s" % comname))
     c.close()
 
 if __name__ == "__main__":

@@ -299,6 +299,8 @@ int screen_row, pos;
 {
     dra_size = gb_content_len();
     term_goto(screen_row, 0);
+    dra_col = 0;
+#ifdef TERM_HAS_CLREOL
     term_clreol();
     if (pos >= dra_size) {
         /* '~' marks rows past the end of the buffer.  Exception: the
@@ -313,7 +315,6 @@ int screen_row, pos;
             term_putch('~');
         return;
     }
-    dra_col = 0;
     while (pos < dra_size && dra_col < ed.scr_cols) {
         dra_c = gb_char_at(pos);
         if (dra_c == '\n') break;
@@ -326,6 +327,33 @@ int screen_row, pos;
         }
         pos++;
     }
+#else
+    /* No hardware clear-to-EOL: draw the content, then pad the rest of the
+     * row with spaces so leftovers from a longer previous line are erased.
+     * (A cleared row needs scr_cols bytes on such a terminal regardless.) */
+    if (pos >= dra_size) {
+        if (screen_row > 0 &&
+            !(pos == dra_size && ed.cur_pos == dra_size && dra_size > 0 &&
+              gb_char_at(dra_size - 1) == '\n')) {
+            term_putch('~');
+            dra_col = 1;
+        }
+    } else {
+        while (pos < dra_size && dra_col < ed.scr_cols) {
+            dra_c = gb_char_at(pos);
+            if (dra_c == '\n') break;
+            if (dra_c == '\t') {
+                dra_nc = (dra_col | (TAB_STOP - 1)) + 1;
+                while (dra_col < dra_nc) { term_putch(' '); dra_col++; }
+            } else {
+                term_putch(dra_c);
+                dra_col++;
+            }
+            pos++;
+        }
+    }
+    while (dra_col < ed.scr_cols) { term_putch(' '); dra_col++; }
+#endif
 }
 
 void scr_redraw_line(screen_row)
@@ -524,6 +552,7 @@ int from, to;
 void scr_update_after_move(old_top)
 int old_top;
 {
+#ifdef TERM_HAS_SCROLL
     static int uam_tr, uam_p, uam_new_top, uam_delta, uam_nx, uam_i;
     static int uam_down, uam_from, uam_to;
 
@@ -566,6 +595,14 @@ int old_top;
         if (uam_nx > uam_p) uam_p = uam_nx;
     }
     scr_update_cursor();
+#else
+    /* No hardware scroll: any change of the top line changes every text
+     * row, so a full text-area repaint is the cheapest correct update. */
+    if (ed.top_pos == old_top)
+        scr_update_cursor();
+    else
+        scr_refresh();
+#endif /* TERM_HAS_SCROLL */
 }
 
 /* ------------------------------------------------------------------ */
@@ -589,6 +626,7 @@ void scr_status_invalidate()
 }
 
 static char *sss_p;
+static int   sss_i;
 
 void scr_show_status(msg)
 char *msg;
@@ -611,7 +649,14 @@ char *msg;
         sss_last[STATUS_MAX - 1] = '\0';
         term_status_row();
         term_reverse();
-        term_puts(sss_p);
+        /* Clamp to the screen width: a status longer than the row would
+         * wrap and scroll (matters on narrow screens like Osborne 52). */
+        if (hvi_strlen(sss_last) <= ed.scr_cols - 1) {
+            term_puts(sss_last);
+        } else {
+            for (sss_i = 0; sss_i < ed.scr_cols - 1; sss_i++)
+                term_putch((unsigned char)sss_last[sss_i]);
+        }
         term_normal();
     }
     scr_update_cursor();

@@ -1,11 +1,14 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.7.2**
+**Version 2.8.0**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
-HI-TECH C. Uses a gap buffer for efficient editing and ANSI escape sequences
-for terminal control. Implements most of the basic movement and editing commands
-including the `.` operator for repeat. Also has a single level undo.
+HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
+build with automatic terminal-size detection, plus compile-time builds for
+the common early-80s CP/M terminals (VT52, Heath/Zenith H19, Lear Siegler
+ADM-3A, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1). Implements most
+of the basic movement and editing commands including the `.` operator for
+repeat. Also has a single level undo.
 
 **Author:** Juan Orlandini  
 **License:** MIT
@@ -13,6 +16,9 @@ including the `.` operator for repeat. Also has a single level undo.
 ---
 
 ## Building
+
+> **Prebuilt binaries** for every terminal family live in [`bin/`](bin/) —
+> grab the `.COM` matching your terminal and skip straight to *Usage*.
 
 ### Requirements
 
@@ -22,7 +28,7 @@ including the `.` operator for repeat. Also has a single level undo.
 ### Source Files
 
 ```
-cstart.as  hvi.c  hvi.h  gap.c  term.c  screen.c  emove.c
+cstart.as  hvi.c  hvi.h  termcfg.h  gap.c  term.c  screen.c  emove.c
 edit.c  erepeat.c  ex.c  util.c  cpmio.c
 ```
 
@@ -62,6 +68,38 @@ REN HVI.COM=H.COM
 > **Note:** The HI-TECH C linker command is `l` (lowercase L). The `-Ptext=100H,data,bss`
 > flag is required to place data and BSS sections correctly. `cstart.as` must be
 > first in the link order; it replaces the standard `CRTCPM.OBJ`.
+
+### Building for a specific terminal
+
+The steps above build `HVI.COM`, the **ANSI/VT100** edition (dynamic size
+query, full feature set). To target a non-ANSI terminal, add its `-DTERM_xxx`
+define to *every* compile (the family header `termcfg.h` is pulled into every
+module, so a clean rebuild is required) and rename the result:
+
+```
+C -CPM -O -DTERM_VT52 -C cstart.as
+C -CPM -O -DTERM_VT52 -C hvi.c gap.c term.c screen.c emove.c edit.c erepeat.c ex.c util.c cpmio.c
+... link as above ...
+REN HVIVT52.COM=H.COM
+```
+
+| Define | Binary | Terminal | Geometry |
+|---|---|---|---|
+| *(none)* | `HVI.COM` | ANSI / VT100 / xterm | detected, default 80×24 |
+| `-DTERM_VT52` | `HVIVT52.COM` | DEC VT52 | 80×24 |
+| `-DTERM_H19` | `HVIH19.COM` | Heath / Zenith H19 / H89 | 80×24 |
+| `-DTERM_ADM3A` | `HVIADM3.COM` | Lear Siegler ADM-3A / 3A+ | 80×24 |
+| `-DTERM_TVI` | `HVITVI.COM` | Televideo 912/920/925/950 | 80×24 |
+| `-DTERM_WYSE50` | `HVIWY50.COM` | Wyse 50 | 80×24 |
+| `-DTERM_HAZ1500` | `HVIHZ15.COM` | Hazeltine 1500 | 80×24 |
+| `-DTERM_OSB1` | `HVIOSB1.COM` | Osborne 1 | 52×24 |
+
+The non-ANSI builds use a **fixed** screen size (they send no size query),
+80×24 by default (Osborne 52×24) to match the common CP/M terminal. If your
+unit differs, override at compile time with `-DTERM_ROWS=` and/or
+`-DTERM_COLS=`, e.g. `C -CPM -O -DTERM_TVI -DTERM_ROWS=25 -C ...`.
+
+A `Makefile` target wraps this as `make clean; make TERMDEF=-DTERM_VT52`.
 
 ### Cross-Compilation (Linux/macOS host)
 
@@ -371,18 +409,54 @@ it is fully read.
 
 ## Terminal Requirements
 
-HVI uses ANSI/VT100 escape sequences. It defaults to 80 columns × 24 rows,
-which is the standard CP/M terminal size.
+The terminal type is selected **at compile time** (see *Building for a
+specific terminal* above); each build emits only the control codes its
+terminal understands, so nothing garbles a dumb terminal.
 
-At startup HVI always queries the terminal for its actual dimensions by
-sending `ESC[999;999H` (cursor to extreme bottom-right) followed by
-`ESC[6n` (ANSI cursor-position report). The response is read byte-by-byte
-via BIOS CONIN, bypassing BDOS canonical buffering. If the terminal does
-not respond within the polling timeout, HVI silently falls back to the
-80 × 24 defaults — it will not hang. No recompilation flag is needed.
+### ANSI / VT100 build (default `HVI.COM`)
+
+Uses ANSI/VT100 escape sequences and queries the terminal for its actual
+size at startup: it sends `ESC[999;999H` (cursor to extreme bottom-right)
+followed by `ESC[6n` (ANSI cursor-position report) and parses the reply.
+The response is read byte-by-byte via BDOS function 6, bypassing canonical
+buffering. If the terminal does not respond within the polling timeout,
+HVI silently falls back to 80 × 24 — it will not hang.
 
 Compatible terminals: VT100, VT220, xterm, ANSI.SYS, and most modern
 terminal emulators connected via a serial port.
+
+### Non-ANSI builds
+
+The other families use a **fixed** screen size (no size query is sent) and
+each emit that terminal's native codes. Capabilities a terminal lacks are
+handled by software fallbacks so editing stays correct:
+
+| Build | Addressing | Clear-to-EOL | 1-line scroll | Reverse video | Arrow keys |
+|---|---|---|---|---|---|
+| VT52 | `ESC Y r c` | `ESC K` | full repaint | — | `ESC A`–`D` |
+| H19 | `ESC Y r c` | `ESC K` | insert/delete line | `ESC p`/`ESC q` | `ESC A`–`D` |
+| ADM-3A | `ESC = r c` | *(space-padded)* | full repaint | — | *(hjkl)* |
+| Televideo 9xx | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
+| Wyse 50 | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
+| Hazeltine 1500 | `~ DC1 c r` | `~ SI` | insert/delete line | — | *(hjkl)* |
+| Osborne 1 | `ESC = r c` | `ESC T` | full repaint | — | *(hjkl)* |
+
+Notes:
+
+- Arrow keys are recognized only on the ANSI, VT52 and H19 builds. On the
+  others the arrow keys send bare control characters that collide with vi
+  bindings (`^L` redraw, etc.), so they are left unmapped — use `h j k l`.
+- The default fixed size is 80 × 24 (Osborne 1 is 52 × 24), matching the
+  common CP/M terminal. If your unit differs, build with `-DTERM_ROWS=` /
+  `-DTERM_COLS=` to match.
+- **ADM-3A**: clearing the screen uses `^Z`, which requires the clear-screen
+  strap to be enabled on the terminal.
+- **Hazeltine 1500**: reserves `~` as its command lead-in and cannot display
+  it, so HVI shows `^` in its place on screen (files keep the real `~`).
+- The escape codes for the non-ANSI families are drawn from the terminals'
+  manuals; verify against your specific model/firmware, as some codes (e.g.
+  Televideo insert/delete-char on the 912/920, Wyse native vs. emulation
+  mode) vary by revision.
 
 ---
 
@@ -434,6 +508,34 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.7.2 → 2.8.0
+
+Compile-time terminal selection: the ANSI/VT100 build is unchanged, and
+six new fixed-size builds target the common early-80s CP/M terminals.
+
+- **New: per-terminal builds** selected with `-DTERM_xxx` (see *Building
+  for a specific terminal*): VT52, Heath/Zenith H19, Lear Siegler ADM-3A,
+  Televideo 9xx, Wyse 50, Hazeltine 1500, and Osborne 1. No flag still
+  builds the ANSI `HVI.COM`, byte-for-byte the same feature set as before.
+- All escape sequences moved behind capability macros in the new
+  `termcfg.h`; `term.c` emits the selected family's codes and `screen.c`/
+  `edit.c` fall back in software where a terminal lacks a feature —
+  space-padding for terminals with no clear-to-EOL (ADM-3A), a full
+  text-area repaint where there is no hardware scroll (ADM-3A, VT52,
+  Osborne), and whole-line repaints where there is no insert/delete-char.
+- The non-ANSI builds omit the `ESC[6n` size query and the ANSI arrow-key
+  parser entirely, so each is **smaller** than `HVI.COM` (218–223 records
+  vs. 228) and never sends a byte a dumb terminal can't interpret.
+- Hazeltine 1500 displays `^` for `~` (its command lead-in) while keeping
+  the real `~` in the file. Osborne 1 defaults to its 52-column screen and
+  clamps the status line to the screen width.
+- New `tests/termtest.py` asserts each family's raw output stream (correct
+  round-trip, no ANSI CSI, no size query, right address lead-in). ANSI
+  build still passes all 189 + 18 functional tests; `HVI.COM` grew 1
+  record (227 → 228) from the shared cursor-tracking and status changes.
+- The per-terminal escape codes come from the terminals' manuals and are
+  marked for verification against specific models in `termcfg.h`/`term.c`.
 
 ### 2.7.1 → 2.7.2
 

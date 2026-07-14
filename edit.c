@@ -141,8 +141,11 @@ char *tmp;
  * The terminal's insert/delete-char escapes shift the on-screen tail
  * by exactly one column, but a tab's rendered width absorbs (or, at
  * a stop boundary, amplifies) the shift -- the fast paths below may
- * only be used on a tab-free tail.
+ * only be used on a tab-free tail.  Only compiled for families that
+ * have the insert/delete-char escapes (its sole callers are #ifdef'd
+ * under TERM_HAS_ICDC).
  */
+#ifdef TERM_HAS_ICDC
 static int tht_p, tht_sz, tht_c;
 
 static int tail_has_tab()
@@ -155,6 +158,7 @@ static int tail_has_tab()
     }
     return 0;
 }
+#endif
 
 /*
  * Handle one insert-mode keypress.
@@ -224,15 +228,26 @@ int c0;
             if (del_ch == '\n') {
                 scr_adj();
                 scr_show_status(msg_insert);
-            } else if (del_ch == '\t' || tail_has_tab()) {
+            } else if (del_ch == '\t') {
                 scr_redraw_cur_line();
             } else {
                 sz = gb_content_len();
-                term_putch(KEY_BS);
-                if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n')
+                if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
+                    /* Deleting the last char on the line: erase the cell. */
+                    term_putch(KEY_BS);
+#ifdef TERM_HAS_CLREOL
                     term_clreol();
-                else
+#else
+                    term_putch(' '); term_putch(KEY_BS);
+#endif
+#ifdef TERM_HAS_ICDC
+                } else if (!tail_has_tab()) {
+                    term_putch(KEY_BS);
                     term_del_char();
+#endif
+                } else {
+                    scr_redraw_cur_line();
+                }
             }
         }
         return 0;
@@ -330,12 +345,17 @@ int c0;
                 term_putch(c);
             }
         } else {
+#ifdef TERM_HAS_ICDC
             if (c == '\t' || tail_has_tab()) {
                 scr_redraw_cur_line();
             } else {
                 term_ins_char();
                 term_putch(c);
             }
+#else
+            /* No hardware insert-char: repaint the line tail. */
+            scr_redraw_cur_line();
+#endif
             /* Mid-line insert into a line that (now) wraps can push a
              * character off the row end; make ESC repaint the line. */
             chk_multi();
