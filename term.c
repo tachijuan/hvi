@@ -1,10 +1,14 @@
 /*
- * term.c - ANSI terminal I/O for HVI
+ * term.c - terminal I/O for HVI
  * Author: Juan Orlandini
  * License: MIT
  *
- * Provides cursor movement, attribute control, and input using ANSI/VT100
- * escape sequences.  Input via getch() (no echo, no line buffering).
+ * Provides cursor movement, attribute control, and input for the terminal
+ * family selected in termcfg.h (ANSI/VT100 by default; VT52, ADM-3A,
+ * Televideo, Wyse, Hazeltine and Osborne builds via -DTERM_xxx).  The escape
+ * sequences below vary by family; the public function contract does not, so
+ * screen.c/edit.c stay terminal-agnostic apart from a few capability #ifdefs.
+ * Input via getch() (no echo, no line buffering).
  *
  * Performance optimisations for slow serial links (9600 baud, 4 MHz Z80):
  *
@@ -42,7 +46,9 @@ extern void con_write();  /* block console output via BDOS 6 (cstart.as) */
 #define OUT_BUF_SZ  256
 static char s_outbuf[OUT_BUF_SZ];
 static int  s_outpos;
+#ifdef TERM_ANSI
 static char s_rn_buf[8];           /* raw_num scratch for fmt_int */
+#endif
 static int  s_tg_dr, s_tg_i;       /* term_goto statics -- avoid IX-relative locals */
 
 /* Tracked terminal cursor position (-1 = unknown, set by term_init). */
@@ -64,8 +70,11 @@ int c;
 }
 
 
+#ifdef TERM_ANSI
 /* Output the decimal representation of n (>= 0) via raw_byte.
- * Formatting is shared with util.c fmt_int to avoid a second converter. */
+ * Formatting is shared with util.c fmt_int to avoid a second converter.
+ * Only the ANSI build formats decimal coordinates; the other families use
+ * binary/offset addressing and never link fmt_int through here. */
 static char *s_rn_p, *s_rn_end;
 
 static void raw_num(n)
@@ -75,6 +84,7 @@ int n;
     for (s_rn_p = s_rn_buf; s_rn_p < s_rn_end; s_rn_p++)
         raw_byte(*s_rn_p);
 }
+#endif
 
 /*
  * Flush the output buffer to stdout.
@@ -109,16 +119,36 @@ int c0;
     static int c;           /* param copy (absolute beats IX) */
 
     c = c0;
+#ifdef TERM_HAZ1500
+    /* The Hazeltine reserves 0x7E ('~') as its command lead-in and cannot
+     * display it -- substitute '^' for both file content and the '~'
+     * end-of-buffer markers.  Escape sequences bypass term_putch via
+     * raw_byte, so this never corrupts a control string. */
+    if (c == '~') c = '^';
+#endif
     raw_byte(c);
     if (c >= 0x20 && c != 0x7F) {
-        if (s_tcol >= 0) s_tcol++;
+        if (s_tcol >= 0) {
+            s_tcol++;
+#ifdef TERM_WRAP_IMMEDIATE
+            /* Real terminals wrap (and may scroll) the instant the last
+             * column is written, unlike ANSI's deferred wrap.  Drop cursor
+             * tracking so term_goto re-addresses instead of trusting a
+             * stale row for its \r / \n-run fast paths. */
+            if (s_tcol >= ed.scr_cols) { s_trow = -1; s_tcol = -1; }
+#endif
+        }
     } else if (c == '\r') {
         s_tcol = 0;
     } else if (c == '\n') {
         if (s_trow >= 0) s_trow++;
         s_tcol = 0;
+    } else if (c == '\b') {
+        /* Backspace moves left one column (used before an emulated clreol
+         * on no-clreol terminals, which needs a known column). */
+        if (s_tcol > 0) s_tcol--;
     } else {
-        /* Control char other than CR/LF -- lose tracking */
+        /* Control char other than CR/LF/BS -- lose tracking */
         s_trow = -1;
         s_tcol = -1;
     }
@@ -133,25 +163,64 @@ char *s;
 }
 
 /*
- * Clear from cursor to end of current line (ESC[K).
- * The terminal cursor does NOT move; do not invalidate tracking.
+ * Clear from cursor to end of current line.  The terminal cursor must end
+ * where it started.  On families with a hardware clear-to-EOL the sequence
+ * leaves the cursor put; the ADM-3A has none, so we pad spaces to the last
+ * usable column and re-address (draw_row_at and edit.c avoid this slow path
+ * by padding inline, but term_status_row still needs it).
  */
+#ifdef TERM_HAS_CLREOL
 void term_clreol()
 {
+#ifdef TERM_ADDR_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('K');
+#endif
+#ifdef TERM_ADDR_VT52
+    raw_byte(0x1B); raw_byte('K');
+#endif
+#ifdef TERM_ADDR_OFFSET
+    raw_byte(0x1B); raw_byte('T');          /* Televideo/Wyse/Osborne (VERIFY) */
+#endif
+#ifdef TERM_ADDR_HAZ
+    raw_byte('~'); raw_byte(0x0F);          /* ~ SI  (VERIFY) */
+#endif
 }
+#else
+static int s_ce_col;
+void term_clreol()
+{
+    /* No hardware clear-to-EOL: overwrite the tail with spaces.  Stop one
+     * short of the last column so the bottom-right cell is never written
+     * (that scrolls an auto-wrap terminal).  Requires a known column. */
+    if (s_tcol < 0) return;
+    s_ce_col = s_tcol;
+    while (s_tcol < ed.scr_cols - 1)
+        term_putch(' ');
+    term_goto(s_trow, s_ce_col);
+}
+#endif
 
+#ifdef TERM_HAS_REVERSE
 /* Set reverse video attribute (cursor doesn't move). */
 void term_reverse()
 {
+#ifdef TERM_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('7'); raw_byte('m');
+#else
+    raw_byte(0x1B); raw_byte('p');          /* H19 reverse on (VERIFY) */
+#endif
 }
 
 /* Reset all video attributes (cursor doesn't move). */
 void term_normal()
 {
+#ifdef TERM_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('0'); raw_byte('m');
+#else
+    raw_byte(0x1B); raw_byte('q');          /* H19 reverse off (VERIFY) */
+#endif
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  Cursor positioning                                                  */
@@ -199,8 +268,11 @@ int row0, col0;
                 return;
             }
 
-            /* Move right using ESC [ C (3 bytes per col) */
-            if (col > s_tcol && (col - s_tcol) <= 2) {
+            /* Move right with the terminal's short cursor-forward code.
+             * Skipped on Hazeltine (no cheap forward; full re-address). */
+#ifndef TERM_ADDR_HAZ
+#ifdef TERM_ADDR_ANSI
+            if (col > s_tcol && (col - s_tcol) <= 2) {   /* ESC[C = 3 bytes */
                 s_tg_i = col - s_tcol;
                 while (s_tg_i > 0) {
                     raw_byte(0x1B); raw_byte('['); raw_byte('C');
@@ -209,6 +281,30 @@ int row0, col0;
                 s_tcol = col;
                 return;
             }
+#endif
+#ifdef TERM_ADDR_VT52
+            if (col > s_tcol && (col - s_tcol) <= 3) {   /* ESC C = 2 bytes */
+                s_tg_i = col - s_tcol;
+                while (s_tg_i > 0) {
+                    raw_byte(0x1B); raw_byte('C');
+                    s_tg_i--;
+                }
+                s_tcol = col;
+                return;
+            }
+#endif
+#ifdef TERM_ADDR_OFFSET
+            if (col > s_tcol && (col - s_tcol) <= 6) {   /* ^L = 1 byte (VERIFY) */
+                s_tg_i = col - s_tcol;
+                while (s_tg_i > 0) {
+                    raw_byte(0x0C);
+                    s_tg_i--;
+                }
+                s_tcol = col;
+                return;
+            }
+#endif
+#endif /* !TERM_ADDR_HAZ */
         }
 
         /*
@@ -224,12 +320,29 @@ int row0, col0;
         }
     }
 
-    /* Full ANSI cursor-address sequence: ESC [ row+1 ; col+1 H */
-    raw_byte(0x1B); raw_byte('[');
+    /* Full cursor-address sequence for the selected family. */
+#ifdef TERM_ADDR_ANSI
+    raw_byte(0x1B); raw_byte('[');          /* ESC [ row+1 ; col+1 H */
     raw_num(row + 1);
     raw_byte(';');
     raw_num(col + 1);
     raw_byte('H');
+#endif
+#ifdef TERM_ADDR_VT52
+    raw_byte(0x1B); raw_byte('Y');          /* ESC Y row+32 col+32 */
+    raw_byte(row + 32);
+    raw_byte(col + 32);
+#endif
+#ifdef TERM_ADDR_OFFSET
+    raw_byte(0x1B); raw_byte('=');          /* ESC = row+32 col+32 */
+    raw_byte(row + 32);
+    raw_byte(col + 32);
+#endif
+#ifdef TERM_ADDR_HAZ
+    raw_byte('~'); raw_byte(0x11);          /* ~ DC1 col row (VERIFY offset) */
+    raw_byte(col);
+    raw_byte(row);
+#endif
     s_trow = row;
     s_tcol = col;
 }
@@ -238,6 +351,11 @@ int row0, col0;
 /*  Terminal scrolling                                                  */
 /* ------------------------------------------------------------------ */
 
+#ifdef TERM_HAS_SCROLL
+#ifdef TERM_HAS_REGION
+/* VT100 scroll region: a newline at the bottom of the region scrolls up,
+ * a reverse index at the top scrolls down; the status row is outside the
+ * region and stays put. */
 void term_scroll_up()
 {
     term_goto(ed.scr_rows - 2, 0);
@@ -254,18 +372,74 @@ void term_scroll_dn()
     s_trow = 0;
     s_tcol = 0;
 }
+#else
+/* No scroll region: synthesize a 1-row scroll of the text area with a
+ * delete-line/insert-line pair that leaves the status row (bottom row)
+ * untouched.  The exposed blank row is the one scr_update_after_move
+ * repaints next, so no screen.c change is needed. */
+static void term_del_line()
+{
+#ifdef TERM_H19
+    raw_byte(0x1B); raw_byte('M');          /* H19 delete line (VERIFY) */
+#endif
+#ifdef TERM_ADDR_OFFSET
+    raw_byte(0x1B); raw_byte('R');          /* Televideo/Wyse delete line (VERIFY) */
+#endif
+#ifdef TERM_ADDR_HAZ
+    raw_byte('~'); raw_byte(0x13);          /* ~ DC3 delete line (VERIFY) */
+#endif
+}
 
+static void term_ins_line()
+{
+#ifdef TERM_H19
+    raw_byte(0x1B); raw_byte('L');          /* H19 insert line (VERIFY) */
+#endif
+#ifdef TERM_ADDR_OFFSET
+    raw_byte(0x1B); raw_byte('E');          /* Televideo/Wyse insert line (VERIFY) */
+#endif
+#ifdef TERM_ADDR_HAZ
+    raw_byte('~'); raw_byte(0x1A);          /* ~ SUB insert line (VERIFY) */
+#endif
+}
+
+void term_scroll_up()
+{
+    term_goto(0, 0);              term_del_line();
+    term_goto(ed.scr_rows - 2, 0); term_ins_line();
+    s_trow = -1; s_tcol = -1;    /* IL/DL cursor placement varies -- re-address */
+}
+
+void term_scroll_dn()
+{
+    term_goto(ed.scr_rows - 2, 0); term_del_line();
+    term_goto(0, 0);              term_ins_line();
+    s_trow = -1; s_tcol = -1;
+}
+#endif /* region vs ILDL */
+#endif /* TERM_HAS_SCROLL */
+
+#ifdef TERM_HAS_ICDC
 /* Insert a blank character at the current cursor position */
 void term_ins_char()
 {
+#ifdef TERM_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('@');
+#else
+    raw_byte(0x1B); raw_byte('Q');          /* Televideo/Wyse insert char (VERIFY) */
+#endif
 }
 
 /* Delete character at current cursor position */
 void term_del_char()
 {
+#ifdef TERM_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('P');
+#else
+    raw_byte(0x1B); raw_byte('W');          /* Televideo/Wyse delete char (VERIFY) */
+#endif
 }
+#endif /* TERM_HAS_ICDC */
 
 /* ------------------------------------------------------------------ */
 /*  Terminal lifecycle                                                  */
@@ -275,14 +449,17 @@ void term_init()
 {
     ed.scr_rows = DEF_ROWS;
     ed.scr_cols = DEF_COLS;
+#ifdef TERM_HAS_GETSIZE
     term_getsize(&ed.scr_rows, &ed.scr_cols);
+#endif
     term_clear();
-    term_scroll_region();
+    term_scroll_region();       /* no-op macro on families without a region */
     s_trow = -1;
     s_tcol = -1;
     term_flush();
 }
 
+#ifdef TERM_HAS_REGION
 /* Set the scroll region to the text area: ESC [ 1 ; (scr_rows-1) r.
  * Also used by Ctrl-L after term_clear() erases it. */
 void term_scroll_region()
@@ -291,6 +468,7 @@ void term_scroll_region()
     raw_num(ed.scr_rows - 1);
     raw_byte('r');
 }
+#endif
 
 /* Park the cursor at the start of the status row and clear it. */
 void term_status_row()
@@ -301,8 +479,10 @@ void term_status_row()
 
 void term_restore()
 {
+#ifdef TERM_HAS_REGION
     raw_byte(0x1B); raw_byte('['); raw_byte('r'); /* reset scroll region */
-    term_normal();
+#endif
+    term_normal();              /* no-op macro on families without reverse */
     s_trow = -1; s_tcol = -1;
     term_status_row();
     raw_byte('\n');
@@ -314,8 +494,20 @@ void term_restore()
  */
 void term_clear()
 {
+#ifdef TERM_ADDR_ANSI
     raw_byte(0x1B); raw_byte('['); raw_byte('2'); raw_byte('J');
     raw_byte(0x1B); raw_byte('['); raw_byte('H');
+#endif
+#ifdef TERM_ADDR_VT52
+    raw_byte(0x1B); raw_byte('H');          /* home */
+    raw_byte(0x1B); raw_byte('J');          /* erase to end of screen */
+#endif
+#ifdef TERM_ADDR_OFFSET
+    raw_byte(0x1A);                         /* ^Z clear+home (ADM-3A strap; VERIFY) */
+#endif
+#ifdef TERM_ADDR_HAZ
+    raw_byte('~'); raw_byte(0x1C);          /* ~ FS clear+home (VERIFY) */
+#endif
     s_trow = 0;
     s_tcol = 0;
     term_flush();
@@ -346,6 +538,7 @@ void term_clear()
  * keystroke is indistinguishable from idle and is ignored (vi binds
  * nothing to NUL).
  */
+#ifdef TERM_NEED_CONWAIT
 static int cw_n, cw_c;
 
 static int con_wait(n)
@@ -358,19 +551,25 @@ int n;
         if (--cw_n == 0) return -1;
     }
 }
+#endif
 
-static int s_tgc_c, s_tgc_c2;
+static int s_tgc_c;
+#ifdef TERM_ESC_INPUT
+static int s_tgc_c2;
 static int s_tgc_pend;   /* pushback: key typed quickly after a bare ESC */
+#endif
 
 int term_getch()
 {
     term_flush();
 
+#ifdef TERM_ESC_INPUT
     if (s_tgc_pend) {
         s_tgc_c = s_tgc_pend;
         s_tgc_pend = 0;
         return s_tgc_c;
     }
+#endif
 
     /* Spin on BDOS 6, E=0xFF (Direct Console Input: no echo,
      * non-blocking, 0x00 = nothing ready) through bdos_disk to
@@ -380,32 +579,41 @@ int term_getch()
         s_tgc_c = bdos_disk(6, 0xFF) & 0xFF;
     } while (s_tgc_c == 0);
 
+#ifdef TERM_ESC_INPUT
     if (s_tgc_c == KEY_ESC) {
         s_tgc_c2 = con_wait(8000);
         if (s_tgc_c2 < 0) return KEY_ESC;
+#ifdef TERM_ESC_ANSI
         if (s_tgc_c2 != '[') {
             /* Not an arrow sequence: the byte is the NEXT keystroke typed
              * quickly after ESC.  Push it back instead of swallowing it. */
             s_tgc_pend = s_tgc_c2;
             return KEY_ESC;
         }
-
-        s_tgc_c2 = con_wait(8000);
+        s_tgc_c2 = con_wait(8000);   /* the final arrow letter */
+#endif
+        /* VT52 delivers the arrow letter immediately after ESC. */
         switch (s_tgc_c2) {
         case 'A': return KEY_UP;
         case 'B': return KEY_DOWN;
         case 'C': return KEY_RIGHT;
         case 'D': return KEY_LEFT;
-        default:  return KEY_ESC;
+        default:
+#ifdef TERM_ESC_VT52
+            s_tgc_pend = s_tgc_c2;   /* ESC + non-arrow: push back the byte */
+#endif
+            return KEY_ESC;
         }
     }
+#endif /* TERM_ESC_INPUT */
     return s_tgc_c;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Terminal size query                                                 */
+/*  Terminal size query (ANSI only)                                     */
 /* ------------------------------------------------------------------ */
 
+#ifdef TERM_HAS_GETSIZE
 /* Statics for term_getsize -- all static so no IX-relative frame is needed
  * during the BDOS console-status polling loop. */
 static int *s_tgs_rp;       /* cached pointer to caller's rows int */
@@ -476,3 +684,4 @@ int *cols;
     *s_tgs_rp = s_tgs_r;
     *s_tgs_cp = s_tgs_c;
 }
+#endif /* TERM_HAS_GETSIZE */

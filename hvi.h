@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.7.2"
+#define HVI_VERSION "2.8.0"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -23,9 +23,12 @@
  */
 /* #define HVI_DEBUG */
 
-/* Terminal defaults */
-#define DEF_COLS    80
-#define DEF_ROWS    24
+/* Terminal family selection (compile-time) and its fixed geometry.
+ * The ANSI build treats these as the CPR-query fallback; every other
+ * family uses them as the actual screen size. */
+#include "termcfg.h"
+#define DEF_COLS    TERM_COLS
+#define DEF_ROWS    TERM_ROWS
 
 /* Gap buffer limits */
 #define GAP_MIN     256     /* gap reserve kept after each insertion */
@@ -286,18 +289,28 @@ void term_clear();
 void term_clreol();
 void term_goto(/* int row, int col */);
 void term_status_row();
+#ifndef term_scroll_region     /* real function only when it has a body */
 void term_scroll_region();
+#endif
 void term_putch(/* int c */);
 void term_puts(/* char *s */);
 void term_flush();
 int  term_getch();
+#ifdef TERM_HAS_GETSIZE
 void term_getsize(/* int *rows, int *cols */);
+#endif
+#ifndef term_reverse           /* real functions only when they have bodies */
 void term_reverse();
 void term_normal();
+#endif
+#ifdef TERM_HAS_SCROLL
 void term_scroll_up();
 void term_scroll_dn();
+#endif
+#ifdef TERM_HAS_ICDC
 void term_ins_char();
 void term_del_char();
+#endif
 
 /* ---- screen.c ---- */
 void scr_refresh();

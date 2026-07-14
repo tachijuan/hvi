@@ -24,11 +24,21 @@ pip3 install --user pyte
 
 ```sh
 cd /tmp/hvi-test
-python3 build.py      # copies repo sources (LF->CRLF), compiles, links HVI.COM
+python3 build.py      # compiles + links the ANSI HVI.COM
 python3 hvitest.py    # 189 functional tests (movement, edit, ex, :s, shift, undo, marks, screen)
 python3 bigtest.py    # 18 large-file sliding-window, paging and insert-recovery tests
 python3 genasm.py X   # dump OPTIM-stage assembly for module X (debugging)
+
+# non-ANSI terminal families (compile-time, see ../termcfg.h)
+python3 build.py VT52         # -> HVIVT52.COM (also: H19 ADM3A TVI WYSE50 HAZ1500 OSB1)
+python3 build.py OSB1 TERM_ROWS=25   # extra -D geometry overrides after the family
+python3 termtest.py --build   # build every family, then assert on its raw byte stream
+python3 termtest.py VT52 ADM3A       # test only named families already built
 ```
+
+`termtest.py` checks the per-terminal escape layer: each non-ANSI build must
+round-trip an edit yet never emit an ANSI CSI (`ESC[`) or the `ESC[6n` size
+query.  It reads the raw stream directly, so it does not need pyte.
 
 `build.py` runs the five compiler passes manually (CPP -> P1 -> CGEN ->
 OPTIM -> ZAS) because RunCPM's internal CCP cannot exec the driver's

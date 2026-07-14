@@ -38,9 +38,26 @@
 #
 # For debugging symbols add -H:
 #   C -CPM -H -C cstart.as hvi.c gap.c ...
+#
+# TERMINAL FAMILY (compile-time, see termcfg.h): no flag builds the ANSI
+# HVI.COM (dynamic size query, full features).  Pass TERMDEF to select
+# another family and rename the linked H.COM to the family binary:
+#
+#   make clean                        (hvi.h pulls termcfg.h into every
+#   make TERMDEF=-DTERM_VT52           module, so switching family needs a
+#   ... link as below ...             full rebuild)
+#   REN HVIVT52.COM=H.COM
+#
+#   TERM_VT52  HVIVT52   TERM_ADM3A HVIADM3   TERM_TVI    HVITVI
+#   TERM_H19   HVIH19    TERM_WYSE50 HVIWY50  TERM_HAZ1500 HVIHZ15
+#                                             TERM_OSB1   HVIOSB1
+#
+# Override the fixed geometry of a non-ANSI build (defaults 25x80, Osborne
+# 52 cols) with extra defines, e.g. TERMDEF="-DTERM_TVI -DTERM_ROWS=24".
 
-CC     = C
-CFLAGS = -CPM -O
+CC      = C
+TERMDEF =
+CFLAGS  = -CPM -O $(TERMDEF)
 
 OBJS = cstart.obj hvi.obj gap.obj term.obj screen.obj emove.obj edit.obj erepeat.obj ex.obj util.obj cpmio.obj
 
@@ -48,34 +65,34 @@ OBJS = cstart.obj hvi.obj gap.obj term.obj screen.obj emove.obj edit.obj erepeat
 cstart.obj: cstart.as
 	$(CC) $(CFLAGS) -C cstart.as
 
-hvi.obj: hvi.c hvi.h
+hvi.obj: hvi.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C hvi.c
 
-gap.obj: gap.c hvi.h
+gap.obj: gap.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C gap.c
 
-term.obj: term.c hvi.h
+term.obj: term.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C term.c
 
-screen.obj: screen.c hvi.h
+screen.obj: screen.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C screen.c
 
-emove.obj: emove.c hvi.h
+emove.obj: emove.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C emove.c
 
-edit.obj: edit.c hvi.h
+edit.obj: edit.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C edit.c
 
-erepeat.obj: erepeat.c hvi.h
+erepeat.obj: erepeat.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C erepeat.c
 
-ex.obj: ex.c hvi.h
+ex.obj: ex.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C ex.c
 
-util.obj: util.c hvi.h
+util.obj: util.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C util.c
 
-cpmio.obj: cpmio.c hvi.h
+cpmio.obj: cpmio.c hvi.h termcfg.h
 	$(CC) $(CFLAGS) -C cpmio.c
 
 clean:

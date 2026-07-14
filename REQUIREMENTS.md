@@ -2,8 +2,8 @@
 
 **Author:** Juan Orlandini  
 **License:** MIT  
-**Version:** 2.7.2  
-**Date:** 2026-07-12
+**Version:** 2.8.0  
+**Date:** 2026-07-14
 
 ---
 
@@ -40,10 +40,9 @@ This document specifies the complete requirements, architecture, design decision
 - CP/M filenames are 8.3 uppercase; HI-TECH C upcases filenames automatically
 
 ### 2.3 Terminal
-- ANSI/VT100 escape sequences required
-- Default assumed geometry: **80 columns × 24 rows**
-- Terminal size queried at startup via ANSI CPR (cursor-position report); defaults used if terminal does not respond
-- Compatible terminals: VT100, VT220, xterm, ANSI.SYS, and most modern terminal emulators connected via serial
+- The terminal **family is selected at compile time** via `-DTERM_xxx` (see `termcfg.h` and §12); no flag builds the ANSI/VT100 default. Each build emits only the codes its terminal understands.
+- **ANSI/VT100 build** (`HVI.COM`): full escape set; queries terminal size at startup via ANSI CPR (`ESC[6n`); default 80 × 24 if the terminal does not respond. Compatible with VT100, VT220, xterm, ANSI.SYS, and most emulators.
+- **Non-ANSI builds** (VT52, H19, ADM-3A, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1): **fixed** geometry, default 80 × 24 (Osborne 52 × 24), overridable with `-DTERM_ROWS=` / `-DTERM_COLS=`. No size query is sent. Capabilities a terminal lacks (clear-to-EOL, hardware scroll, insert/delete-char, reverse video) are emulated in software so editing stays correct.
 
 ---
 
@@ -53,7 +52,8 @@ This document specifies the complete requirements, architecture, design decision
 |------|---------|
 | `cstart.as` | Custom Z80 startup (stack, BSS zeroing, `heap_base`/`bdos_base`; replaces CRTCPM.OBJ) **plus the assembly core**: fixed `csv`/`cret`/`ncsv` frame routines, IX-safe `bdos_disk`, `dsk_u` (BDOS call inside a user area), `fill_fcb` (FCB build + `du:` prefix parse), `gb_memmove` (LDIR/LDDR), `gb_char_at`, `gb_memchr`/`gb_memrchr` (CPIR/CPDR byte scans), `gb_cntnl` (CPIR newline count), `con_write` (block console output via BDOS 6) |
 | `hvi.c` | Main entry point, argument parsing, startup sequence |
-| `hvi.h` | Shared types, constants, and extern declarations |
+| `hvi.h` | Shared types, constants, and extern declarations (includes `termcfg.h`) |
+| `termcfg.h` | Compile-time terminal family selection: `-DTERM_xxx` picks an addressing style, capability macros, and fixed geometry; no flag = ANSI. Consumed by `term.c` and the capability fallbacks in `screen.c`/`edit.c` |
 | `gap.c` | Gap buffer: allocation, load, save, insert, delete, `find_bol`/`find_eol`, marks, large-file paging |
 | `cpmio.c` | Direct BDOS file I/O, user-area plumbing, and heap allocator (replaces stdio and malloc) |
 | `util.c` | String utilities and `hvi_sprintf` (replaces `<string.h>` and `<stdio.h>` sprintf) |
@@ -952,28 +952,42 @@ input — many BDOS calls become one, which matters when the link is
 baud-rate limited.  Two further output optimisations:
 
 - **Cursor tracking** — `s_trow`/`s_tcol` shadow the terminal cursor so
-  `term_goto()` can emit `\r` (1 byte), backspaces, `ESC[C`, or `\r`+`\n`s
-  instead of the full 7–10 byte `ESC[r;cH` when the move is small.  Any
-  untracked control byte invalidates the shadow.
-- **Scroll region** — set once at startup to the text area
-  (`ESC[1;(rows-1)r`) so `term_scroll_up()`/`term_scroll_dn()` scroll by
-  one visual row in 2–3 bytes; re-established by Ctrl-L after its
+  `term_goto()` can emit `\r` (1 byte), backspaces, the family's short
+  cursor-right code, or `\r`+`\n`s instead of a full re-address when the
+  move is small.  Any untracked control byte invalidates the shadow, as
+  does writing the last column on the non-ANSI families (`TERM_WRAP_IMMEDIATE`,
+  which wrap the instant the last cell is written).
+- **Scroll region** — on the ANSI build, set once at startup to the text
+  area (`ESC[1;(rows-1)r`) so `term_scroll_up()`/`term_scroll_dn()` scroll
+  by one visual row in 2–3 bytes; re-established by Ctrl-L after its
   `ESC[2J`.
 
-ANSI escape sequences used:
+**Terminal families** are selected at compile time (`termcfg.h`).  The public
+`term_*` contract is identical across families; only the emitted bytes and a
+handful of capability `#ifdef`s in `screen.c`/`edit.c` differ.  Per-family
+sequences (all non-ANSI codes taken from the terminals' manuals and marked
+`VERIFY` in `term.c` for confirmation against specific models):
 
-| Sequence | Purpose |
-|----------|---------|
-| `ESC[2J` + `ESC[H` | Clear screen and home |
-| `ESC[K` | Clear to end of line |
-| `ESC[r;cH` | Move cursor to row r, column c (1-based) |
-| `ESC[7m` / `ESC[0m` | Reverse video on / attributes off (status bar) |
-| `ESC[1;Nr` / `ESC[r` | Set scroll region to the text area / reset at exit |
-| `ESC M` | Reverse Index (scroll down one row) |
-| `ESC[@` / `ESC[P` | Insert / delete one character cell (mid-line insert-mode typing; only when no tab follows on the line — a tab's rendered width absorbs the one-column shift) |
-| `ESC[C` | Cursor right (short moves under cursor tracking) |
-| `ESC[999;999H` + `ESC[6n` | Terminal size query (CPR) |
-| `ESC[r;cR` | Terminal size response (parsed in `term_getsize`) |
+| Operation | ANSI | VT52 / H19 | ADM-3A | Televideo / Wyse | Hazeltine 1500 | Osborne 1 |
+|-----------|------|-----------|--------|------------------|----------------|-----------|
+| Address cursor | `ESC[r;cH` (decimal) | `ESC Y r+32 c+32` | `ESC = r+32 c+32` | `ESC = r+32 c+32` | `~ DC1 c r` (binary, col first) | `ESC = r+32 c+32` |
+| Clear + home | `ESC[2J ESC[H` | `ESC H ESC J` | `^Z` | `^Z` | `~ FS` | `^Z` |
+| Clear to EOL | `ESC[K` | `ESC K` | *space-pad* | `ESC T` | `~ SI` | `ESC T` |
+| Cursor right (short) | `ESC[C` | `ESC C` | `^L` | `^L` | *(none)* | `^L` |
+| 1-row scroll | scroll region (`\n` / `ESC M`) | H19: `ESC L`/`ESC M`; VT52: *repaint* | *repaint* | `ESC E`/`ESC R` | `~ SUB`/`~ DC3` | *repaint* |
+| Insert / delete char | `ESC[@` / `ESC[P` | *repaint* | *repaint* | `ESC Q` / `ESC W` | *repaint* | *repaint* |
+| Reverse / normal | `ESC[7m` / `ESC[0m` | H19: `ESC p`/`ESC q`; VT52: *plain* | *plain* | *plain* | *plain* | *plain* |
+| Size query | `ESC[999;999H`+`ESC[6n`, reply `ESC[r;cR` | *(fixed size)* | *(fixed)* | *(fixed)* | *(fixed)* | *(fixed)* |
+| Arrow-key input | `ESC[A`–`D` | `ESC A`–`D` | *(none; hjkl)* | *(none; hjkl)* | *(none; hjkl)* | *(none; hjkl)* |
+
+Where a cell says *repaint* / *space-pad* / *plain*, the operation is
+emulated: mid-line insert/delete falls back to `scr_redraw_cur_line()`, a
+missing scroll to a full text-area `scr_refresh()`, a missing clear-to-EOL
+to space padding (stopping one short of the last column so an auto-wrap
+terminal never scrolls from the bottom-right cell), and a missing reverse
+attribute to plain status text.  The Hazeltine build also maps `~` (its
+command lead-in, undisplayable) to `^` on screen via `term_putch`, leaving
+file contents untouched.
 
 Input is described in §7.8 (BDOS 6/11 via `bdos_disk`; no BIOS, no libc
 `getch()`).
@@ -1027,6 +1041,7 @@ For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit
 | `long` variables at function top | Inner-block `long` declarations have been observed to cause optimizer failures |
 | `gb_memmove()` in gap.c | HI-TECH C V3.09 does not include `memmove()` |
 | Size-query reads defer all other console output | BDOS console-write calls between response reads can consume buffered terminal response bytes on some hosts; the whole `ESC[6n` handshake is one `con_write` block followed only by `con_wait` polls |
+| Size query exists only in the ANSI build | The `ESC[6n` handshake (and its `raw_num`/`tgs_num` decimal parser) are compiled in only when `TERM_HAS_GETSIZE` is defined (ANSI). Non-ANSI families use the compile-time fixed geometry and send no query, so a dumb terminal never receives a report request it cannot answer — and each such build is smaller |
 | No `scr_refresh()` on quit | Avoids unnecessary terminal I/O when the user is about to see the shell prompt |
 | `HVITMP.TMP` for large-file saves | Prevents reading and writing the same file simultaneously when saving to the tail source |
 | Dot-repeat captures text at ESC | At ESC time the inserted text is contiguous in the buffer at `undo.pos`; simple loop copies it |

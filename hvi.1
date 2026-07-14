@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-12" "HVI 2.7.2" "CP/M User Commands"
+.TH HVI 1 "2026-07-14" "HVI 2.8.0" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -622,24 +622,37 @@ tail is preserved unchanged on save.
 .\" ----------------------------------------------------------------
 .SH TERMINAL REQUIREMENTS
 .\"
-HVI requires an ANSI/VT100-compatible terminal.
-It defaults to 80 columns \(mu 24 rows on startup.
+The terminal family is chosen at compile time (see
+.BR termcfg.h ).
+The default build is for an ANSI/VT100-compatible terminal; separate builds
+target the DEC VT52, Heath/Zenith H19, Lear Siegler ADM-3A, Televideo 9xx,
+Wyse 50, Hazeltine 1500 and Osborne 1.
 .PP
-Compatible terminals include VT100, VT220, xterm, ANSI.SYS, and most
-modern terminal emulators connected via a serial port.
-.PP
-At startup HVI queries the terminal for its actual dimensions by sending
+The
+.B ANSI
+build queries the terminal for its actual dimensions at startup by sending
 .B ESC[999;999H
 followed by
 .B ESC[6n
 (ANSI cursor-position report).
-The response is read byte-by-byte via BIOS CONIN, bypassing BDOS canonical
-buffering.
+The response is read byte-by-byte via BDOS function 6.
 If the terminal does not respond within the polling timeout, HVI silently
-falls back to the compiled-in defaults
+falls back to
 .RB ( DEF_COLS =80,
 .BR DEF_ROWS =24).
-No recompilation flag is required; the query is always active.
+Compatible terminals include VT100, VT220, xterm, ANSI.SYS, and most modern
+terminal emulators connected via a serial port.
+.PP
+The
+.B non-ANSI
+builds use a fixed screen size (default 80 \(mu 24, Osborne 52 \(mu 24;
+override with
+.BR -DTERM_ROWS= / -DTERM_COLS= )
+and send no size query.
+Arrow keys are recognized only on the ANSI, VT52 and H19 builds; on the
+others use
+.BR h " " j " " k " " l .
+See the README for the per-family build defines and escape-code details.
 .\"
 .\" ----------------------------------------------------------------
 .SH FILE FORMAT
