@@ -462,9 +462,11 @@ Notes:
 
 ## File Format
 
-HVI reads files in binary mode, stripping bare `CR` characters on load.
-On save, each `LF` is written as `CR+LF` per CP/M convention, and the
-file is terminated with `Ctrl-Z` (0x1A) per CP/M file format rules.
+HVI reads files in binary mode. A `CR` is stripped only where it forms a
+`CR+LF` line-ending pair; a bare `CR` in the middle of a line is preserved
+as content. On save, each `LF` is written as `CR+LF` per CP/M convention
+(so a preserved bare `CR` round-trips unchanged), and the file is terminated
+with `Ctrl-Z` (0x1A) per CP/M file format rules.
 
 ---
 
@@ -536,6 +538,11 @@ six new fixed-size builds target the common early-80s CP/M terminals.
   record (227 → 228) from the shared cursor-tracking and status changes.
 - The per-terminal escape codes come from the terminals' manuals and are
   marked for verification against specific models in `termcfg.h`/`term.c`.
+- **Fix: a bare `CR` in the middle of a line was stripped on load.** The
+  loader dropped every `CR`; it now removes a `CR` only where it forms a
+  `CR+LF` line ending, so a mid-line `CR` is kept as content and round-trips
+  on save. Fixed in both the initial load and the large-file tail-paging
+  paths (`gb_fill`/`gb_load_more`, gap.c); two regression tests added.
 
 ### 2.7.1 → 2.7.2
 

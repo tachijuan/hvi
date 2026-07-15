@@ -779,6 +779,33 @@ def main():
           "got %r" % get_file("PLAIN.TXT"))
     sess.close()
 
+    # ---------- bare CR handling (raw bytes; put_file can't inject a lone CR) ----------
+    sess = Session()
+
+    def raw_put(name, data): open(os.path.join(DRIVE, name), "wb").write(data)
+    def raw_get(name):
+        return open(os.path.join(DRIVE, name), "rb").read().rstrip(b"\x1a")
+
+    # A CR NOT followed by LF is content and must survive load+save; a CR that
+    # forms CR+LF is a line ending and is normalised.
+    raw_put("CRMID.TXT", b"abc\rdef\r\nghi\r\n\x1a")
+    sess.start_hvi("CRMID.TXT")
+    sess.quit_expect_prompt(":wq\r")
+    check("mid-line CR preserved on round-trip",
+          raw_get("CRMID.TXT") == b"abc\rdef\r\nghi\r\n",
+          "got %r" % raw_get("CRMID.TXT"))
+
+    # Edit the line that holds the bare CR: insert 'X' at the start; the CR
+    # stays put and the file still round-trips.
+    raw_put("CRED.TXT", b"abc\rdef\r\nsecond\r\n\x1a")
+    sess.start_hvi("CRED.TXT")
+    sess.keys("iX\x1b")
+    sess.quit_expect_prompt(":wq\r")
+    check("bare CR intact after editing its line",
+          raw_get("CRED.TXT") == b"Xabc\rdef\r\nsecond\r\n",
+          "got %r" % raw_get("CRED.TXT"))
+    sess.close()
+
     # ---------- summary ----------
     print("\n---- %d tests, %d failed ----" %
           (len(RESULTS), sum(1 for _, ok, _ in RESULTS if not ok)))
