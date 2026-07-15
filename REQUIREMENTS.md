@@ -628,7 +628,7 @@ function; no handle is held open across function call boundaries.
 ## 8. File Format
 
 - Files are read in binary mode (`"rb"`).
-- On load: bare `CR` (0x0D) characters are stripped. `CR+LF` pairs are normalized to `LF`.
+- On load: a `CR` (0x0D) is stripped only when it is the `CR` of a `CR+LF` pair (normalized to `LF`); a bare `CR` mid-line is kept as content and round-trips on save.
 - On save: each `LF` is written as `CR+LF` (CP/M convention).
 - CP/M EOF marker `Ctrl-Z` (0x1A) terminates saved files.
 - On load: `Ctrl-Z` stops reading (CP/M EOF convention).

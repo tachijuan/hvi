@@ -346,8 +346,7 @@ static void show_loading()
  * (BDOS functions 15/20/26 do not guarantee IX preservation on CP/M). */
 static HFILE *s_gbf_f;
 static char  *s_gbf_fn;
-static int    gbf_c, gbf_prev_cr, gbf_limit;
-static long   gbf_pos;
+static int    gbf_c, gbf_limit;
 
 static int gb_fill(f, filename)
 HFILE *f;
@@ -367,14 +366,18 @@ char  *filename;
     ed.line_cnt_cached = 0;
     gbf_limit = ed.gb.size - GAP_MIN;
 
-    gbf_prev_cr = 0;
     while ((gbf_c = hvi_fgetc(s_gbf_f)) != HEOF) {
-        if (gbf_c == 0x0D) { gbf_prev_cr = 1; continue; }
         if (gbf_c == 0x1A) break;
+        /* Normalise line endings: strip a CR only when it forms a CR+LF
+         * pair (drop the CR we just stored).  A bare CR in mid-line is
+         * content and is kept.  Storing the CR first means it lands in the
+         * in-memory buffer or the tail naturally, so no offset fix-up is
+         * needed when the buffer fills mid-pair. */
+        if (gbf_c == 0x0A && ed.gb.gstart > 0 &&
+            ed.gb.buf[ed.gb.gstart - 1] == 0x0D)
+            ed.gb.gstart--;
         if (ed.gb.gstart >= gbf_limit) {
-            gbf_pos = hvi_ftell(s_gbf_f) - 1L;
-            if (gbf_c == 0x0A && gbf_prev_cr) gbf_pos -= 1L;
-            ed.tail_offset = gbf_pos;
+            ed.tail_offset = hvi_ftell(s_gbf_f) - 1L;
             if (s_gbf_fn) {
                 hvi_strncpy(ed.tail_file, s_gbf_fn, PATH_MAX - 1);
                 ed.tail_file[PATH_MAX - 1] = '\0';
@@ -382,7 +385,6 @@ char  *filename;
             hvi_fclose(s_gbf_f);
             return 2;
         }
-        gbf_prev_cr = 0;
         ed.gb.buf[ed.gb.gstart++] = (char)gbf_c;
     }
     hvi_fclose(s_gbf_f);
@@ -497,7 +499,15 @@ int n;
     while (glm_loaded < glm_n && ed.gb.gstart < glm_limit) {
         glm_c = hvi_fgetc(glm_f);
         if (glm_c == HEOF || glm_c == 0x1A) { ed.tail_offset = 0L; break; }
-        if (glm_c == 0x0D) continue;
+        /* CR+LF -> LF: rewrite the CR we already stored (possibly on a
+         * previous page) in place instead of appending, so a pair split
+         * across the load boundary still collapses.  A bare CR is kept. */
+        if (glm_c == '\n' && ed.gb.gstart > 0 &&
+            ed.gb.buf[ed.gb.gstart - 1] == 0x0D) {
+            ed.gb.buf[ed.gb.gstart - 1] = '\n';
+            glm_nl++;
+            continue;
+        }
         if (glm_c == '\n') glm_nl++;
         ed.gb.buf[ed.gb.gstart++] = (char)glm_c;
         glm_loaded++;
