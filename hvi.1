@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-14" "HVI 2.8.0" "CP/M User Commands"
+.TH HVI 1 "2026-07-15" "HVI 2.8.2" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -519,6 +519,9 @@ The range is one address or
 (the last line), or
 .BI ' { a-z }
 (the mark's line); the default is the cursor's line.
+.B %
+is a shorthand for the whole buffer
+.RB ( 1,$ ).
 The trailing
 .B /
 may be omitted; an empty
