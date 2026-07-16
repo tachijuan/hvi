@@ -383,7 +383,7 @@ static void term_del_line()
     raw_byte(0x1B); raw_byte('M');          /* H19 delete line (VERIFY) */
 #endif
 #ifdef TERM_ADDR_OFFSET
-    raw_byte(0x1B); raw_byte('R');          /* Televideo/Wyse delete line (VERIFY) */
+    raw_byte(0x1B); raw_byte('R');          /* Televideo/Wyse/Kaypro delete line (VERIFY) */
 #endif
 #ifdef TERM_ADDR_HAZ
     raw_byte('~'); raw_byte(0x13);          /* ~ DC3 delete line (VERIFY) */
@@ -396,7 +396,7 @@ static void term_ins_line()
     raw_byte(0x1B); raw_byte('L');          /* H19 insert line (VERIFY) */
 #endif
 #ifdef TERM_ADDR_OFFSET
-    raw_byte(0x1B); raw_byte('E');          /* Televideo/Wyse insert line (VERIFY) */
+    raw_byte(0x1B); raw_byte('E');          /* Televideo/Wyse/Kaypro insert line (VERIFY) */
 #endif
 #ifdef TERM_ADDR_HAZ
     raw_byte('~'); raw_byte(0x1A);          /* ~ SUB insert line (VERIFY) */

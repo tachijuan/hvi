@@ -35,6 +35,8 @@ FAMILIES = {
                     reverse=True,  no_esc=False, tilde=False, cols=80),
     "ADM3A":   dict(com="HVIADM3", addr=b"\x1b=", ildl=False, icdc=False,
                     reverse=False, no_esc=False, tilde=False, cols=80),
+    "KPRO":    dict(com="HVIKPRO", addr=b"\x1b=", ildl=True,  icdc=False,
+                    reverse=False, no_esc=False, tilde=False, cols=80),
     "TVI":     dict(com="HVITVI",  addr=b"\x1b=", ildl=True,  icdc=True,
                     reverse=False, no_esc=False, tilde=False, cols=80),
     "WYSE50":  dict(com="HVIWY50", addr=b"\x1b=", ildl=True,  icdc=True,

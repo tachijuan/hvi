@@ -1,12 +1,13 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.8.0**
+**Version 2.8.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
 build with automatic terminal-size detection, plus compile-time builds for
 the common early-80s CP/M terminals (VT52, Heath/Zenith H19, Lear Siegler
-ADM-3A, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1). Implements most
+ADM-3A, Kaypro 83/84, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1).
+Implements most
 of the basic movement and editing commands including the `.` operator for
 repeat. Also has a single level undo.
 
@@ -89,6 +90,7 @@ REN HVIVT52.COM=H.COM
 | `-DTERM_VT52` | `HVIVT52.COM` | DEC VT52 | 80×24 |
 | `-DTERM_H19` | `HVIH19.COM` | Heath / Zenith H19 / H89 | 80×24 |
 | `-DTERM_ADM3A` | `HVIADM3.COM` | Lear Siegler ADM-3A / 3A+ | 80×24 |
+| `-DTERM_KPRO` | `HVIKPRO.COM` | Kaypro 83 / 84 | 80×24 |
 | `-DTERM_TVI` | `HVITVI.COM` | Televideo 912/920/925/950 | 80×24 |
 | `-DTERM_WYSE50` | `HVIWY50.COM` | Wyse 50 | 80×24 |
 | `-DTERM_HAZ1500` | `HVIHZ15.COM` | Hazeltine 1500 | 80×24 |
@@ -436,6 +438,7 @@ handled by software fallbacks so editing stays correct:
 | VT52 | `ESC Y r c` | `ESC K` | full repaint | — | `ESC A`–`D` |
 | H19 | `ESC Y r c` | `ESC K` | insert/delete line | `ESC p`/`ESC q` | `ESC A`–`D` |
 | ADM-3A | `ESC = r c` | *(space-padded)* | full repaint | — | *(hjkl)* |
+| Kaypro 83/84 | `ESC = r c` | *(space-padded)* | insert/delete line | — | *(hjkl)* |
 | Televideo 9xx | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
 | Wyse 50 | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
 | Hazeltine 1500 | `~ DC1 c r` | `~ SI` | insert/delete line | — | *(hjkl)* |
@@ -451,6 +454,13 @@ Notes:
   `-DTERM_COLS=` to match.
 - **ADM-3A**: clearing the screen uses `^Z`, which requires the clear-screen
   strap to be enabled on the terminal.
+- **Kaypro 83/84**: an ADM-3A superset — same `ESC =` addressing and `^Z`
+  clear, plus hardware insert-line (`ESC E`) / delete-line (`ESC R`), so
+  scrolling and paging update just the newly exposed rows instead of
+  repainting the whole screen. The `/84`'s screen attributes (reverse /
+  blink / hi-lo) are not used, and the Kaypro cursor keys (`^H ^J ^K ^L`,
+  which collide with `hjkl` and `^L` redraw) are left unmapped — use
+  `h j k l`.
 - **Hazeltine 1500**: reserves `~` as its command lead-in and cannot display
   it, so HVI shows `^` in its place on screen (files keep the real `~`).
 - The escape codes for the non-ANSI families are drawn from the terminals'
@@ -510,6 +520,30 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.8.0 → 2.8.1
+
+Adds a dedicated Kaypro build and fixes a latent flaw that made hardware
+insert/delete-line scrolling impossible to enable on a new family.
+
+- **New: Kaypro 83/84 build** (`-DTERM_KPRO` → `HVIKPRO.COM`). The Kaypro
+  screen is an ADM-3A superset: same `ESC =` cursor addressing and `^Z`
+  clear/home, plus hardware insert-line (`ESC E`) and delete-line
+  (`ESC R`). Scrolling and paging now update only the newly exposed rows
+  instead of repainting the whole screen (222 records). Reported in
+  [issue #5](https://github.com/tachijuan/hvi/issues/5).
+- **Fix: `TERM_HAS_SCROLL` is now derived, not hand-declared.** The
+  insert/delete-line scroll fast path in `term.c`/`screen.c` keys off
+  `TERM_HAS_SCROLL`, but a family had to remember to define *both*
+  `TERM_HAS_ILDL` and `TERM_HAS_SCROLL` — declaring ins/del-line alone
+  silently compiled it dead and fell back to full repaints (the original
+  Kaypro symptom). `TERM_HAS_SCROLL` is now derived automatically from
+  `TERM_HAS_REGION`/`TERM_HAS_ILDL` in `termcfg.h`, so a family only
+  declares its mechanism. No change to the existing builds (verified: the
+  ANSI, H19, TVI, Wyse and Hazeltine escape streams are unchanged).
+- The Kaypro cursor keys (`^H ^J ^K ^L`) collide with `hjkl`/`^L` redraw
+  and would need BIOS keymap patching to remap, so they are left unmapped
+  as on the other non-ANSI builds — use `h j k l`.
 
 ### 2.7.2 → 2.8.0
 

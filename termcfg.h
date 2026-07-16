@@ -14,6 +14,7 @@
  *   TERM_VT52     HVIVT52.COM  DEC VT52          ESC Y addressing, ESC arrows
  *   TERM_H19      HVIH19.COM   Heath/Zenith H19  VT52 + ins/del line + reverse
  *   TERM_ADM3A    HVIADM3.COM  Lear Siegler ADM-3A   worst case: goto + clear
+ *   TERM_KPRO     HVIKPRO.COM  Kaypro 83/84      ADM-3A + insert/delete line
  *   TERM_TVI      HVITVI.COM   Televideo 9xx     ESC = addr, ins/del line+char
  *   TERM_WYSE50   HVIWY50.COM  Wyse 50           TVI-compatible
  *   TERM_HAZ1500  HVIHZ15.COM  Hazeltine 1500    ~ lead-in, binary addressing
@@ -68,7 +69,6 @@
 #define TERM_WRAP_IMMEDIATE
 #ifdef TERM_H19
 #define TERM_HAS_ILDL            /* ESC L / ESC M   (VERIFY H19 manual) */
-#define TERM_HAS_SCROLL
 #define TERM_HAS_REVERSE         /* ESC p / ESC q   (VERIFY H19 manual) */
 #endif
 
@@ -81,13 +81,29 @@
 /* no CLREOL, no SCROLL, no ICDC, no REVERSE, no ESC arrows */
 
 #else
+#ifdef TERM_KPRO
+/* -------- Kaypro 83/84 (ADM-3A superset with insert/delete line) -------- */
+#define TERM_NAME        "Kaypro"
+#define TERM_ADDR_OFFSET         /* ESC = row+32 col+32 (ADM-3A style) */
+#define TERM_WRAP_IMMEDIATE
+#define TERM_HAS_ILDL            /* ESC E insert line / ESC R delete line */
+/* Insert/delete-line drives the 1-row scroll fast path (TERM_HAS_SCROLL is
+ * derived from TERM_HAS_ILDL below) instead of a full repaint.  The Kaypro
+ * shares the ADM-3A ESC = addressing and ^Z clear/home, so the OFFSET code
+ * paths in term.c already emit the right bytes: ESC E / ESC R for ins/del
+ * line match the Kaypro firmware.
+ * Left out on purpose (see issue #5): no CLREOL (the space-pad fallback is
+ * always correct), no ICDC, no REVERSE (the /84's attributes are optional),
+ * and no ESC arrows -- the Kaypro cursor keys emit ^H ^J ^K ^L, which
+ * collide with hjkl and would need BIOS keymap patching to remap. */
+
+#else
 #ifdef TERM_TVI
 /* -------- Televideo 912/920/925/950 -------- */
 #define TERM_NAME        "Televideo"
 #define TERM_ADDR_OFFSET
 #define TERM_HAS_CLREOL          /* ESC T   (VERIFY) */
 #define TERM_HAS_ILDL            /* ESC E / ESC R   (VERIFY) */
-#define TERM_HAS_SCROLL
 #define TERM_HAS_ICDC            /* ESC Q / ESC W   (VERIFY; 912/920 opt ROM) */
 #define TERM_WRAP_IMMEDIATE
 
@@ -98,7 +114,6 @@
 #define TERM_ADDR_OFFSET
 #define TERM_HAS_CLREOL          /* ESC T   (VERIFY native mode) */
 #define TERM_HAS_ILDL            /* ESC E / ESC R   (VERIFY) */
-#define TERM_HAS_SCROLL
 #define TERM_HAS_ICDC            /* ESC Q / ESC W   (VERIFY) */
 #define TERM_WRAP_IMMEDIATE
 
@@ -109,7 +124,6 @@
 #define TERM_ADDR_HAZ            /* ~ DC1 col row, column first (VERIFY) */
 #define TERM_HAS_CLREOL          /* ~ SI  (VERIFY) */
 #define TERM_HAS_ILDL            /* ~ SUB / ~ DC3  (VERIFY) */
-#define TERM_HAS_SCROLL
 #define TERM_WRAP_IMMEDIATE
 /* Hazeltine cannot display '~' (0x7E is the command lead-in); term.c
  * substitutes '^' for tilde in term_putch. */
@@ -132,7 +146,6 @@
 #define TERM_ADDR_ANSI
 #define TERM_HAS_GETSIZE
 #define TERM_HAS_REGION
-#define TERM_HAS_SCROLL
 #define TERM_HAS_CLREOL
 #define TERM_HAS_ICDC
 #define TERM_HAS_REVERSE
@@ -148,12 +161,29 @@
 #endif /* HAZ1500 */
 #endif /* WYSE50 */
 #endif /* TVI    */
+#endif /* KPRO   */
 #endif /* ADM3A  */
 #endif /* VT52   */
 
 /* ---------------------------------------------------------------- */
 /*  Derived flags                                                     */
 /* ---------------------------------------------------------------- */
+
+/* TERM_HAS_SCROLL: a 1-line hardware scroll exists.  It is DERIVED from the
+ * underlying mechanism -- a VT100 scroll region or insert/delete-line -- so
+ * a family need only declare its mechanism (TERM_HAS_REGION / TERM_HAS_ILDL)
+ * and the scroll fast path in term.c and screen.c switches on automatically.
+ * Deriving it (rather than making each family also hand-define TERM_HAS_SCROLL)
+ * removes the trap that caused issue #5: a Kaypro build that declared
+ * TERM_HAS_ILDL but forgot TERM_HAS_SCROLL compiled with ins/del-line dead
+ * and fell back to full-screen repaints. */
+#ifdef TERM_HAS_REGION
+#define TERM_HAS_SCROLL
+#else
+#ifdef TERM_HAS_ILDL
+#define TERM_HAS_SCROLL
+#endif
+#endif
 
 /* TERM_ESC_INPUT: this family delivers arrow keys as an ESC-prefixed
  * sequence, so term_getch must parse (and keep a 1-byte pushback). */
