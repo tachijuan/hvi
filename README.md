@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.8.2**
+**Version 2.8.3**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -439,7 +439,7 @@ handled by software fallbacks so editing stays correct:
 | VT52 | `ESC Y r c` | `ESC K` | full repaint | — | `ESC A`–`D` |
 | H19 | `ESC Y r c` | `ESC K` | insert/delete line | `ESC p`/`ESC q` | `ESC A`–`D` |
 | ADM-3A | `ESC = r c` | *(space-padded)* | full repaint | — | *(hjkl)* |
-| Kaypro 83/84 | `ESC = r c` | *(space-padded)* | insert/delete line | — | *(hjkl)* |
+| Kaypro 83/84 | `ESC = r c` | *(space-padded)* | insert/delete line | — | remapped → `hjkl` |
 | Televideo 9xx | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
 | Wyse 50 | `ESC = r c` | `ESC T` | insert/delete line | — | *(hjkl)* |
 | Hazeltine 1500 | `~ DC1 c r` | `~ SI` | insert/delete line | — | *(hjkl)* |
@@ -447,8 +447,10 @@ handled by software fallbacks so editing stays correct:
 
 Notes:
 
-- Arrow keys are recognized only on the ANSI, VT52 and H19 builds. On the
-  others the arrow keys send bare control characters that collide with vi
+- Arrow keys are recognized on the ANSI, VT52 and H19 builds (which send
+  escape sequences) and, since 2.8.3, on the Kaypro build (which patches its
+  BIOS cursor-key table to emit `k j h l`). On the remaining fixed-size
+  builds the arrow keys send bare control characters that collide with vi
   bindings (`^L` redraw, etc.), so they are left unmapped — use `h j k l`.
 - The default fixed size is 80 × 24 (Osborne 1 is 52 × 24), matching the
   common CP/M terminal. If your unit differs, build with `-DTERM_ROWS=` /
@@ -459,9 +461,10 @@ Notes:
   clear, plus hardware insert-line (`ESC E`) / delete-line (`ESC R`), so
   scrolling and paging update just the newly exposed rows instead of
   repainting the whole screen. The `/84`'s screen attributes (reverse /
-  blink / hi-lo) are not used, and the Kaypro cursor keys (`^H ^J ^K ^L`,
-  which collide with `hjkl` and `^L` redraw) are left unmapped — use
-  `h j k l`.
+  blink / hi-lo) are not used. The Kaypro cursor keys (`^H ^J ^K ^L`) would
+  otherwise collide with `hjkl` and `^L` redraw, so `term_init` patches the
+  BIOS cursor-key table to make them emit `k j h l` (restoring it on exit) —
+  the arrow keys move like `hjkl`.
 - **Hazeltine 1500**: reserves `~` as its command lead-in and cannot display
   it, so HVI shows `^` in its place on screen (files keep the real `~`).
 - The escape codes for the non-ANSI families are drawn from the terminals'
@@ -521,6 +524,19 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.8.2 → 2.8.3
+
+Kaypro arrow keys now drive vi movement.
+
+- **New: Kaypro cursor-key remap** (`HVIKPRO.COM`, `TERM_KPRO`). The v2.8.1
+  notes left the Kaypro `↑↓←→` keys unmapped because remapping them needs a
+  BIOS keymap patch. `term_init` now locates the cursor-key table in the
+  Kaypro BIOS (handling both the standard layout and CP/M 2.2u) and points
+  the four keys at `k j h l`, restoring the original table on exit. The
+  arrow keys therefore move like `hjkl`. No effect on any other build.
+  Thanks to [Douglas Miller (@durgadas311)](https://github.com/durgadas311)
+  ([#10](https://github.com/tachijuan/hvi/pull/10)).
 
 ### 2.8.1 → 2.8.2
 

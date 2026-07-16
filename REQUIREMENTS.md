@@ -988,7 +988,10 @@ Wyse, reached through the shared `ESC =` offset path in `term.c`).  It keeps
 the ADM-3A's `^Z` clear, space-padded clear-to-EOL, and no reverse video.
 `TERM_HAS_SCROLL` (the flag the scroll fast path tests) is derived in
 `termcfg.h` from `TERM_HAS_REGION` / `TERM_HAS_ILDL`, so declaring a family's
-scroll mechanism is enough to enable it.
+scroll mechanism is enough to enable it.  Unlike the other fixed-size builds,
+the Kaypro build maps its arrow keys: `term_init` locates the BIOS cursor-key
+table (standard layout or CP/M 2.2u) and rewrites it to emit `k j h l`,
+restoring the original bytes in `term_restore` (v2.8.3, contributed).
 
 Where a cell says *repaint* / *space-pad* / *plain*, the operation is
 emulated: mid-line insert/delete falls back to `scr_redraw_cur_line()`, a
