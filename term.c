@@ -444,6 +444,24 @@ void term_del_char()
 /* ------------------------------------------------------------------ */
 /*  Terminal lifecycle                                                  */
 /* ------------------------------------------------------------------ */
+#ifdef TERM_KPRO
+unsigned char *keymap;
+unsigned char savmap[4];
+/* get addr of cursor keys map table in BIOS */
+unsigned char *kpro_getmap()
+{
+	/* in-line asm doesn't seem to work (compiler hangs) */
+	register unsigned char *bios;
+
+	/* get addr of BIOS page */
+	bios = (unsigned char *)(*((unsigned char *)2) * 256);
+	/* check for older versions */
+	if ((bios[0x33] | bios[0x34] | bios[0x35] | bios[0x36]) != 0)
+		return bios + 0x35;
+	/* must be CP/M 2.2u */
+	return bios + *((unsigned int *)(bios + 0x3a)) + 0x20 + 255;
+}
+#endif
 
 void term_init()
 {
@@ -451,6 +469,11 @@ void term_init()
     ed.scr_cols = DEF_COLS;
 #ifdef TERM_HAS_GETSIZE
     term_getsize(&ed.scr_rows, &ed.scr_cols);
+#endif
+#ifdef TERM_KPRO
+    keymap = kpro_getmap();
+    gb_memmove(savmap, keymap, sizeof(savmap));
+    gb_memmove(keymap, "kjhl", sizeof(savmap));
 #endif
     term_clear();
     term_scroll_region();       /* no-op macro on families without a region */
@@ -487,6 +510,9 @@ void term_restore()
     term_status_row();
     raw_byte('\n');
     term_flush();
+#ifdef TERM_KPRO
+    gb_memmove(keymap, savmap, sizeof(savmap));
+#endif
 }
 
 /*
