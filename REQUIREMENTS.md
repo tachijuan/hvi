@@ -687,7 +687,7 @@ function; no handle is held open across function call boundaries.
 | `Ctrl-U` | Scroll backward half page |
 | `↑` `↓` `←` `→` | ANSI arrow keys, translated to `k` `j` `h` `l` |
 
-Vertical movement maintains a "wanted column" (`want_col`) so that `j`/`k` through short lines returns to the original column when a longer line is reached.
+Vertical movement maintains a "wanted column" (`want_col`) so that `j`/`k` through short lines returns to the original column when a longer line is reached. Every horizontal motion refreshes it — `h`, `l`, `0`, `^`, `$`, the `f`/`F`/`;`/`,` finds, and the `w`/`b`/`e` word motions (via `set_wcol()`) — so a subsequent `j`/`k` starts from wherever the last horizontal move left the cursor.
 
 `j` triggers `gb_load_more()` when the cursor approaches the end of loaded content and a tail exists.
 

@@ -259,6 +259,7 @@ int c, n;
         ed.cur_pos--;
         if (ed.cur_pos < 0) ed.cur_pos = 0;
     }
+    set_wcol();     /* w/b/e establish a new column for later j/k (issue #6) */
     end_hmove();
 }
 

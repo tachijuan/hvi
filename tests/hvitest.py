@@ -169,6 +169,17 @@ def main():
     file_test(sess, "find ,", "abcabc\n", "fc;,rX", "abXabc\n")
     file_test(sess, "find F", "abcabc\n", "$FarX", "abcXbc\n")
 
+    # want_col follows word motions (issue #6): after w/b/e, a j/k must land
+    # at the column the word motion left, not the one a prior h/l/$ set.
+    file_test(sess, "w sets want_col for j", "a bb cccc\nxxxxxxxxxx\n",
+              "lllwjrX", "a bb cccc\nxxxxxXxxxx\n")
+    file_test(sess, "b sets want_col for j", "aaa bbb ccc\nxxxxxxxxxxx\n",
+              "$bjrX", "aaa bbb ccc\nxxxxxxxxXxx\n")
+    file_test(sess, "e sets want_col for j", "aa bb cc\nxxxxxxxx\n",
+              "ejrX", "aa bb cc\nxXxxxxxx\n")
+    file_test(sess, "w sets want_col for k", "xxxxxxxxxx\na bb cccc\n",
+              "jlllwkrX", "xxxxxXxxxx\na bb cccc\n")
+
     # arrow keys (ANSI sequences)
     file_test(sess, "arrow right+down", "one\ntwo\n",
               "\x1b[C\x1b[BrX", "one\ntXo\n")

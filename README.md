@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.8.3**
+**Version 2.8.4**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -524,6 +524,19 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.8.3 → 2.8.4
+
+Word motions now set the "sticky" column for later up/down movement.
+
+- **Fix: `w` / `b` / `e` update the remembered column.** vi keeps a desired
+  column so that `j` / `k` return to it as you move between lines. The
+  horizontal motions `h` / `l` / `f` / `$` all refreshed it, but the word
+  motions did not, so a `j` / `k` after `w` / `b` / `e` snapped back to the
+  column a prior `h` / `l` had set instead of where the word motion landed.
+  `mv_word` now calls `set_wcol()` like the other horizontal motions.
+  Reported by [Douglas Miller (@durgadas311)](https://github.com/durgadas311)
+  ([#6](https://github.com/tachijuan/hvi/issues/6)).
 
 ### 2.8.2 → 2.8.3
 
