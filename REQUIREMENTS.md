@@ -42,7 +42,7 @@ This document specifies the complete requirements, architecture, design decision
 ### 2.3 Terminal
 - The terminal **family is selected at compile time** via `-DTERM_xxx` (see `termcfg.h` and §12); no flag builds the ANSI/VT100 default. Each build emits only the codes its terminal understands.
 - **ANSI/VT100 build** (`HVI.COM`): full escape set; queries terminal size at startup via ANSI CPR (`ESC[6n`); default 80 × 24 if the terminal does not respond. Compatible with VT100, VT220, xterm, ANSI.SYS, and most emulators.
-- **Non-ANSI builds** (VT52, H19, ADM-3A, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1): **fixed** geometry, default 80 × 24 (Osborne 52 × 24), overridable with `-DTERM_ROWS=` / `-DTERM_COLS=`. No size query is sent. Capabilities a terminal lacks (clear-to-EOL, hardware scroll, insert/delete-char, reverse video) are emulated in software so editing stays correct.
+- **Non-ANSI builds** (VT52, H19, ADM-3A, Kaypro 83/84, Televideo 9xx, Wyse 50, Hazeltine 1500, Osborne 1): **fixed** geometry, default 80 × 24 (Osborne 52 × 24), overridable with `-DTERM_ROWS=` / `-DTERM_COLS=`. No size query is sent. Capabilities a terminal lacks (clear-to-EOL, hardware scroll, insert/delete-char, reverse video) are emulated in software so editing stays correct.
 
 ---
 
@@ -979,6 +979,15 @@ sequences (all non-ANSI codes taken from the terminals' manuals and marked
 | Reverse / normal | `ESC[7m` / `ESC[0m` | H19: `ESC p`/`ESC q`; VT52: *plain* | *plain* | *plain* | *plain* | *plain* |
 | Size query | `ESC[999;999H`+`ESC[6n`, reply `ESC[r;cR` | *(fixed size)* | *(fixed)* | *(fixed)* | *(fixed)* | *(fixed)* |
 | Arrow-key input | `ESC[A`–`D` | `ESC A`–`D` | *(none; hjkl)* | *(none; hjkl)* | *(none; hjkl)* | *(none; hjkl)* |
+
+The **Kaypro 83/84** build (`TERM_KPRO`) is the ADM-3A column with one
+change: it has hardware insert-line (`ESC E`) / delete-line (`ESC R`), so its
+1-row scroll uses those instead of a repaint (the same codes as Televideo /
+Wyse, reached through the shared `ESC =` offset path in `term.c`).  It keeps
+the ADM-3A's `^Z` clear, space-padded clear-to-EOL, and no reverse video.
+`TERM_HAS_SCROLL` (the flag the scroll fast path tests) is derived in
+`termcfg.h` from `TERM_HAS_REGION` / `TERM_HAS_ILDL`, so declaring a family's
+scroll mechanism is enough to enable it.
 
 Where a cell says *repaint* / *space-pad* / *plain*, the operation is
 emulated: mid-line insert/delete falls back to `scr_redraw_cur_line()`, a

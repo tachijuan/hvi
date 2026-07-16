@@ -1,6 +1,6 @@
 # Prebuilt HVI binaries
 
-Ready-to-run CP/M `.COM` files, one per terminal family (v2.8.0). Copy the
+Ready-to-run CP/M `.COM` files, one per terminal family (v2.8.1). Copy the
 one matching your terminal to your CP/M system and run `HVI FILENAME`.
 
 | File | Terminal | Screen |
@@ -9,6 +9,7 @@ one matching your terminal to your CP/M system and run `HVI FILENAME`.
 | `HVIVT52.COM` | DEC VT52 | 80×24 |
 | `HVIH19.COM` | Heath / Zenith H19 / H89 | 80×24 |
 | `HVIADM3.COM` | Lear Siegler ADM-3A / 3A+ | 80×24 |
+| `HVIKPRO.COM` | Kaypro 83 / 84 | 80×24 |
 | `HVITVI.COM` | Televideo 912 / 920 / 925 / 950 | 80×24 |
 | `HVIWY50.COM` | Wyse 50 | 80×24 |
 | `HVIHZ15.COM` | Hazeltine 1500 | 80×24 |

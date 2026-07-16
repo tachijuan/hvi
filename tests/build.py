@@ -26,6 +26,7 @@ TERMS = {
     "VT52":    ("TERM_VT52",    "HVIVT52.COM"),
     "H19":     ("TERM_H19",     "HVIH19.COM"),
     "ADM3A":   ("TERM_ADM3A",   "HVIADM3.COM"),
+    "KPRO":    ("TERM_KPRO",    "HVIKPRO.COM"),
     "TVI":     ("TERM_TVI",     "HVITVI.COM"),
     "WYSE50":  ("TERM_WYSE50",  "HVIWY50.COM"),
     "HAZ1500": ("TERM_HAZ1500", "HVIHZ15.COM"),

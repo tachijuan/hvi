@@ -49,8 +49,8 @@
 #   REN HVIVT52.COM=H.COM
 #
 #   TERM_VT52  HVIVT52   TERM_ADM3A HVIADM3   TERM_TVI    HVITVI
-#   TERM_H19   HVIH19    TERM_WYSE50 HVIWY50  TERM_HAZ1500 HVIHZ15
-#                                             TERM_OSB1   HVIOSB1
+#   TERM_H19   HVIH19    TERM_KPRO  HVIKPRO   TERM_WYSE50 HVIWY50
+#                        TERM_HAZ1500 HVIHZ15 TERM_OSB1   HVIOSB1
 #
 # Override the fixed geometry of a non-ANSI build (defaults 25x80, Osborne
 # 52 cols) with extra defines, e.g. TERMDEF="-DTERM_TVI -DTERM_ROWS=24".
