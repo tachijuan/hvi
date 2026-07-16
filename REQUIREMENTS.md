@@ -871,11 +871,12 @@ first occurrence in each line is replaced; with `g`, every occurrence.
 The trailing `/` may be omitted; an empty `new` deletes `old`; `/`
 cannot appear in either text (no escape syntax).
 
-The range is one address or `addr1,addr2` (order-independent); the
-default is the cursor's line.  Addresses: a line number (clamped to the
-buffer), `.` (the cursor's line), `$` (the last line), or `'{a-z}` (the
-line containing the mark, resolved by the same `motion_endpoint('`')`
-code the operators use -- an unset mark reports "Mark not set").
+The range is one address or `addr1,addr2` (order-independent), or `%`
+(the whole buffer, an alias for `1,$`); the default is the cursor's
+line.  Addresses: a line number (clamped to the buffer), `.` (the
+cursor's line), `$` (the last line), or `'{a-z}` (the line containing
+the mark, resolved by the same `motion_endpoint('`')` code the
+operators use -- an unset mark reports "Mark not set").
 
 Implementation (`ex_subst`, ex.c): the parser runs before the other ex
 commands (a range can start with digits) and returns "not mine" so `:N`

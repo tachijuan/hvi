@@ -135,17 +135,24 @@ static int ex_subst(p)
 char *p;
 {
     xs_p = p;
-    sb_p1 = xs_addr();
-    if (sb_p1 == -2) return 0;
-    sb_p2 = sb_p1;
-    if (sb_p1 >= 0 && *xs_p == ',') {
+    if (*xs_p == '%') {
+        /* '%' is the whole-buffer range, an alias for '1,$'. */
         xs_p++;
-        sb_p2 = xs_addr();
-        if (sb_p2 == -2) return 0;
-        if (sb_p2 < 0) return -1;   /* "N,junk" is not a substitute */
+        sb_p1 = scr_line_start(0);
+        sb_p2 = scr_last_line_start();
+    } else {
+        sb_p1 = xs_addr();
+        if (sb_p1 == -2) return 0;
+        sb_p2 = sb_p1;
+        if (sb_p1 >= 0 && *xs_p == ',') {
+            xs_p++;
+            sb_p2 = xs_addr();
+            if (sb_p2 == -2) return 0;
+            if (sb_p2 < 0) return -1;   /* "N,junk" is not a substitute */
+        }
+        if (sb_p1 < 0)
+            sb_p1 = sb_p2 = find_bol(ed.cur_pos);   /* default: this line */
     }
-    if (sb_p1 < 0)
-        sb_p1 = sb_p2 = find_bol(ed.cur_pos);   /* default: this line */
     if (sb_p1 > sb_p2) { sb_t = sb_p1; sb_p1 = sb_p2; sb_p2 = sb_t; }
 
     /* :[range]> and :[range]< -- shift lines (the >>/<< engine) */

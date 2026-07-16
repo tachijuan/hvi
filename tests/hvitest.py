@@ -373,6 +373,12 @@ def main():
               "aa\nbb\nbb\n")
     file_test(sess, "subst backwards range", "aa\naa\naa\n",
               ":3,1s/aa/bb/\r", "bb\nbb\nbb\n")
+    file_test(sess, "subst percent whole file", "aa\naa\naa\n",
+              ":%s/aa/bb/\r", "bb\nbb\nbb\n")
+    file_test(sess, "subst percent g flag", "a a\na a\n",
+              ":%s/a/b/g\r", "b b\nb b\n")
+    file_test(sess, "subst percent from mid file", "aa\naa\naa\n",
+              "j:%s/aa/bb/g\r", "bb\nbb\nbb\n")
     file_test(sess, "subst empty new deletes", "xabcy\n", ":s/abc//\r",
               "xy\n")
     file_test(sess, "subst longer new", "ab cd\n", ":s/ab/wxyz/\r",

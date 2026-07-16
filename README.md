@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.8.1**
+**Version 2.8.2**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -297,7 +297,8 @@ Both repeat commands accept a count prefix (e.g. `3;` skips to the third next ma
 Without `g` the first occurrence in each line is replaced. The range is
 one address or `addr1,addr2` (either order): a line number, `.` (the
 cursor's line), `$` (the last line), or `'{a-z}` (the mark's line);
-the default is the cursor's line. The trailing `/` may be omitted, and
+`%` is shorthand for the whole buffer (`1,$`).
+The default is the cursor's line. The trailing `/` may be omitted, and
 an empty `new` deletes `old`. The cursor moves to the last substituted
 line. A substitute cannot be undone with `u` (the edits are scattered;
 the single-slot undo record is invalidated).
@@ -520,6 +521,16 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.8.1 → 2.8.2
+
+Substitute now accepts `%` as a whole-buffer range.
+
+- **New: `:%s/old/new/[g]`.** `%` is the standard vi shorthand for the
+  `1,$` range (every line in the buffer). The range parser (`ex_subst`,
+  `ex.c`) previously understood a line number, `.`, `$`, and `'{a-z}`
+  but not `%`, so `:%s/…` fell through and did nothing. `%` also works
+  for the range-shift forms (`:%>` / `:%<`), which share the same parser.
 
 ### 2.8.0 → 2.8.1
 
