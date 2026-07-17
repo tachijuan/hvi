@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.10.0**
+**Version 2.10.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -524,6 +524,21 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.10.0 → 2.10.1
+
+Size-only pass — no behavior change. The insert-mode/undo/put work of
+v2.10 grew the ANSI build to 233 records; this pass brings it back to
+229 (29273 bytes, the same footprint as v2.9.1) with 39 bytes to spare
+under the next record boundary. The four levers: the `normal_cmd`
+dispatch handlers now pass their arguments in globals instead of on the
+IX-spilled stack; a new frameless `gb_is_nl()` folds the
+`gb_char_at(p) == '\n'` compare shared by ~32 sites; the always-non-negative
+large-file offsets use `!= 0` instead of a signed long compare; and a
+few repeated call shapes (`hvi_sprintf` into the status line, opening
+the tail file, the cursor-line single-row test) collapsed into shared
+helpers. All 227 functional tests and the per-terminal escape checks
+pass unchanged.
 
 ### 2.9.1 → 2.10.0
 

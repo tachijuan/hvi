@@ -80,20 +80,19 @@ char *cmdtail;
         bdos_puts("HVI " HVI_VERSION " - Loading file...\r\n");
         partial = gb_load(ed.filename, (HFILE *)0);
         if (partial == 2) {
-            hvi_sprintf(ed.status,
-                        "\"%s\" [Partial: %d chars, tail preserved]",
+            status_fmt("\"%s\" [Partial: %d chars, tail preserved]",
                         (int)ed.filename, gb_content_len());
         } else if (partial == 1) {
-            hvi_sprintf(ed.status, fmt_chars,
+            status_fmt(fmt_chars,
                         (int)ed.filename, gb_content_len());
         } else {
             /* File does not exist -- start with empty buffer */
-            hvi_sprintf(ed.status, fmt_newfile,
+            status_fmt(fmt_newfile,
                         (int)ed.filename, 0);
         }
         ed.modified = 0;
     } else {
-        hvi_strcpy(ed.status, "[No Name]");
+        hvi_strcpy(ed.status, s_noname);
     }
 
     /* --- Initialise terminal and run editor --- */

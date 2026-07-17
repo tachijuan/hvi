@@ -256,7 +256,7 @@ char *cmd;
     if (*p == '$') {
         static int clen;
         ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
-        while (ed.tail_offset > 0L) {
+        while (ed.tail_offset != 0L) {
             clen = gb_content_len();
             if (clen > 0) ed.cur_pos = clen - 1;
             if (gb_load_more(LOAD_CHUNK) == 0) break;
@@ -285,7 +285,7 @@ char *cmd;
         p++;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_sprintf(ed.status, msg_usage, 'r', 0);
+            status_fmt(msg_usage, 'r', 0);
             return 0;
         }
         hvi_fname_clean(fname);
@@ -297,7 +297,7 @@ char *cmd;
 
         f = hvi_fopen(fname, "rb");
         if (!f) {
-            hvi_sprintf(ed.status, "Cannot open: %s", (int)fname, 0);
+            status_fmt("Cannot open: %s", (int)fname, 0);
             return 0;
         }
         old_len = gb_content_len();
@@ -317,7 +317,7 @@ char *cmd;
         hvi_fclose(f);
         new_len = gb_content_len();
         ed.modified = 1;
-        hvi_sprintf(ed.status, fmt_chars, (int)fname, new_len - old_len);
+        status_fmt(fmt_chars, (int)fname, new_len - old_len);
         return 1;
     }
 
@@ -328,12 +328,12 @@ char *cmd;
         force = (*p == '!') ? (p++, 1) : 0;
         fname = skip_space(p);
         if (*fname == '\0') {
-            hvi_sprintf(ed.status, msg_usage, 'e', 0);
+            status_fmt(msg_usage, 'e', 0);
             return 0;
         }
         hvi_fname_clean(fname);
         if (ed.modified && !force) {
-            hvi_sprintf(ed.status, msg_modified, 'e', 0);
+            status_fmt(msg_modified, 'e', 0);
             return 0;
         }
 
@@ -362,9 +362,9 @@ char *cmd;
 
         rc = gb_load(fname, (HFILE *)0);
         if (rc == 0)
-            hvi_sprintf(ed.status, fmt_newfile, (int)fname, 0);
+            status_fmt(fmt_newfile, (int)fname, 0);
         else
-            hvi_sprintf(ed.status, "\"%s\" %s", (int)fname,
+            status_fmt("\"%s\" %s", (int)fname,
                         (int)(rc == 2 ? "(partial load)" : "loaded"));
         return 1;
     }
@@ -392,19 +392,19 @@ char *cmd;
         }
         ok = gb_save(dest);
         if (!ok) {
-            hvi_sprintf(ed.status, "Cannot write: %s", (int)dest, 0);
+            status_fmt("Cannot write: %s", (int)dest, 0);
             return 0;
         }
         /* If saved to a new name, record it */
         if (*p)
             set_fname(p);
         ed.modified = 0;
-        hvi_sprintf(ed.status, "\"%s\" written", (int)ed.filename, 0);
+        status_fmt("\"%s\" written", (int)ed.filename, 0);
     }
 
     if (do_quit) {
         if (ed.modified && !force && !do_write) {
-            hvi_sprintf(ed.status, msg_modified, 'q', 0);
+            status_fmt(msg_modified, 'q', 0);
             return 0;
         }
         ed.quit = 1;
@@ -412,7 +412,7 @@ char *cmd;
     }
 
     if (!do_write && !do_quit) {
-        hvi_sprintf(ed.status, "Unknown command: %s", (int)cmd, 0);
+        status_fmt("Unknown command: %s", (int)cmd, 0);
     }
     return 0;
 }

@@ -464,6 +464,13 @@ int n;
  * All locals static: every sub-call (hvi_fopen, hvi_fgetc, gb_insert, ...)
  * is a function call that may trash IX-relative auto vars under HI-TECH C -O.
  */
+/* Open the large-file source for reading: one copy of the fopen call
+ * shared by the five head/tail readers (four here, one in emove.c). */
+HFILE *gb_open_tail()
+{
+    return hvi_fopen(ed.tail_file, s_rb);
+}
+
 static HFILE *glm_f;
 static int    glm_n;       /* cache param: BDOS trashes HL which may hold n */
 static int    glm_c;
@@ -485,7 +492,7 @@ int n;
 
     show_loading();
 
-    glm_f = hvi_fopen(ed.tail_file, s_rb);
+    glm_f = gb_open_tail();
     if (!glm_f) return 0;
     if (hvi_fseek(glm_f, ed.tail_offset, 0) != 0) { hvi_fclose(glm_f); return 0; }
 
@@ -581,7 +588,7 @@ long offset;
     }
 #endif
 
-    grf_f = hvi_fopen(ed.tail_file, s_rb);
+    grf_f = gb_open_tail();
     if (!grf_f) return 0;
 
     /* Position without a BDOS 33 pre-load.  grf_offset is sector-aligned so
@@ -624,7 +631,7 @@ long from, to;
     gcp_f  = f;            /* cache before any BDOS call */
     gcp_to = to;
     if (from >= gcp_to || !ed.tail_file[0]) return;
-    gcp_tf = hvi_fopen(ed.tail_file, s_rb);
+    gcp_tf = gb_open_tail();
     if (!gcp_tf) return;
     if (from > 0L && hvi_fseek(gcp_tf, from, 0) != 0) {
         hvi_fclose(gcp_tf);
@@ -717,11 +724,11 @@ char *filename;
      * buffer when the buffer holds the end of the file and lacks it. */
     if (ed.tail_offset == 0L) {
         gsv_len = gb_content_len();
-        if (gsv_len > 0 && gb_char_at(gsv_len - 1) != '\n')
+        if (gsv_len > 0 && !gb_is_nl(gsv_len - 1))
             gb_insert(gsv_len, gsv_nl, 1);
     }
     gsv_using_tmp = 0;
-    if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L) &&
+    if (ed.tail_file[0] && (ed.win_start != 0L || ed.tail_offset != 0L) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {
         gsv_mk_tmp();
         gsv_f = hvi_fopen(gsv_tmp, s_wb);
@@ -733,7 +740,7 @@ char *filename;
 
     gb_copy_file(gsv_f, 0L, ed.win_start);       /* head before window */
     gsv_new_tail = gb_write_buf(gsv_f);
-    if (ed.tail_offset > 0L)                     /* unloaded tail      */
+    if (ed.tail_offset != 0L)                     /* unloaded tail      */
         gb_copy_file(gsv_f, ed.tail_offset, 0x7FFFFFFFL);
     hvi_fputc(0x1A, gsv_f);
     hvi_fclose(gsv_f);
@@ -743,7 +750,7 @@ char *filename;
         hvi_rename(gsv_tmp, gsv_fn);
     }
 
-    if (ed.tail_file[0] && (ed.win_start > 0L || ed.tail_offset > 0L)) {
+    if (ed.tail_file[0] && (ed.win_start != 0L || ed.tail_offset != 0L)) {
         hvi_strncpy(ed.tail_file, gsv_fn, PATH_MAX - 1);
         ed.tail_file[PATH_MAX - 1] = '\0';
         ed.tail_offset = gsv_new_tail;
@@ -907,7 +914,7 @@ int  stop_n;
     gsl_to   = to;
     gsl_n    = stop_n;
     if (!ed.tail_file[0]) return -1L;
-    gsl_f = hvi_fopen(ed.tail_file, s_rb);
+    gsl_f = gb_open_tail();
     if (!gsl_f) return -1L;
     if (gsl_from > 0L && hvi_fseek(gsl_f, gsl_from, 0) != 0) {
         hvi_fclose(gsl_f);

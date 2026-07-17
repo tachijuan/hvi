@@ -219,7 +219,7 @@ int scr_line_count()
     slc_size = gb_content_len();
     if (slc_size == 0) { ed.line_cnt_cached = 1; return 1; }
     slc_lines = gb_count_nl(0, slc_size);
-    if (gb_char_at(slc_size - 1) != '\n')
+    if (!gb_is_nl(slc_size - 1))
         slc_lines++;
     slc_lines = (slc_lines > 0) ? slc_lines : 1;
     ed.line_cnt_cached = slc_lines;
@@ -308,7 +308,7 @@ int screen_row, pos;
          * redraw window down. */
         if (screen_row > 0 &&
             !(pos == dra_size && ed.cur_pos == dra_size && dra_size > 0 &&
-              gb_char_at(dra_size - 1) == '\n'))
+              gb_is_nl(dra_size - 1)))
             term_putch('~');
         return;
     }
@@ -331,7 +331,7 @@ int screen_row, pos;
     if (pos >= dra_size) {
         if (screen_row > 0 &&
             !(pos == dra_size && ed.cur_pos == dra_size && dra_size > 0 &&
-              gb_char_at(dra_size - 1) == '\n')) {
+              gb_is_nl(dra_size - 1))) {
             term_putch('~');
             dra_col = 1;
         }
@@ -426,7 +426,7 @@ void scr_redraw_cur_line()
         rcl_row++;
         rcl_next = next_vrow(rcl_p);
         /* Stop at end of buffer or end of this logical line */
-        if (rcl_next <= rcl_p || rcl_next >= rcl_size || gb_char_at(rcl_next - 1) == '\n') {
+        if (rcl_next <= rcl_p || rcl_next >= rcl_size || gb_is_nl(rcl_next - 1)) {
             if (rcl_row < rcl_text_rows) draw_row_at(rcl_row, rcl_next);
             break;
         }
@@ -457,6 +457,13 @@ void scr_redraw_from_cur()
  */
 static int sl1_bol;
 
+/* The cursor's line, the argument of most callers (one copy of the
+ * ed.cur_pos push). */
+int scr_cur_1row()
+{
+    return scr_line_is_1row(ed.cur_pos);
+}
+
 int scr_line_is_1row(pos)
 int pos;
 {
@@ -475,7 +482,7 @@ int pos;
 void scr_edit_end(light)
 int light;
 {
-    if (light && ed.cur_pos >= ed.top_pos && scr_line_is_1row(ed.cur_pos)) {
+    if (light && ed.cur_pos >= ed.top_pos && scr_cur_1row()) {
         locate_cur_row();
         if (lcr_row < ed.scr_rows - 1) {
             draw_row_at(lcr_row, lcr_vstart);
@@ -616,6 +623,8 @@ int old_top;
  */
 static char sss_last[STATUS_MAX];
 
+char s_noname[] = "[No Name]";   /* shared with hvi.c (one copy) */
+
 void scr_status_invalidate()
 {
     sss_last[0] = '\0';
@@ -635,7 +644,7 @@ char *msg;
         sss_p = msg;
     } else {
         hvi_sprintf(lineno, "\"%s\"%s",
-            (int)(ed.filename[0] ? ed.filename : "[No Name]"),
+            (int)(ed.filename[0] ? ed.filename : s_noname),
             (int)(ed.modified ? " [+]" : ""));
         sss_p = lineno;
     }
@@ -858,7 +867,7 @@ void scr_join_row()
     sjr_top = ed.top_pos;
     scr_scroll_to_cursor();
     if (sjr_ok && ed.top_pos == sjr_top && ed.cur_vrow < ed.scr_rows - 2
-        && scr_line_is_1row(ed.cur_pos)) {
+        && scr_cur_1row()) {
         /* sl1_bol: the joined line's start, from scr_line_is_1row.
          * The vanished visual row now belongs to the next line: let
          * scr_del_rows shift it away and repaint the exposed bottom

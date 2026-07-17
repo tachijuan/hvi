@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.10.0"
+#define HVI_VERSION "2.10.1"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -250,6 +250,8 @@ int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);
 void gb_copy_out(/* char *dst, int pos, int len */);
 int  gb_count_nl(/* int pos, int len */);
+int  gb_is_nl(/* int pos */);    /* cstart.as: gb_char_at(pos)=='\n' */
+HFILE *gb_open_tail();           /* gap.c: hvi_fopen(ed.tail_file,"rb") */
 int  gb_load(/* char *filename, HFILE *fp */); /* fp=NULL -> hvi_fopen filename */
 int  gb_save(/* char *filename */);
 int  gb_load_more(/* int n */);
@@ -269,6 +271,7 @@ void hvi_fname_clean(/* char *s */);   /* cstart.as: fold/trim/truncate */
 int  hvi_strcmp(/* char *a, char *b */);
 char *fmt_int(/* char *buf, int n -- returns ptr past last digit */);
 void hvi_sprintf(/* char *buf, char *fmt, int a0, a1 -- max 2 args */);
+void status_fmt(/* char *fmt, int a0, a1 -- hvi_sprintf to ed.status */);
 
 /* ---- cpmio.c ---- */
 char  *hvi_malloc(/* int size */);
@@ -327,6 +330,8 @@ void status_show();            /* scr_show_status(ed.status) */
 void scr_clear_status();
 void scr_status_invalidate();
 int  scr_line_is_1row();
+int  scr_cur_1row();             /* scr_line_is_1row(ed.cur_pos) */
+extern char s_noname[];          /* "[No Name]" (screen.c) */
 void scr_edit_end(/* int light -- 1: one-row repaint, 0: from cursor */);
 void scr_fix_char();
 void scr_fix_span();

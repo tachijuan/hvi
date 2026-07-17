@@ -108,14 +108,14 @@ int lstart, wantcol;
     pos  = lstart;
     col  = 0;
     size = gb_content_len();
-    while (pos < size && gb_char_at(pos) != '\n') {
+    while (pos < size && !gb_is_nl(pos)) {
         c  = gb_char_at(pos);
         nc = (c == '\t') ? (col | (TAB_STOP - 1)) + 1 : col + 1;
         if (nc > wantcol) break;
         col = nc;
         pos++;
     }
-    if (pos > lstart && (pos >= size || gb_char_at(pos) == '\n'))
+    if (pos > lstart && (pos >= size || gb_is_nl(pos)))
         pos--;
     return pos;
 }
@@ -169,7 +169,7 @@ int n;
     begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos == 0) break;
-        if (gb_char_at(ed.cur_pos - 1) == '\n') break;
+        if (gb_is_nl(ed.cur_pos - 1)) break;
         ed.cur_pos--;
     }
     set_wcol();
@@ -184,9 +184,9 @@ int n;
     begin_hmove();
     while (n-- > 0) {
         if (ed.cur_pos >= size) break;
-        if (gb_char_at(ed.cur_pos) == '\n') break;
+        if (gb_is_nl(ed.cur_pos)) break;
         if (ed.cur_pos + 1 >= size) break;
-        if (gb_char_at(ed.cur_pos + 1) == '\n') break;
+        if (gb_is_nl(ed.cur_pos + 1)) break;
         ed.cur_pos++;
     }
     set_wcol();
@@ -274,13 +274,13 @@ int ch, dir, count;
         found = -1;
         if (dir > 0) {
             p = ed.cur_pos + 1;
-            while (p < sz && gb_char_at(p) != '\n') {
+            while (p < sz && !gb_is_nl(p)) {
                 if (gb_char_at(p) == ch) { found = p; break; }
                 p++;
             }
         } else {
             p = ed.cur_pos - 1;
-            while (p >= 0 && gb_char_at(p) != '\n') {
+            while (p >= 0 && !gb_is_nl(p)) {
                 if (gb_char_at(p) == ch) { found = p; break; }
                 p--;
             }
@@ -346,12 +346,12 @@ int *linewise;
     switch (ch) {
     case 'l':
         n = count;
-        while (n-- > 0 && pos < size && gb_char_at(pos) != '\n') pos++;
+        while (n-- > 0 && pos < size && !gb_is_nl(pos)) pos++;
         return pos;
 
     case 'h':
         n = count;
-        while (n-- > 0 && pos > 0 && gb_char_at(pos-1) != '\n') pos--;
+        while (n-- > 0 && pos > 0 && !gb_is_nl(pos-1)) pos--;
         return pos;
 
     case 'w':
@@ -467,7 +467,7 @@ int *linewise;
 
     default:
         /* Message shown here so every caller can just test for < 0. */
-        hvi_sprintf(ed.status, "Unknown motion: %c", ch, 0);
+        status_fmt("Unknown motion: %c", ch, 0);
         status_show();
         return -1;
     }
@@ -641,7 +641,7 @@ int op0, from0, to0, linewise;
         save = yank_range(from, len, linewise);
         ed.cur_pos  = from;
         ed.cur_vrow = -1;
-        hvi_sprintf(ed.status, "%d char%s yanked",
+        status_fmt("%d char%s yanked",
                     save, (int)(save == 1 ? "" : "s"));
         status_show();
         return;
@@ -660,8 +660,8 @@ int op0, from0, to0, linewise;
      * exactly where the text was removed (before the newline). */
     if (op != 'c') {
         if (ed.cur_pos >= size) ed.cur_pos = size > 0 ? size - 1 : 0;
-        if (ed.cur_pos != 0 && gb_char_at(ed.cur_pos) == '\n')
-            if (gb_char_at(ed.cur_pos - 1) != '\n')
+        if (ed.cur_pos != 0 && gb_is_nl(ed.cur_pos))
+            if (!gb_is_nl(ed.cur_pos - 1))
                 ed.cur_pos--;
     }
 
@@ -824,7 +824,7 @@ int  dir;
     if (sif_from < 0L)        sif_from = 0L;
     if (sif_from >= sif_to)   return -1L;
 
-    sif_fp = hvi_fopen(ed.tail_file, s_rb);
+    sif_fp = gb_open_tail();
     if (!sif_fp) return -1L;
     if (hvi_fseek(sif_fp, sif_from, 0) != 0) {
         hvi_fclose(sif_fp);
@@ -923,22 +923,22 @@ int start_pos;
 
     if (ed.search_dir == SEARCH_FWD) {
         /* First: unloaded tail (after the buffer) — not a wrap */
-        if (ed.tail_offset > 0L)
+        if (ed.tail_offset != 0L)
             dsf_file_match =
                 scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_FWD);
         /* Second: unloaded head (before the buffer) — IS a wrap */
-        if (dsf_file_match < 0L && ed.win_start > 0L) {
+        if (dsf_file_match < 0L && ed.win_start != 0L) {
             dsf_file_match =
                 scan_file_for_match(0L, ed.win_start, SEARCH_FWD);
             if (dsf_file_match >= 0L) dsf_file_wrapped = 1;
         }
     } else {
         /* First: unloaded head (before the buffer) — not a wrap */
-        if (ed.win_start > 0L)
+        if (ed.win_start != 0L)
             dsf_file_match =
                 scan_file_for_match(0L, ed.win_start, SEARCH_BWD);
         /* Second: unloaded tail (after the buffer) — IS a wrap */
-        if (dsf_file_match < 0L && ed.tail_offset > 0L) {
+        if (dsf_file_match < 0L && ed.tail_offset != 0L) {
             dsf_file_match =
                 scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_BWD);
             if (dsf_file_match >= 0L) dsf_file_wrapped = 1;

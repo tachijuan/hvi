@@ -54,6 +54,18 @@ int   n;
     while (n-- > 0) *d++ = '\0';
 }
 
+/* hvi_sprintf into ed.status -- the destination of nearly every
+ * formatted message (17 sites); dropping the buffer argument saves
+ * ~5 bytes per call site. */
+extern Editor ed;
+
+void status_fmt(fmt, a0, a1)
+char *fmt;
+int   a0, a1;
+{
+    hvi_sprintf(ed.status, fmt, a0, a1);
+}
+
 int hvi_strcmp(a, b)
 char *a, *b;
 {

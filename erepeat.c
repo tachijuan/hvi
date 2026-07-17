@@ -43,7 +43,7 @@ extern char *gir_text;
  * also used by the insert-mode ESC handler in edit.c). */
 void cur_back_nl()
 {
-    if (ed.cur_pos != 0 && gb_char_at(ed.cur_pos - 1) != '\n')
+    if (ed.cur_pos != 0 && !gb_is_nl(ed.cur_pos - 1))
         ed.cur_pos--;
 }
 
@@ -59,13 +59,13 @@ int cmd;
     switch (cmd) {
     case 'a':
         sz = gb_content_len();
-        if (sz > 0 && ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n')
+        if (sz > 0 && ed.cur_pos < sz && !gb_is_nl(ed.cur_pos))
             ed.cur_pos++;
         break;
     case 'A':
         mv_eol();
         sz = gb_content_len();
-        if (sz > 0 && ed.cur_pos < sz && gb_char_at(ed.cur_pos) != '\n')
+        if (sz > 0 && ed.cur_pos < sz && !gb_is_nl(ed.cur_pos))
             ed.cur_pos++;
         break;
     case 'I':
@@ -185,7 +185,7 @@ int count;
         sz = gb_content_len();
         from = ed.cur_pos;
         for (k = 0; k < n; k++) {
-            if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') break;
+            if (ed.cur_pos >= sz || gb_is_nl(ed.cur_pos)) break;
             ch = gb_char_at(ed.cur_pos);
             if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
             else if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
@@ -199,8 +199,8 @@ int count;
         to = ed.cur_pos;
         /* don't leave the cursor on the newline / past the end */
         if (ed.cur_pos != 0 &&
-            (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') &&
-            gb_char_at(ed.cur_pos - 1) != '\n')
+            (ed.cur_pos >= sz || gb_is_nl(ed.cur_pos)) &&
+            !gb_is_nl(ed.cur_pos - 1))
             ed.cur_pos--;
         scr_fix_span(from, to);   /* in-place emit, or line redraw */
         break;
@@ -221,7 +221,7 @@ int count;
             /* single separating space -- unless this line already ends in
              * a blank, or either side of the join is empty (vi rules) */
             ch = (eol > 0) ? gb_char_at(eol - 1) : '\n';
-            if (eol < sz && gb_char_at(eol) != '\n' &&
+            if (eol < sz && !gb_is_nl(eol) &&
                 ch != ' ' && ch != '\t' && ch != '\n')
                 gb_insert(eol, dr_sp, 1);
             ed.modified = 1;
@@ -254,7 +254,7 @@ int count;
             ins_position(ed.dot_cmd);
             /* Check if inserted text crosses a line boundary. */
             has_nl = gb_cntnl(ed.dot_text, ed.dot_len) != 0;
-            del = !has_nl && scr_line_is_1row(ed.cur_pos);  /* light path */
+            del = !has_nl && scr_cur_1row();  /* light path */
             ins_pos = dot_ins(ed.cur_pos);
             if (ins_pos < 0) break;
             if (gb_roomed) {

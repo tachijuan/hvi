@@ -30,6 +30,12 @@ static int g_ins_multi;    /* insert session touched a wrapped line:
                               the incremental updates may have left a
                               stale row, so ESC must redraw the line  */
 
+/* Dispatch args for the normal_*_cmd chain (args-in-globals: one
+ * store in normal_cmd instead of an IX push/pop per hop).  Safe over
+ * the op_motion/dot_replay recursion: the recursive normal_cmd call
+ * returns in its early g_op branch, before these are restored. */
+static int dsp_c, dsp_n, dsp_sz, dsp_had;
+
 static void normal_cmd();
 /* Return effective count (at least 1), then clear. */
 static int get_count()
@@ -113,7 +119,7 @@ int cmd, motion, cnt, arg;
 /* Insert session touched a multi-row line: make ESC redraw the line. */
 static void chk_multi()
 {
-    if (!scr_line_is_1row(ed.cur_pos)) g_ins_multi = 1;
+    if (!scr_cur_1row()) g_ins_multi = 1;
 }
 
 /* Shared status literals (HI-TECH C stores repeated literals per use;
@@ -197,7 +203,7 @@ int c0;
         scr_scroll_to_cursor();
         if (ed.top_pos != old_top) {
             scr_refresh();
-        } else if (!g_ins_multi && scr_line_is_1row(ed.cur_pos)) {
+        } else if (!g_ins_multi && scr_cur_1row()) {
             /* Insert mode kept the row current -- status update only. */
             status_show();
         } else {
@@ -228,7 +234,7 @@ int c0;
              * shift while both are still separate (issue #11). */
             if (del_ch == '\n') {
                 sjr_ok = 0;
-                if (scr_line_is_1row(ed.cur_pos))
+                if (scr_cur_1row())
                     sjr_ok = scr_line_is_1row(ed.cur_pos - 1);
             }
 #endif
@@ -248,7 +254,7 @@ int c0;
                 scr_redraw_cur_line();
             } else {
                 sz = gb_content_len();
-                if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
+                if (ed.cur_pos >= sz || gb_is_nl(ed.cur_pos)) {
                     /* Deleting the last char on the line: erase the cell. */
                     term_putch(KEY_BS);
 #ifdef TERM_HAS_CLREOL
@@ -280,7 +286,7 @@ int c0;
         if (del > 0) {
             had_nl = 0;
             for (i = ed.cur_pos; i < start; i++)
-                if (gb_char_at(i) == '\n') { had_nl = 1; break; }
+                if (gb_is_nl(i)) { had_nl = 1; break; }
             gb_delete(ed.cur_pos, del);
             ed.modified = 1;
             if (ed.undo.type == UNDO_INSERT) {
@@ -318,7 +324,7 @@ int c0;
 #ifdef TERM_HAS_SCROLL
         /* Split gate, checked BEFORE the insert: a 1-vrow line split
          * in two adds exactly one row below (issue #11). */
-        spl1 = scr_line_is_1row(ed.cur_pos);
+        spl1 = scr_cur_1row();
 #endif
         if (!gb_insert(ed.cur_pos, tmp, 1)) {
             ins_full_retry(tmp);
@@ -329,7 +335,7 @@ int c0;
         if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
         sz = 0;                                  /* new line is empty? */
         if (ed.cur_pos >= gb_content_len() ||
-            gb_char_at(ed.cur_pos) == '\n')
+            gb_is_nl(ed.cur_pos))
             sz = 1;
 #ifdef TERM_HAS_SCROLL
         /* Empty new line: exactly what 'o' makes -- hardware shift,
@@ -372,7 +378,7 @@ int c0;
         sz = gb_content_len();
         /* If appending at the end of the line, emit the byte directly to save output.
            Otherwise, shift the trailing text right. */
-        if (ed.cur_pos >= sz || gb_char_at(ed.cur_pos) == '\n') {
+        if (ed.cur_pos >= sz || gb_is_nl(ed.cur_pos)) {
             if (c == '\t') {
                 while (cur_col < new_col) { term_putch(' '); cur_col++; }
             } else {
@@ -430,26 +436,25 @@ int dir, count;
 }
 
 /* Character search on current line: f, F, ;, ,, . */
-static void normal_find_cmd(c, count)
-int c, count;
+static void normal_find_cmd()
 {
     static int ch;
-    switch (c) {
+    switch (dsp_c) {
     case 'f':
     case 'F':
         ch = term_getch();
         if (ch == KEY_ESC) break;
         g_find_char = ch;
-        g_find_dir  = (c == 'f') ? 1 : -1;
-        find_move(g_find_dir, count);
+        g_find_dir  = (dsp_c == 'f') ? 1 : -1;
+        find_move(g_find_dir, dsp_n);
         break;
 
     case ';':
-        find_move(g_find_dir, count);
+        find_move(g_find_dir, dsp_n);
         break;
 
     case ',':
-        find_move(-g_find_dir, count);
+        find_move(-g_find_dir, dsp_n);
         break;
 
     default:
@@ -485,7 +490,7 @@ static void do_search_move()
             move_upd(ed.top_pos);
         }
         if (ed.search_wrapped) {
-            hvi_sprintf(ed.status, "search hit %s, continuing at %s",
+            status_fmt("search hit %s, continuing at %s",
                 (int)(ed.search_dir == SEARCH_FWD ? s_bot : s_top),
                 (int)(ed.search_dir == SEARCH_FWD ? s_top : s_bot));
             status_show();
@@ -565,7 +570,7 @@ int after;
             gir_pos = find_eol(ed.cur_pos);
             if (gir_pos < py_sz) {
                 gir_pos++;          /* past the newline */
-            } else if (gir_pos > 0 && gb_char_at(gir_pos - 1) != '\n') {
+            } else if (gir_pos > 0 && !gb_is_nl(gir_pos - 1)) {
                 /* Pasting below a last line that lacks its newline:
                  * add one first so the yank starts on a fresh line
                  * instead of being glued onto this one.  (Only reachable
@@ -579,9 +584,9 @@ int after;
             gir_pos = find_bol(ed.cur_pos);
         }
     } else {
-        py_light = scr_line_is_1row(ed.cur_pos) && !yank_has_nl();
+        py_light = scr_cur_1row() && !yank_has_nl();
         gir_pos = ed.cur_pos;
-        if (after && gir_pos < py_sz && gb_char_at(gir_pos) != '\n')
+        if (after && gir_pos < py_sz && !gb_is_nl(gir_pos))
             gir_pos++;
     }
     gir_text = ed.yank; gir_len = ed.yank_len;
@@ -632,14 +637,13 @@ static void undo_done()
 }
 
 /* Handle yank/put/search/undo/ex commands. */
-static void normal_misc_cmd(c, count, size)
-int c, count, size;
+static void normal_misc_cmd()
 {
     static int save_len, old_dir, light;
     static int mk_c, mk_pos;
     static int unl;         /* undo: newline count of the record */
 
-    switch (c) {
+    switch (dsp_c) {
 
     /* --- Marks --- */
     case 'm':
@@ -664,7 +668,7 @@ int c, count, size;
 
     /* --- Yank/Put --- */
     case 'Y':
-        op_motion('y', count, 'y');
+        op_motion('y', dsp_n, 'y');
         break;
 
     case 'p':  put_yank(1); break;
@@ -737,7 +741,7 @@ int c, count, size;
                 ed.undo.pos == find_bol(ed.undo.pos)) {
                 vcr_from = ed.undo.pos;
                 vcr_to   = ed.undo.pos + ed.undo.len;
-                if (gb_char_at(vcr_to - 1) == '\n') {
+                if (gb_is_nl(vcr_to - 1)) {
                     scr_count_rows();   /* capped; 0 = fall back */
                     sdr_n   = vcr_n;
                     sdr_pos = ed.undo.pos;
@@ -775,22 +779,21 @@ int c, count, size;
      * run the shared handler in erepeat.c (one copy of the logic). */
     case 'J':
     case '~':
-        set_dot(c, 0, count, 0);
-        dot_replay(count);
+        set_dot(dsp_c, 0, dsp_n, 0);
+        dot_replay(dsp_n);
         break;
 
     /* Ignore unknown commands silently */
     default:
-        normal_find_cmd(c, count);
+        normal_find_cmd();
         break;
     }
 }
 
 /* Handle delete/change/replace commands. */
-static void normal_delchg_cmd(c, count, size)
-int c, count, size;
+static void normal_delchg_cmd()
 {
-    switch (c) {
+    switch (dsp_c) {
 
     /* --- Operators (>/< shift one TAB_STOP, always linewise) --- */
     case 'd':
@@ -798,12 +801,12 @@ int c, count, size;
     case 'y':
     case '>':
     case '<':
-        g_op = c; g_count = count; g_hcnt = 1; return;
+        g_op = dsp_c; g_count = dsp_n; g_hcnt = 1; return;
 
-    case 'D':  op_motion('d', count, '$'); break;
-    case 'C':  op_motion('c', count, '$'); break;
-    case 'x':  op_motion('d', count, 'l'); break;
-    case 'X':  op_motion('d', count, 'h'); break;
+    case 'D':  op_motion('d', dsp_n, '$'); break;
+    case 'C':  op_motion('c', dsp_n, '$'); break;
+    case 'x':  op_motion('d', dsp_n, 'l'); break;
+    case 'X':  op_motion('d', dsp_n, 'h'); break;
 
     case 'r':
         /* Same implementation as its '.' replay (one copy of the logic,
@@ -811,7 +814,7 @@ int c, count, size;
         {
             static int repl;
             repl = term_getch();
-            if (repl != KEY_ESC && ed.cur_pos < size) {
+            if (repl != KEY_ESC && ed.cur_pos < dsp_sz) {
                 if (repl == KEY_CR) repl = '\n';
                 set_dot('r', 0, 1, repl);
                 dot_replay(1);
@@ -820,7 +823,7 @@ int c, count, size;
         break;
 
     default:
-        normal_misc_cmd(c, count, size);
+        normal_misc_cmd();
         break;
     }
 }
@@ -861,7 +864,7 @@ int cmd;
         sz = gb_content_len();
         if (gir_pos < sz) {
             gir_pos++;
-        } else if (sz > 0 && gb_char_at(sz - 1) != '\n') {
+        } else if (sz > 0 && !gb_is_nl(sz - 1)) {
             /* last line lacks its newline: add it first (room1
              * leaves gir_pos just past it -- the calls chain) */
             if (room1() < 0) return;
@@ -884,10 +887,9 @@ int cmd;
     ins_start(cmd);
 }
 
-static void normal_edit_cmd(c, count, size)
-int c, count, size;
+static void normal_edit_cmd()
 {
-    switch (c) {
+    switch (dsp_c) {
 
     case 'i':
         enter_insert('i');
@@ -898,20 +900,20 @@ int c, count, size;
     case 'a':
     case 'I':
     case 'A':
-        ins_position(c);
-        enter_insert(c);
+        ins_position(dsp_c);
+        enter_insert(dsp_c);
         break;
 
     case 'o':
     case 'O':
-        open_line(c);
+        open_line(dsp_c);
         break;
 
-    case 's':  op_motion('c', count, 'l'); break;
-    case 'S':  op_motion('c', count, 'c'); break;
+    case 's':  op_motion('c', dsp_n, 'l'); break;
+    case 'S':  op_motion('c', dsp_n, 'c'); break;
 
     default:
-        normal_delchg_cmd(c, count, size);
+        normal_delchg_cmd();
         break;
     }
 }
@@ -947,22 +949,21 @@ int new_top, total;
  * Handle G, Ctrl+F/B/D/U -- page and large-motion commands.
  * Half-page sizes use >> 1 instead of / 2 to avoid the division library.
  */
-static void normal_page_cmd(c0, count0, had_count)
-int c0, count0, had_count;
+static void normal_page_cmd()
 {
     static int c, count;    /* param copies (absolute beats IX) */
     static int n, top_line, total, text_rows, new_top;
 
-    c = c0; count = count0;
+    c = dsp_c; count = dsp_n;
 
     switch (c) {
 
     case 'G':
         ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
-        if (had_count) {
+        if (dsp_had) {
             /* nG: navigate to line n, scanning the file if needed. */
             gb_goto_line(count);
-        } else if (ed.tail_offset > 0L && ed.tail_file[0]) {
+        } else if (ed.tail_offset != 0L && ed.tail_file[0]) {
             gb_load_last();   /* large file: jump to the last window */
         } else {
             ed.cur_pos = scr_last_line_start();
@@ -981,7 +982,7 @@ int c0, count0, had_count;
             /* Load when new screen bottom would exceed buffer: need a full
              * screen of lines above new_top plus text_rows more for the new
              * viewport. */
-            if (ed.tail_offset > 0L && top_line + n + text_rows > total) {
+            if (ed.tail_offset != 0L && top_line + n + text_rows > total) {
                 gb_load_more(LOAD_CHUNK);
                 /* Recompute: gb_discard_head in gb_load_more shifts top_pos. */
                 top_line = gb_count_nl(0, ed.top_pos);
@@ -990,7 +991,7 @@ int c0, count0, had_count;
             new_top = top_line + n;
             if (new_top >= total) new_top = total - 1;
             if (new_top <= top_line) break;
-        } else if (ed.top_pos == 0 && ed.win_start > 0L) {
+        } else if (ed.top_pos == 0 && ed.win_start != 0L) {
             gb_load_prev();
             total   = scr_line_count();
             new_top = total - 1 - n;
@@ -1007,7 +1008,7 @@ int c0, count0, had_count;
     case KEY_CTRL_D:
     case KEY_CTRL_U:
         n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
-        if (c == KEY_CTRL_D && ed.tail_offset > 0L &&
+        if (c == KEY_CTRL_D && ed.tail_offset != 0L &&
             ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
             gb_load_more(LOAD_CHUNK);
         if (c == KEY_CTRL_D) mv_down(n * count);
@@ -1056,7 +1057,7 @@ int c0;
             nc_to   = line_span(count);
             nc_from = ls_from;
             /* cc/S replace the line's text but keep its newline */
-            if (op == 'c' && nc_to > nc_from && gb_char_at(nc_to - 1) == '\n')
+            if (op == 'c' && nc_to > nc_from && gb_is_nl(nc_to - 1))
                 nc_to--;
             if (op != 'y')
                 set_dot(op, op, count, 0);
@@ -1096,6 +1097,10 @@ int c0;
     if (c == KEY_RIGHT) c = 'l';
 
     /* ---- normal commands ---- */
+    dsp_c   = c;
+    dsp_n   = count;
+    dsp_sz  = size;
+    dsp_had = had_count;
     switch (c) {
 
     /* --- Movement --- */
@@ -1108,7 +1113,7 @@ int c0;
         break;
 
     case 'j':
-        if (ed.tail_offset > 0L &&
+        if (ed.tail_offset != 0L &&
             ed.cur_pos >= gb_content_len() - ed.scr_cols) {
             gb_load_more(LOAD_CHUNK);
             mv_down(count); scr_scroll_to_cursor();
@@ -1121,7 +1126,7 @@ int c0;
     case 'k':
         old_top = ed.top_pos;
         mv_up(count); scr_scroll_to_cursor();
-        if (ed.cur_pos == 0 && ed.win_start > 0L) {
+        if (ed.cur_pos == 0 && ed.win_start != 0L) {
             gb_load_prev();
             ed.cur_pos = scr_last_line_start();
             nav_refresh();
@@ -1152,11 +1157,11 @@ int c0;
     case KEY_CTRL_B:
     case KEY_CTRL_D:
     case KEY_CTRL_U:
-        normal_page_cmd(c, count, had_count);
+        normal_page_cmd();
         break;
 
     default:
-        normal_edit_cmd(c, count, size);
+        normal_edit_cmd();
         break;
     }
 

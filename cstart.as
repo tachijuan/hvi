@@ -63,7 +63,7 @@
     GLOBAL  _bdos_disk, _bdos_disk_ix
     GLOBAL  _gb_memmove
     GLOBAL  _con_write, _gb_cntnl
-    GLOBAL  _gb_char_at, _gb_memchr, _gb_memrchr, _ed
+    GLOBAL  _gb_char_at, _gb_is_nl, _gb_memchr, _gb_memrchr, _ed
     GLOBAL  _dsk_u
     GLOBAL  _gb_insert_room, _gb_insert, _gb_make_room
     GLOBAL  _gb_roomed, _gir_pos, _gir_text, _gir_len
@@ -823,6 +823,31 @@ gca_ld:
     ret
 gca_m1:
     ld      hl,-1
+    ret
+
+    ; --- gb_is_nl: non-zero when the byte at pos is '\n' --------------
+    ;
+    ; int gb_is_nl(int pos)
+    ;
+    ; gb_char_at(pos) == '\n' is the most common test in the editor
+    ; (~32 call sites); folding the compare here saves the compare
+    ; tail at every site.  gb_char_at returns 0-255 or -1 (l = FFh),
+    ; so testing L alone suffices.  Frameless like gb_char_at.
+    ;
+_gb_is_nl:
+    ld      hl,2
+    add     hl,sp
+    ld      e,(hl)
+    inc     hl
+    ld      d,(hl)
+    push    de
+    call    _gb_char_at
+    pop     de
+    ld      a,l
+    sub     10              ; 0 when '\n'
+    ld      hl,1
+    ret     z
+    dec     hl              ; HL = 0
     ret
 
     ; --- gb_memchr: CPIR index-of over a raw memory range -------------
