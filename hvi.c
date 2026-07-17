@@ -30,8 +30,8 @@ main(cmdlen, cmdtail)
 int   cmdlen;
 char *cmdtail;
 {
-    static char *cmdp;
-    static int   i, has_file;
+    static char *cmdp, *cmde;
+    static int   i;
     static int   partial;   /* statics: 3-byte absolute vs 6-byte IX */
 
     /* ed is zero-initialised by cstart.as */
@@ -47,32 +47,27 @@ char *cmdtail;
      * CP/M implementations differ on whether cmdlen counts the leading
      * space separator: some include it, some do not.  We skip leading
      * whitespace by scanning content (not by decrementing cmdlen), then
-     * read until we hit another space, CR, or NUL.  The bound
-     * (cmdp - cmdtail) <= cmdlen works for both conventions:
+     * read until CR or NUL.  The bound cmdp <= cmdtail + cmdlen works
+     * for both conventions:
      *   - cmdlen includes space (e.g. 11 for " MYFILE.TXT"): CR stops us first.
      *   - cmdlen excludes space (e.g. 10 for " MYFILE.TXT"): bound allows
-     *     reading up through offset 10 from cmdtail, which is the last char. */
-    has_file = 0;
+     *     reading up through offset 10 from cmdtail, which is the last char.
+     * HVI takes exactly one filename argument and has no option flags,
+     * so the whole tail is the name: CP/M names may contain blanks and
+     * may start with '-' or '!' (e.g. the -READ.ME convention).
+     * hvi_fname_clean strips the trailing blanks and upper-cases;
+     * the leading skip guarantees a non-blank first char, so a present
+     * tail always leaves ed.filename non-empty (tested at load). */
+    cmde = cmdtail + cmdlen;
     cmdp = cmdtail;
     while (*cmdp == ' ' || *cmdp == '\t') cmdp++;
     if (*cmdp && *cmdp != '\r') {
-        if (*cmdp == '-') {
-            bdos_puts("Usage: hvi [filename]\r\n");
-            return 1;
-        }
         i = 0;
-        while (i < PATH_MAX - 1 && (cmdp - cmdtail) <= cmdlen
-               && *cmdp && *cmdp != ' ' && *cmdp != '\t' && *cmdp != '\r') {
+        while (i < PATH_MAX - 1 && cmdp <= cmde && *cmdp && *cmdp != '\r') {
             ed.filename[i++] = *cmdp++;
         }
         ed.filename[i] = '\0';
-        if (i > 0) {
-            /* CP/M filesystems are uppercase-only; fold the name now. */
-            for (i = 0; ed.filename[i]; i++)
-                if (ed.filename[i] >= 'a' && ed.filename[i] <= 'z')
-                    ed.filename[i] = ed.filename[i] - 'a' + 'A';
-            has_file = 1;
-        }
+        hvi_fname_clean(ed.filename);
     }
 
     /* --- Initialise gap buffer (takes most of the TPA heap) --- */
@@ -81,7 +76,7 @@ char *cmdtail;
         return 1;
     }
     /* --- Load file --- */
-    if (has_file) {
+    if (ed.filename[0]) {
         bdos_puts("HVI " HVI_VERSION " - Loading file...\r\n");
         partial = gb_load(ed.filename, (HFILE *)0);
         if (partial == 2) {

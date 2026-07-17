@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-17" "HVI 2.9.0" "CP/M User Commands"
+.TH HVI 1 "2026-07-17" "HVI 2.9.1" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -15,7 +15,6 @@ hvi \- VI-compatible text editor for CP/M
 .SH SYNOPSIS
 .\"
 .B HVI
-.RI [ \-d ]
 .RI [ filename ]
 .\"
 .\" ----------------------------------------------------------------
@@ -53,29 +52,25 @@ form:
 Drives A\-P and user areas 0\-15 are accepted.
 Unprefixed names use the drive and user area HVI was started from.
 .PP
+Filenames follow CP/M conventions: they are folded to upper case, and
+any character CP/M allows is accepted, including a leading
+.B \-
+or
+.B !
+(as in the
+.B \-READ.ME
+convention) and embedded blanks.
+HVI takes no option flags, so the whole command tail is the filename;
+trailing blanks are ignored.
+Ambiguous names containing
+.B *
+or
+.B ?
+are rejected: a wildcard in a write would otherwise erase every
+matching file.
+.PP
 HVI supports three editing modes: normal mode (the default), insert mode,
 and command-line (ex) mode.
-.\"
-.\" ----------------------------------------------------------------
-.SH OPTIONS
-.\"
-.TP
-.B \-d
-Enable debug output.
-Diagnostic messages (key codes, mode changes, buffer allocation, terminal
-size negotiation) are written to the console via
-.IR stderr .
-On CP/M,
-.I stderr
-maps to CON: and cannot be redirected to a file; messages appear on screen
-interleaved with the editor display and will disrupt it.
-Debug mode is most useful for diagnosing startup and initialization problems
-(before full-screen editing begins), or when running under a Unix
-cross-compile environment where stderr redirection is available:
-.PP
-.RS
-.B hvi \-d myfile.txt 2>debug.txt
-.RE
 .\"
 .\" ----------------------------------------------------------------
 .SH MODES

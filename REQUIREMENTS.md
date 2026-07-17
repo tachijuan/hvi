@@ -143,6 +143,21 @@ three or more digits, or no terminating `:`) is treated as part of the
 filename.  Unprefixed names use the drive and user area HVI was started
 from.  See §6.11 for the implementation.
 
+Filenames follow CP/M conventions.  Any character CP/M allows is
+accepted, including a leading `-` or `!` (the `-READ.ME` convention) and
+embedded blanks; HVI has no option flags, so the whole command tail is
+the filename.  Every filename — command line, `:w`, `:e`, `:r` — is
+normalised by `hvi_fname_clean` (cstart.as): folded to upper case,
+bit 7 masked (FCB name bytes are 7-bit; bit 7 holds directory attribute
+flags), trailing blanks stripped (FCB fields are space-padded, so a
+trailing blank names the same entry), and truncated to `PATH_MAX-1` so
+the name survives every copy into `ed.filename`/`ed.tail_file` intact —
+without this, `:w big.txt` against a `tail_file` of `BIG.TXT` would
+fail `gb_save`'s same-file test and read the tail from the file being
+overwritten.  Ambiguous names containing `*` or `?` are rejected by
+`hvi_fopen`: `?` is a BDOS wildcard, and the erase-before-make in write
+mode would otherwise delete every matching file.
+
 ---
 
 ## 6. Editor Architecture

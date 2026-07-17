@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.9.0"
+#define HVI_VERSION "2.9.1"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -265,6 +265,7 @@ void bdos_puts(/* char *s */);
 int  hvi_strlen(/* char *s */);
 void hvi_strcpy(/* char *d, char *s */);
 void hvi_strncpy(/* char *d, char *s, int n */);
+void hvi_fname_clean(/* char *s */);   /* cstart.as: fold/trim/truncate */
 int  hvi_strcmp(/* char *a, char *b */);
 char *fmt_int(/* char *buf, int n -- returns ptr past last digit */);
 void hvi_sprintf(/* char *buf, char *fmt, int a0, a1 -- max 2 args */);

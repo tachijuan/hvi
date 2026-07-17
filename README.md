@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.9.0**
+**Version 2.9.1**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -524,6 +524,38 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.9.0 → 2.9.1
+
+Filename handling now follows CP/M conventions, fixing several bugs:
+
+- **Names starting with `-` were rejected**: the command line treated any
+  leading `-` as an option flag and refused to start, so files like
+  `-READ.ME` (a common CP/M convention) could not be opened. HVI has no
+  option flags; the check is gone.
+- **Names containing blanks were unreachable**: the command-line parser
+  stopped at the first blank. HVI takes exactly one filename argument, so
+  the whole command tail is now the name (`HVI MY FILE.TXT`); trailing
+  blanks are trimmed.
+- **Case/blank mismatches could corrupt large-file saves**: `:e`/`:w`/`:r`
+  recorded names as typed, so `:w big.txt` against a remembered
+  `BIG.TXT` failed the same-file test in the save path and read the
+  unloaded tail from the file being overwritten. Every filename is now
+  normalised (upper-cased, trailing blanks stripped, bit 7 masked,
+  truncated to the 63-char buffer limit) by one shared routine.
+- **Wildcards could mass-erase files**: `?` in an FCB is a BDOS wildcard
+  and writing erases before creating, so `:w ????????.TXT` would have
+  deleted every matching file. Names containing `?` or `*` are now
+  rejected.
+- **FCB conformance**: a second dot no longer leaks `.` into the
+  extension field, and name bytes are masked to 7 bits (bit 7 is a
+  directory attribute flag — a high-bit character could have marked a
+  file read-only on create).
+
+Names starting with `!` were already handled and are now covered by
+regression tests. The stale `-d` debug flag (documented but never
+implemented) is removed from the man page. Net code size *shrank* by 39
+bytes. 216/216 tests pass, including 9 new filename tests.
 
 ### 2.8.4 → 2.9.0
 

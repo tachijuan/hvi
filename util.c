@@ -61,6 +61,10 @@ char *a, *b;
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
+/* hvi_fname_clean (filename normaliser) lives in cstart.as: it shares
+ * ffb_upper with fill_fcb and is frameless there (~35 bytes vs ~110
+ * compiled). */
+
 /* ------------------------------------------------------------------ */
 /*  Integer formatting (no division -- repeated subtraction only)      */
 /* ------------------------------------------------------------------ */

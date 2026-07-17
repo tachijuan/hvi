@@ -288,6 +288,7 @@ char *cmd;
             hvi_sprintf(ed.status, msg_usage, 'r', 0);
             return 0;
         }
+        hvi_fname_clean(fname);
 
         /* Find end of current line, insert after its newline */
         ins_pos = find_eol(ed.cur_pos);
@@ -330,6 +331,7 @@ char *cmd;
             hvi_sprintf(ed.status, msg_usage, 'e', 0);
             return 0;
         }
+        hvi_fname_clean(fname);
         if (ed.modified && !force) {
             hvi_sprintf(ed.status, msg_modified, 'e', 0);
             return 0;
@@ -382,6 +384,7 @@ char *cmd;
     if (do_write) {
         static char *dest;
         static int   ok;
+        if (*p) hvi_fname_clean(p);   /* match ed.tail_file's case/blanks */
         dest = (*p) ? p : ed.filename;
         if (!dest || !dest[0]) {
             hvi_strcpy(ed.status, "No filename: use :w filename");

@@ -67,7 +67,7 @@
     GLOBAL  _dsk_u
     GLOBAL  _gb_insert_room, _gb_insert, _gb_make_room
     GLOBAL  _gb_roomed, _gir_pos, _gir_text, _gir_len
-    GLOBAL  _fill_fcb, _fcb_user, _fcb_drive
+    GLOBAL  _fill_fcb, _fcb_user, _fcb_drive, _hvi_fname_clean
 
 ; Editor-struct field offsets used by _gb_char_at.  GapBuf is the FIRST
 ; member of Editor (hvi.h) so its fields sit at the start of _ed:
@@ -714,6 +714,8 @@ ffb_e:
     ld      a,(de)
     or      a
     jp      z,ffb_done
+    cp      '.'
+    jp      z,ffb_done          ; a second dot ends the extension
     call    ffb_upper
     ld      (hl),a
     inc     hl
@@ -724,11 +726,56 @@ ffb_done:
     ret
 
 ffb_upper:                      ; fold a-z in A to upper case
+    and     7fh                 ; FCB name bytes are 7-bit: bit 7 is a
+                                ; directory attribute flag (R/O, SYS)
     cp      'a'
     ret     c
     cp      'z'+1
     ret     nc
     sub     20h
+    ret
+
+    ; --- hvi_fname_clean: normalise a filename in place --------------
+    ;
+    ; void hvi_fname_clean(char *s)
+    ;
+    ; CP/M directories are uppercase-only, so fold a-z (and mask bit 7,
+    ; both via ffb_upper); strip trailing blanks/controls (FCB name
+    ; fields are space-padded, so a trailing blank names the same
+    ; directory entry); truncate to PATH_MAX-1 (63) so the name
+    ; survives every strncpy into ed.filename/ed.tail_file intact.
+    ; Without this, ":w big.txt" vs a tail_file of "BIG.TXT" fails
+    ; gb_save's same-file test and the tail is read from the file
+    ; being overwritten.  Embedded blanks are kept: CP/M allows them
+    ; and fill_fcb's copy is positional.  Frameless: the argument is
+    ; read relative to SP, IX/IY untouched.
+    ;
+_hvi_fname_clean:
+    ld      hl,2
+    add     hl,sp
+    ld      a,(hl)
+    inc     hl
+    ld      h,(hl)
+    ld      l,a                 ; HL = s
+    ld      d,h
+    ld      e,l                 ; DE = one past the last non-blank
+    ld      b,63                ; PATH_MAX-1
+fnc_loop:
+    ld      a,(hl)
+    or      a
+    jp      z,fnc_end
+    call    ffb_upper           ; mask bit 7, fold a-z
+    ld      (hl),a
+    inc     hl
+    cp      ' '+1
+    jp      c,fnc_next          ; blank or control: not name text
+    ld      d,h
+    ld      e,l                 ; e = q+1
+fnc_next:
+    djnz    fnc_loop
+fnc_end:
+    ex      de,hl
+    ld      (hl),0              ; trim + truncate in one store
     ret
 
     ; --- gb_char_at: logical byte fetch through the gap ---------------

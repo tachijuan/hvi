@@ -141,6 +141,14 @@ static int    s_fop_i, s_fop_rc, s_fop_write;
 HFILE *hvi_fopen(name, mode)
 char *name, *mode;
 {
+    /* Reject ambiguous names before they reach an FCB: '?' is a BDOS
+     * wildcard, so a read open would match an arbitrary directory
+     * entry and the erase-before-make below (BDOS 19) would delete
+     * every matching file.  '*' is only special to the CCP, but Make
+     * would create a literal '*' entry no CP/M tool can reference. */
+    for (s_fop_name = name; *s_fop_name; s_fop_name++)
+        if (*s_fop_name == '?' || *s_fop_name == '*') return (HFILE *)0;
+
     s_fop_name  = name;    /* cache params before any bdos call */
     s_fop_write = (*mode != 'r');
 
