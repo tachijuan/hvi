@@ -587,6 +587,83 @@ def main():
           "row23=%r" % lines[23])
     sess.quit_expect_prompt(":q!\r")
 
+    # ---------- screen checks: hardware ins/del-line for o/O/dd (#8) ----------
+    # dd mid-screen: rows below shift up, only the exposed bottom is drawn
+    rm_file("T.TXT"); put_file("T.TXT", BASIC)
+    sess.start_hvi("T.TXT")
+    sess.keys("jdd")                       # delete row 1 ('delta echo foxtrot')
+    lines = sess.screen_lines()
+    check("screen dd shifts up",
+          lines[0] == "alpha bravo charlie" and
+          lines[1] == "golf hotel india" and
+          lines[2] == "juliet kilo lima" and
+          lines[3] == "mike november oscar" and lines[4] == "~",
+          "rows=%r" % lines[:5])
+    sess.keys("2dd")                       # multi-row shift in one edit
+    lines = sess.screen_lines()
+    check("screen 2dd shifts up",
+          lines[0] == "alpha bravo charlie" and
+          lines[1] == "mike november oscar" and lines[2] == "~",
+          "rows=%r" % lines[:3])
+    sess.quit_expect_prompt(":q!\r")
+
+    # o opens a blank row mid-screen: rows below shift down, nothing redrawn
+    rm_file("T.TXT"); put_file("T.TXT", BASIC)
+    sess.start_hvi("T.TXT")
+    sess.keys("jo\x1b")                    # blank line after row 1
+    lines = sess.screen_lines()
+    check("screen o shifts down",
+          lines[1] == "delta echo foxtrot" and lines[2] == "" and
+          lines[3] == "golf hotel india" and
+          lines[5] == "mike november oscar",
+          "rows=%r" % lines[:6])
+    sess.keys("O2nd\x1b")                  # O above the blank line
+    lines = sess.screen_lines()
+    check("screen O shifts down",
+          lines[2] == "2nd" and lines[3] == "" and
+          lines[4] == "golf hotel india",
+          "rows=%r" % lines[:5])
+    ok = sess.quit_expect_prompt(":wq\r")
+    check("screen o/O file content", ok and get_file("T.TXT") ==
+          "alpha bravo charlie\ndelta echo foxtrot\n2nd\n\n"
+          "golf hotel india\njuliet kilo lima\nmike november oscar\n",
+          repr(get_file("T.TXT")))
+
+    # dd of a wrapped line (2 vrows) shifts twice
+    rm_file("T.TXT"); put_file("T.TXT", "x" * 100 + "\nsecond\nthird\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("dd")
+    lines = sess.screen_lines()
+    check("screen dd wrapped line",
+          lines[0] == "second" and lines[1] == "third" and lines[2] == "~",
+          "rows=%r" % lines[:3])
+    sess.quit_expect_prompt(":q!\r")
+
+    # o on the bottom text row: the viewport scrolls one row instead
+    rm_file("T.TXT")
+    put_file("T.TXT", "".join("line %02d\n" % i for i in range(1, 40)))
+    sess.start_hvi("T.TXT")
+    sess.keys("22jonew\x1b")               # bottom text row, open below
+    lines = sess.screen_lines()
+    check("screen o at bottom scrolls",
+          lines[21] == "line 23" and lines[22] == "new",
+          "rows21-22=%r" % lines[21:23])
+    sess.quit_expect_prompt(":q!\r")
+
+    # dd of the last line pulls the cursor up; the old row must clear
+    rm_file("T.TXT"); put_file("T.TXT", "one\ntwo\n")
+    sess.start_hvi("T.TXT")
+    sess.keys("jdd")
+    lines = sess.screen_lines()
+    check("screen dd last line",
+          lines[0] == "one" and lines[1] == "~",
+          "rows=%r" % lines[:2])
+    sess.keys("dd")                        # buffer becomes empty (fallback)
+    lines = sess.screen_lines()
+    check("screen dd to empty", lines[0] == "" and lines[1] == "~",
+          "rows=%r" % lines[:2])
+    sess.quit_expect_prompt(":q!\r")
+
     # :N must place the terminal cursor on the target row
     rm_file("T.TXT"); put_file("T.TXT", BASIC)
     sess.start_hvi("T.TXT")

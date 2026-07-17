@@ -86,6 +86,16 @@ int n;
 }
 #endif
 
+#ifdef TERM_ANSI
+/* Emit the two-byte CSI lead-in (ESC [): one 3-byte call at each of
+ * the eleven emission sites instead of two inlined raw_byte calls. */
+static void raw_csi()
+{
+    raw_byte(0x1B);
+    raw_byte('[');
+}
+#endif
+
 /*
  * Flush the output buffer to stdout.
  * Called by term_getch() before blocking; also exported so callers can
@@ -173,7 +183,7 @@ char *s;
 void term_clreol()
 {
 #ifdef TERM_ADDR_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('K');
+    raw_csi(); raw_byte('K');
 #endif
 #ifdef TERM_ADDR_VT52
     raw_byte(0x1B); raw_byte('K');
@@ -205,7 +215,7 @@ void term_clreol()
 void term_reverse()
 {
 #ifdef TERM_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('7'); raw_byte('m');
+    raw_csi(); raw_byte('7'); raw_byte('m');
 #else
     raw_byte(0x1B); raw_byte('p');          /* H19 reverse on (VERIFY) */
 #endif
@@ -215,7 +225,7 @@ void term_reverse()
 void term_normal()
 {
 #ifdef TERM_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('0'); raw_byte('m');
+    raw_csi(); raw_byte('0'); raw_byte('m');
 #else
     raw_byte(0x1B); raw_byte('q');          /* H19 reverse off (VERIFY) */
 #endif
@@ -275,7 +285,7 @@ int row0, col0;
             if (col > s_tcol && (col - s_tcol) <= 2) {   /* ESC[C = 3 bytes */
                 s_tg_i = col - s_tcol;
                 while (s_tg_i > 0) {
-                    raw_byte(0x1B); raw_byte('['); raw_byte('C');
+                    raw_csi(); raw_byte('C');
                     s_tg_i--;
                 }
                 s_tcol = col;
@@ -322,7 +332,7 @@ int row0, col0;
 
     /* Full cursor-address sequence for the selected family. */
 #ifdef TERM_ADDR_ANSI
-    raw_byte(0x1B); raw_byte('[');          /* ESC [ row+1 ; col+1 H */
+    raw_csi();          /* ESC [ row+1 ; col+1 H */
     raw_num(row + 1);
     raw_byte(';');
     raw_num(col + 1);
@@ -364,13 +374,62 @@ void term_scroll_up()
     s_tcol = 0;
 }
 
+/* Reverse Index: scrolls down when the cursor sits on the top margin. */
+static void raw_ri()
+{
+    raw_byte(0x1B);
+    raw_byte('M');
+}
+
 void term_scroll_dn()
 {
     term_goto(0, 0);
-    raw_byte(0x1B);
-    raw_byte('M');   /* Reverse Index */
+    raw_ri();
     s_trow = 0;
     s_tcol = 0;
+}
+
+/* Scroll region from screen row trt_top (0-based) to the last text
+ * row.  DECSTBM homes the cursor, so tracking is invalidated.  Args in
+ * globals: frameless, and shared with term_scroll_region below. */
+int trt_top;
+
+void term_region_t()
+{
+    raw_csi();
+    raw_num(trt_top + 1);
+    raw_byte(';');
+    raw_num(ed.scr_rows - 1);
+    raw_byte('r');
+    s_trow = -1; s_tcol = -1;
+}
+
+/*
+ * Shift rows below ts_row (issue #8: o/O/dd fast path).  term_shift_up
+ * removes the row at ts_row -- rows below slide up, a blank row appears
+ * on the last text row.  term_shift_dn opens a blank row at ts_row --
+ * rows below slide down, the last text row's content falls off.  The
+ * status row is never touched.  Callers guarantee ts_row < scr_rows - 2
+ * (DECSTBM needs a 2-row region; the bottom-row case has nothing below
+ * to shift and is handled by a plain row repaint).  ts_row is preserved
+ * so a multi-row shift sets it once.
+ */
+int ts_row;
+
+void term_shift_up()
+{
+    trt_top = ts_row; term_region_t();
+    term_goto(ed.scr_rows - 2, 0);
+    raw_byte('\n');
+    term_scroll_region();               /* restore the full text region */
+}
+
+void term_shift_dn()
+{
+    trt_top = ts_row; term_region_t();
+    term_goto(ts_row, 0);
+    raw_ri();
+    term_scroll_region();
 }
 #else
 /* No scroll region: synthesize a 1-row scroll of the text area with a
@@ -403,18 +462,36 @@ static void term_ins_line()
 #endif
 }
 
-void term_scroll_up()
+/* Shift rows below ts_row (issue #8: o/O/dd fast path) -- see the
+ * REGION variant above for the contract.  Deleting at ts_row pulls the
+ * status row up one; re-inserting on the last text row pushes it back
+ * untouched (and vice versa for the down shift). */
+int ts_row;
+
+void term_shift_up()
 {
-    term_goto(0, 0);              term_del_line();
+    term_goto(ts_row, 0);          term_del_line();
     term_goto(ed.scr_rows - 2, 0); term_ins_line();
     s_trow = -1; s_tcol = -1;    /* IL/DL cursor placement varies -- re-address */
 }
 
-void term_scroll_dn()
+void term_shift_dn()
 {
     term_goto(ed.scr_rows - 2, 0); term_del_line();
-    term_goto(0, 0);              term_ins_line();
+    term_goto(ts_row, 0);          term_ins_line();
     s_trow = -1; s_tcol = -1;
+}
+
+void term_scroll_up()
+{
+    ts_row = 0;
+    term_shift_up();
+}
+
+void term_scroll_dn()
+{
+    ts_row = 0;
+    term_shift_dn();
 }
 #endif /* region vs ILDL */
 #endif /* TERM_HAS_SCROLL */
@@ -424,7 +501,7 @@ void term_scroll_dn()
 void term_ins_char()
 {
 #ifdef TERM_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('@');
+    raw_csi(); raw_byte('@');
 #else
     raw_byte(0x1B); raw_byte('Q');          /* Televideo/Wyse insert char (VERIFY) */
 #endif
@@ -434,7 +511,7 @@ void term_ins_char()
 void term_del_char()
 {
 #ifdef TERM_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('P');
+    raw_csi(); raw_byte('P');
 #else
     raw_byte(0x1B); raw_byte('W');          /* Televideo/Wyse delete char (VERIFY) */
 #endif
@@ -487,9 +564,8 @@ void term_init()
  * Also used by Ctrl-L after term_clear() erases it. */
 void term_scroll_region()
 {
-    raw_byte(0x1B); raw_byte('['); raw_byte('1'); raw_byte(';');
-    raw_num(ed.scr_rows - 1);
-    raw_byte('r');
+    trt_top = 0;
+    term_region_t();
 }
 #endif
 
@@ -503,7 +579,7 @@ void term_status_row()
 void term_restore()
 {
 #ifdef TERM_HAS_REGION
-    raw_byte(0x1B); raw_byte('['); raw_byte('r'); /* reset scroll region */
+    raw_csi(); raw_byte('r'); /* reset scroll region */
 #endif
     term_normal();              /* no-op macro on families without reverse */
     s_trow = -1; s_tcol = -1;
@@ -521,8 +597,8 @@ void term_restore()
 void term_clear()
 {
 #ifdef TERM_ADDR_ANSI
-    raw_byte(0x1B); raw_byte('['); raw_byte('2'); raw_byte('J');
-    raw_byte(0x1B); raw_byte('['); raw_byte('H');
+    raw_csi(); raw_byte('2'); raw_byte('J');
+    raw_csi(); raw_byte('H');
 #endif
 #ifdef TERM_ADDR_VT52
     raw_byte(0x1B); raw_byte('H');          /* home */

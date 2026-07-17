@@ -82,8 +82,8 @@ int pos;
 {
     nvs_p = find_bol(pos);
     for (;;) {
-        nvs_next = next_vrow(nvs_p);
-        if (nvs_next > pos || nvs_next <= nvs_p) break;
+        nvs_next = next_vrow(nvs_p);    /* always > its argument */
+        if (nvs_next > pos) break;
         nvs_p = nvs_next;
     }
     return nvs_p;
@@ -93,31 +93,28 @@ int pos;
  * Shared vrow-walk loops.  vwalk_to advances from vrow start to vrow
  * start while the next start is still <= pos, counting steps in
  * vwk_rows -- i.e. it stops on the row containing pos.  vwalk_n
- * advances by up to n vrow steps.  Both stop at the buffer end.
+ * advances by n vrow steps (next_vrow always advances, so past the
+ * buffer end the result just keeps growing -- callers draw '~' rows).
  */
 static int vwk_rows, vwk_nx;
 
-static int vwalk_to(from, pos)
+static void vwalk_to(from, pos)
 int from, pos;
 {
     vwk_rows = 0;
     for (;;) {
         vwk_nx = next_vrow(from);
-        if (vwk_nx <= from || vwk_nx > pos) break;
+        if (vwk_nx > pos) break;
         from = vwk_nx;
         vwk_rows++;
     }
-    return from;
 }
 
 static int vwalk_n(from, n)
 int from, n;
 {
-    while (n-- > 0) {
-        vwk_nx = next_vrow(from);
-        if (vwk_nx <= from) break;
-        from = vwk_nx;
-    }
+    while (n-- > 0)
+        from = next_vrow(from);
     return from;
 }
 
@@ -362,19 +359,32 @@ int screen_row;
     draw_row_at(screen_row, vwalk_n(ed.top_pos, screen_row));
 }
 
-static int sr_row, sr_text_rows, sr_pos, sr_next;
+/*
+ * Draw text rows [drw_row, drw_to) starting at buffer position drw_pos,
+ * advancing one vrow per row (past the buffer end: '~' rows, since
+ * next_vrow always returns > its argument).  Args in globals: one copy
+ * of the loop shared by scr_refresh, scr_redraw_from_cur,
+ * scr_update_after_move and scr_del_rows.
+ */
+static int drw_row, drw_to, drw_pos;
+
+static void draw_rows()
+{
+    while (drw_row < drw_to) {
+        draw_row_at(drw_row, drw_pos);
+        drw_pos = next_vrow(drw_pos);
+        drw_row++;
+    }
+}
 
 void scr_refresh()
 {
-    sr_text_rows = ed.scr_rows - 1;
     scr_scroll_to_cursor();
-    sr_pos = ed.top_pos;
-    for (sr_row = 0; sr_row < sr_text_rows; sr_row++) {
-        draw_row_at(sr_row, sr_pos);
-        sr_next = next_vrow(sr_pos);
-        if (sr_next > sr_pos) sr_pos = sr_next;
-    }
-    scr_show_status(ed.status);
+    drw_row = 0;
+    drw_to  = ed.scr_rows - 1;
+    drw_pos = ed.top_pos;
+    draw_rows();
+    status_show();
 }
 
 /*
@@ -427,24 +437,14 @@ void scr_redraw_cur_line()
     scr_update_cursor();
 }
 
-static int rfc_p, rfc_scr_row, rfc_next, rfc_text_rows, rfc_row;
-
 void scr_redraw_from_cur()
 {
-    rfc_text_rows = ed.scr_rows - 1;
-
     locate_cur_row();
-    rfc_scr_row = lcr_row;
-    rfc_p       = lcr_vstart;
-
-    /* rfc_p is now the vrow-start for rfc_scr_row; thread it through the loop. */
-    for (rfc_row = rfc_scr_row; rfc_row < rfc_text_rows; rfc_row++) {
-        draw_row_at(rfc_row, rfc_p);
-        rfc_next = next_vrow(rfc_p);
-        if (rfc_next > rfc_p) rfc_p = rfc_next;
-    }
-
-    ed.cur_vrow = rfc_scr_row;
+    drw_row = lcr_row;
+    drw_to  = ed.scr_rows - 1;
+    drw_pos = lcr_vstart;
+    draw_rows();
+    ed.cur_vrow = lcr_row;
     scr_update_cursor();
 }
 
@@ -480,7 +480,7 @@ int light;
         if (lcr_row < ed.scr_rows - 1) {
             draw_row_at(lcr_row, lcr_vstart);
             ed.cur_vrow = lcr_row;
-            scr_show_status(ed.status);
+            status_show();
             return;
         }
     }
@@ -554,7 +554,7 @@ int old_top;
 {
 #ifdef TERM_HAS_SCROLL
     static int uam_tr, uam_p, uam_new_top, uam_delta, uam_nx, uam_i;
-    static int uam_down, uam_from, uam_to;
+    static int uam_down, uam_to;
 
     uam_tr      = ed.scr_rows - 1;
     uam_new_top = ed.top_pos;
@@ -586,14 +586,10 @@ int old_top;
         if (uam_down) term_scroll_up();
         else          term_scroll_dn();
     }
-    uam_from = uam_down ? uam_tr - uam_delta : 0;
-    uam_to   = uam_down ? uam_tr : uam_delta;
-    uam_p    = vwalk_n(uam_new_top, uam_from);
-    for (uam_i = uam_from; uam_i < uam_to; uam_i++) {
-        draw_row_at(uam_i, uam_p);
-        uam_nx = next_vrow(uam_p);
-        if (uam_nx > uam_p) uam_p = uam_nx;
-    }
+    drw_row = uam_down ? uam_tr - uam_delta : 0;
+    drw_to  = uam_down ? uam_tr : uam_delta;
+    drw_pos = vwalk_n(uam_new_top, drw_row);
+    draw_rows();
     scr_update_cursor();
 #else
     /* No hardware scroll: any change of the top line changes every text
@@ -662,6 +658,15 @@ char *msg;
     scr_update_cursor();
 }
 
+/* Show ed.status (call after hvi_sprintf into it).  Lives here rather
+ * than emove.c so screen.c's own refresh tails can share it: the
+ * single-pass linker only resolves calls into already-linked modules,
+ * and screen links before emove. */
+void status_show()
+{
+    scr_show_status(ed.status);
+}
+
 /* Clear the status line and return cursor to edit area. */
 void scr_clear_status()
 {
@@ -688,5 +693,93 @@ void scr_adj()
 void scr_after_edit()
 {
     scr_adj();
-    scr_show_status(ed.status);
+    status_show();
 }
+
+/* ------------------------------------------------------------------ */
+/*  Hardware line insert/delete after o/O and linewise d (issue #8)     */
+/* ------------------------------------------------------------------ */
+#ifdef TERM_HAS_SCROLL
+
+/*
+ * o/O opened a fresh empty line at the cursor: shift the rows below it
+ * down with the hardware scroll instead of repainting from the cursor
+ * to the bottom.  The exposed blank row IS the new empty line, so
+ * nothing needs drawing.  When the viewport had to scroll (o on the
+ * bottom row) the 1-row smart scroll of scr_update_after_move applies;
+ * a new line on the last text row has nothing below to shift and is a
+ * plain row repaint.  (Families without hardware scroll compile this
+ * away: hvi.h defines scr_open_row() as scr_adj().)
+ */
+void scr_open_row()
+{
+    static int sor_top;
+    sor_top = ed.top_pos;
+    scr_scroll_to_cursor();
+    if (ed.top_pos != sor_top) {
+        /* o on the bottom row: 1-row smart scroll.  O on a wrapped top
+         * line moved the top UP; the \n insert shifted every vrow start
+         * by +1, so the walk inside scr_update_after_move can never
+         * reconcile with the stale sor_top and it self-falls-back to
+         * the scr_refresh this case needs. */
+        scr_update_after_move(sor_top);
+        return;
+    }
+    /* open_line leaves the cursor on the fresh empty line's start (a
+     * vrow start); scr_scroll_to_cursor just computed its row, which
+     * is at most the last text row (scr_rows - 2). */
+    if (ed.cur_vrow != ed.scr_rows - 2) {
+        ts_row = ed.cur_vrow;
+        term_shift_dn();
+    } else {
+        /* bottom row: nothing below to shift */
+        draw_row_at(ed.cur_vrow, ed.cur_pos);
+    }
+    scr_update_cursor();
+}
+
+/*
+ * A linewise delete removed sdr_n visual rows whose first row held
+ * buffer position sdr_pos (a line start, still valid after the
+ * delete): hardware-shift the rows below up and repaint only the rows
+ * exposed at the bottom.  Args in globals, set by apply_op BEFORE the
+ * delete; sdr_n == 0 means the range started above the viewport or
+ * was taller than the text area -- fall back to the ordinary repaint,
+ * as when the shift would reach the bottom row.
+ */
+int sdr_pos, sdr_n;
+
+void scr_del_rows()
+{
+    static int sdr_top, sdr_row, sdr_i;
+
+    sdr_top = ed.top_pos;
+    if (sdr_n != 0) {
+        scr_scroll_to_cursor();
+        /* Top must be unmoved (deleting the top of the view pulls the
+         * cursor above it; the fall-through repaint then redraws from
+         * row 0, since scr_scroll_to_cursor left cur_vrow == 0). */
+        if (ed.top_pos == sdr_top) {
+            /* Screen row of the first deleted vrow: sdr_pos is a line
+             * start (thus a vrow start), and the rows above it were
+             * untouched. */
+            vwalk_to(ed.top_pos, sdr_pos);
+            sdr_row = vwk_rows;
+            drw_to  = ed.scr_rows - 1;
+            drw_row = drw_to - sdr_n;
+            if (sdr_row < drw_row) {    /* shift stays above the bottom */
+                ts_row = sdr_row;
+                sdr_i  = sdr_n;
+                do { term_shift_up(); } while (--sdr_i != 0);
+                /* Repaint only the rows exposed at the bottom. */
+                drw_pos = vwalk_n(ed.top_pos, drw_row);
+                draw_rows();
+                status_show();
+                scr_update_cursor();
+                return;
+            }
+        }
+    }
+    scr_after_edit();
+}
+#endif /* TERM_HAS_SCROLL */

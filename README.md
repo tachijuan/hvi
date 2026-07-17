@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.8.4**
+**Version 2.9.0**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -524,6 +524,33 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.8.4 → 2.9.0
+
+`o`/`O` and line deletes now use the terminal's hardware insert/delete-line
+instead of repainting from the cursor to the bottom of the screen — at
+4800 baud a mid-screen `dd` drops from ~1800 transmitted bytes (≈3 s) to
+~25. Suggested by
+[Douglas Miller (@durgadas311)](https://github.com/durgadas311)
+([#8](https://github.com/tachijuan/hvi/issues/8)).
+
+- **`o` / `O`**: the rows below the new line shift down with one hardware
+  operation; the exposed blank row *is* the new empty line, so nothing is
+  redrawn. `o` on the bottom row uses the existing 1-row smart scroll.
+- **`dd` and every linewise delete** (`3dd`, `dj`, `dk`, `dG`, `dgg`,
+  including `.` repeats): the rows below shift up and only the rows exposed
+  at the bottom are repainted. Falls back to the ordinary repaint when the
+  range starts above the viewport, is taller than the text area, reaches
+  the bottom row, or empties the buffer.
+- **Per family**: ANSI narrows the VT100 scroll region (`DECSTBM`) around
+  the shift — no VT102 `IL`/`DL` needed; H19 / Kaypro / Televideo / Wyse /
+  Hazeltine reuse their insert/delete-line codes; VT52 / ADM-3A / Osborne 1
+  have no hardware scroll and compile the feature away entirely.
+- **Size**: paid for by a matching size pass — a shared `ESC [` emitter
+  (11 inlined copies), one shared row-paint loop (4 copies), frameless
+  args-in-globals shift/repaint helpers, and dead-guard removal in the
+  vrow walkers. The ANSI build stays at **229 records**, VT52 shrinks by
+  one; Kaypro/H19 grow one record each.
 
 ### 2.8.3 → 2.8.4
 

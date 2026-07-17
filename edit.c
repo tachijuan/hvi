@@ -778,7 +778,7 @@ int cmd;
     } else {
         undo_save_insert(pos, 1);   /* the newline; typing extends it */
         ed.modified = 1;
-        scr_adj();
+        scr_open_row();     /* hardware shift-down, not a repaint (#8) */
     }
     ins_start(cmd);
 }

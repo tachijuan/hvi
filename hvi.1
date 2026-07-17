@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-16" "HVI 2.8.4" "CP/M User Commands"
+.TH HVI 1 "2026-07-17" "HVI 2.9.0" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -723,15 +723,28 @@ The status bar is not updated on these keystrokes.
 .B C
 \(em change is confined to the current line; only that line's visual rows are redrawn.
 .TP
-.B Cursor row to bottom
-.BR J ,
+.B Hardware line shift
 .BR o ,
 .BR O ,
+and the linewise deletes
+.RB ( dd ,
+.BR dj ,
+.IR ndd ,
+\&...)
+\(em on terminals with a hardware scroll (ANSI scroll region, or
+insert/delete-line on H19, Kaypro, Televideo, Wyse and Hazeltine) the
+rows below the edit are shifted in place (~25 bytes) and only rows
+exposed at the bottom are redrawn.
+Families without a hardware scroll, and edge cases (a delete taller
+than the screen or reaching the bottom row), fall back to the
+cursor-to-bottom redraw below.
+.TP
+.B Cursor row to bottom
+.BR J ,
 .BR p ,
 .BR P ,
 .BR u ,
 .BR dw ,
-.BR dd ,
 .BR cw ,
 Enter in insert mode
 \(em content above the cursor is unchanged; only rows from the cursor to

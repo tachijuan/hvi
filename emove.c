@@ -19,12 +19,9 @@ void enter_insert();     /* edit.c: insert-mode entry for the 'c' op */
 /* ------------------------------------------------------------------ */
 /*  Shared status-line helpers                                          */
 /* ------------------------------------------------------------------ */
-
-/* Show ed.status (call after hvi_sprintf into it). */
-void status_show()
-{
-    scr_show_status(ed.status);
-}
+/* status_show() lives in screen.c (v2.9 size pass): screen.c's own
+ * refresh tails call it too, and the single-pass linker only resolves
+ * calls into already-linked modules -- screen links before emove. */
 
 /* Set ed.status to a fixed message and show it. */
 void status_msg(s)
@@ -625,6 +622,25 @@ int op0, from0, to0, linewise;
     light = !linewise && scr_line_is_1row(from) &&
             gb_count_nl(from, len) == 0;
 
+#ifdef TERM_HAS_SCROLL
+    /* Linewise 'd': size the doomed range in visual rows while it is
+     * still in the buffer -- scr_del_rows shifts the rows below up with
+     * the hardware scroll instead of repainting them (issue #8).  0 =
+     * range starts above the viewport or is taller than the text area
+     * (scr_del_rows then falls back to the ordinary repaint).  t and
+     * size are scratch here; both are dead until reassigned below. */
+    sdr_n = 0;
+    if (op == 'd' && linewise && from >= ed.top_pos) {
+        size = ed.scr_rows - 1;         /* cap (reassigned below) */
+        t = from;
+        while (t < to) {                /* next_vrow always advances */
+            if (sdr_n == size) { sdr_n = 0; break; }
+            t = next_vrow(t);
+            sdr_n++;
+        }
+    }
+#endif
+
     if (op == 'y') {
         save = yank_range(from, len, linewise);
         ed.cur_pos  = from;
@@ -653,7 +669,17 @@ int op0, from0, to0, linewise;
                 ed.cur_pos--;
     }
 
+#ifdef TERM_HAS_SCROLL
+    if (op == 'd' && linewise) {
+        if (size == 0) sdr_n = 0;   /* emptied buffer: row 0 blank rule */
+        sdr_pos = from;
+        scr_del_rows();
+    } else {
+        scr_edit_end(light);
+    }
+#else
     scr_edit_end(light);
+#endif
 
     if (op == 'c')
         enter_insert('c');   /* edit.c: undo arm + insert-mode entry */
