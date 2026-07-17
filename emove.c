@@ -627,17 +627,13 @@ int op0, from0, to0, linewise;
      * still in the buffer -- scr_del_rows shifts the rows below up with
      * the hardware scroll instead of repainting them (issue #8).  0 =
      * range starts above the viewport or is taller than the text area
-     * (scr_del_rows then falls back to the ordinary repaint).  t and
-     * size are scratch here; both are dead until reassigned below. */
+     * (scr_del_rows then falls back to the ordinary repaint). */
     sdr_n = 0;
     if (op == 'd' && linewise && from >= ed.top_pos) {
-        size = ed.scr_rows - 1;         /* cap (reassigned below) */
-        t = from;
-        while (t < to) {                /* next_vrow always advances */
-            if (sdr_n == size) { sdr_n = 0; break; }
-            t = next_vrow(t);
-            sdr_n++;
-        }
+        vcr_from = from;
+        vcr_to   = to;
+        scr_count_rows();       /* capped; 0 = fall back */
+        sdr_n = vcr_n;
     }
 #endif
 
@@ -674,6 +670,7 @@ int op0, from0, to0, linewise;
         if (size == 0) sdr_n = 0;   /* emptied buffer: row 0 blank rule */
         sdr_pos = from;
         scr_del_rows();
+        status_show();
     } else {
         scr_edit_end(light);
     }

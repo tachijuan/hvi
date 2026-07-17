@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.9.1"
+#define HVI_VERSION "2.10.0"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -307,9 +307,9 @@ void term_normal();
 #ifdef TERM_HAS_SCROLL
 void term_scroll_up();
 void term_scroll_dn();
-void term_shift_up();          /* row in ts_row (args-in-globals) */
-void term_shift_dn();
-extern int ts_row;
+void term_shift_up();          /* row/count in ts_row/ts_n (globals; */
+void term_shift_dn();          /* ts_n is consumed)                  */
+extern int ts_row, ts_n;
 #endif
 #ifdef TERM_HAS_ICDC
 void term_ins_char();
@@ -339,6 +339,12 @@ void scr_after_edit();
 void scr_open_row();
 void scr_del_rows();           /* args in sdr_pos / sdr_n globals */
 extern int sdr_pos, sdr_n;
+void scr_ins_rows();           /* args in sir_pos / sir_n / sir_end */
+extern int sir_pos, sir_n, sir_end;
+void scr_join_row();           /* gate in sjr_ok (set pre-delete) */
+extern int sjr_ok;
+void scr_count_rows();         /* [vcr_from, vcr_to) -> vcr_n, capped */
+extern int vcr_from, vcr_to, vcr_n;
 #else                          /* no hardware scroll: ordinary repaint */
 #define scr_open_row() scr_adj()
 #endif

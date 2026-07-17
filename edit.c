@@ -172,6 +172,9 @@ int c0;
     static int del_ch, cur_col, new_col, sz;
     static int old_top, i, ilen;
     static int start, del, had_nl, sol;
+#ifdef TERM_HAS_SCROLL
+    static int spl1;    /* CR split gate: line was 1 vrow (issue #11) */
+#endif
 
     c = c0;
     if (c == KEY_ESC) {
@@ -220,13 +223,26 @@ int c0;
         if (ed.cur_pos != 0) {  /* cur_pos >= 0: cheap equality */
             chk_multi();
             del_ch = gb_char_at(ed.cur_pos - 1);
+#ifdef TERM_HAS_SCROLL
+            /* BS over a line end joins two lines: gate the hardware
+             * shift while both are still separate (issue #11). */
+            if (del_ch == '\n') {
+                sjr_ok = 0;
+                if (scr_line_is_1row(ed.cur_pos))
+                    sjr_ok = scr_line_is_1row(ed.cur_pos - 1);
+            }
+#endif
             ed.cur_pos--;
             gb_delete(ed.cur_pos, 1);
             ed.modified = 1;
             if (ed.undo.type == UNDO_INSERT && ed.undo.len != 0)
                 ed.undo.len--;
             if (del_ch == '\n') {
+#ifdef TERM_HAS_SCROLL
+                scr_join_row();
+#else
                 scr_adj();
+#endif
                 scr_show_status(msg_insert);
             } else if (del_ch == '\t') {
                 scr_redraw_cur_line();
@@ -299,6 +315,11 @@ int c0;
 
     if (c == '\n') {
         tmp[0] = '\n';
+#ifdef TERM_HAS_SCROLL
+        /* Split gate, checked BEFORE the insert: a 1-vrow line split
+         * in two adds exactly one row below (issue #11). */
+        spl1 = scr_line_is_1row(ed.cur_pos);
+#endif
         if (!gb_insert(ed.cur_pos, tmp, 1)) {
             ins_full_retry(tmp);
             return 0;
@@ -306,13 +327,26 @@ int c0;
         ed.cur_pos++;
         ed.modified = 1;
         if (ed.undo.type == UNDO_INSERT) ed.undo.len++;
+        sz = 0;                                  /* new line is empty? */
+        if (ed.cur_pos >= gb_content_len() ||
+            gb_char_at(ed.cur_pos) == '\n')
+            sz = 1;
+#ifdef TERM_HAS_SCROLL
+        /* Empty new line: exactly what 'o' makes -- hardware shift,
+         * wrapped lines included (their rows are untouched).  A split
+         * of a 1-vrow line also adds exactly one row; the shifted-in
+         * blank is repainted with the tail below (issue #11). */
+        if (sz || spl1) scr_open_row();   /* paints the tail's row too */
+        else scr_adj();
+        if (!sz && ed.cur_vrow > 0)
+            scr_redraw_line(ed.cur_vrow - 1);       /* truncate head */
+#else
         scr_adj();
-        /* Mid-line split: the row above the cursor kept the tail that
-         * moved down with the new line -- repaint it (tail exists only
-         * when the cursor's new line is non-empty). */
-        if (ed.cur_vrow > 0 && ed.cur_pos < gb_content_len() &&
-            gb_char_at(ed.cur_pos) != '\n')
+        /* The row above the cursor kept the tail that moved down with
+         * the new line -- repaint it. */
+        if (!sz && ed.cur_vrow > 0)
             scr_redraw_line(ed.cur_vrow - 1);
+#endif
         scr_show_status(msg_insert);
         g_ins_multi = 0;        /* cursor is on a freshly drawn line */
         return 0;
@@ -567,8 +601,34 @@ int after;
         /* The undo record covers exactly the py_total inserted bytes,
          * which end at py_end -- no need to have tracked their start. */
         undo_save_insert(py_end - py_total, py_total);
+#ifdef TERM_HAS_SCROLL
+        if (ed.yank_line) {
+            /* Linewise put: whole lines landed at the line start
+             * py_pos -- shift the rows below down and paint only the
+             * new rows (issue #11).  [py_pos, py_end) excludes a
+             * leading '\n' added to close an unterminated last line
+             * (that byte only completes the row above). */
+            sir_pos = py_pos;
+            sir_end = py_end;
+            sir_n   = gb_count_nl(py_pos, py_end - py_pos);
+            scr_ins_rows();
+            status_show();
+        } else
+            scr_edit_end(py_light);
+#else
         scr_edit_end(py_light);
+#endif
     }
+}
+
+/* Shared tail of both undo branches: restore cursor/dirty state and
+ * consume the record. */
+static void undo_done()
+{
+    ed.cur_pos  = ed.undo.pos;
+    ed.modified = 1;
+    if (ed.undo.was_clean) ed.modified = 0;
+    ed.undo.type = UNDO_NONE;
 }
 
 /* Handle yank/put/search/undo/ex commands. */
@@ -577,6 +637,8 @@ int c, count, size;
 {
     static int save_len, old_dir, light;
     static int mk_c, mk_pos;
+    static int unl;         /* undo: newline count of the record */
+
     switch (c) {
 
     /* --- Marks --- */
@@ -637,21 +699,60 @@ int c, count, size;
         if (ed.undo.type == UNDO_DELETE) {
             save_len = ed.undo.len;
             if (save_len > UNDO_MAX) save_len = UNDO_MAX;
-            light = scr_line_is_1row(ed.undo.pos) &&
-                    gb_cntnl(ed.undo.text, save_len) == 0;
+            unl   = gb_cntnl(ed.undo.text, save_len);
+            light = 0;
+            if (unl == 0) light = scr_line_is_1row(ed.undo.pos);
+#ifdef TERM_HAS_SCROLL
+            /* Linewise-shaped record (whole lines, from a line start):
+             * re-insert with the hardware shift-down, as undoing a dd
+             * should (issue #11).  gb_insert is the leftmost operand,
+             * so it always runs; find_bol(pos) is insert-invariant
+             * (the bytes before pos did not move). */
+            sir_n = 0;
+            if (gb_insert(ed.undo.pos, ed.undo.text, save_len)
+                && unl != 0 && ed.undo.pos == find_bol(ed.undo.pos)
+                && ed.undo.text[save_len - 1] == '\n') {
+                sir_n   = unl;
+                sir_pos = ed.undo.pos;
+                sir_end = ed.undo.pos + save_len;
+            }
+            undo_done();
+            if (sir_n != 0) { scr_ins_rows(); status_show(); }
+            else scr_edit_end(light);
+#else
             gb_insert(ed.undo.pos, ed.undo.text, save_len);
-            ed.cur_pos   = ed.undo.pos;
-            ed.modified  = ed.undo.was_clean ? 0 : 1;
-            ed.undo.type = UNDO_NONE;
+            undo_done();
             scr_edit_end(light);
+#endif
         } else if (ed.undo.type == UNDO_INSERT) {
-            light = scr_line_is_1row(ed.undo.pos) &&
-                    gb_count_nl(ed.undo.pos, ed.undo.len) == 0;
+            unl   = gb_count_nl(ed.undo.pos, ed.undo.len);
+            light = 0;
+            if (unl == 0) light = scr_line_is_1row(ed.undo.pos);
+#ifdef TERM_HAS_SCROLL
+            /* Linewise-shaped insert: remove it with the hardware
+             * shift-up (scr_del_rows), as a dd would (issue #11).
+             * Rows counted BEFORE the delete, like apply_op. */
+            sdr_n = 0;
+            if (unl != 0 && ed.undo.pos >= ed.top_pos &&
+                ed.undo.pos == find_bol(ed.undo.pos)) {
+                vcr_from = ed.undo.pos;
+                vcr_to   = ed.undo.pos + ed.undo.len;
+                if (gb_char_at(vcr_to - 1) == '\n') {
+                    scr_count_rows();   /* capped; 0 = fall back */
+                    sdr_n   = vcr_n;
+                    sdr_pos = ed.undo.pos;
+                }
+            }
+#endif
             gb_delete(ed.undo.pos, ed.undo.len);
-            ed.cur_pos   = ed.undo.pos;
-            ed.modified  = ed.undo.was_clean ? 0 : 1;
-            ed.undo.type = UNDO_NONE;
+            undo_done();
+#ifdef TERM_HAS_SCROLL
+            if (gb_content_len() == 0) sdr_n = 0;  /* row-0 blank rule */
+            if (sdr_n != 0) { scr_del_rows(); status_show(); }
+            else scr_edit_end(light);
+#else
             scr_edit_end(light);
+#endif
         } else {
             status_msg("Nothing to undo");
         }

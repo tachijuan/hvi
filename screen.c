@@ -719,23 +719,19 @@ void scr_open_row()
     if (ed.top_pos != sor_top) {
         /* o on the bottom row: 1-row smart scroll.  O on a wrapped top
          * line moved the top UP; the \n insert shifted every vrow start
-         * by +1, so the walk inside scr_update_after_move can never
-         * reconcile with the stale sor_top and it self-falls-back to
-         * the scr_refresh this case needs. */
+         * by +1, so the walk inside scr_update_after_move either
+         * reconciles on content that only slid one byte (rows below
+         * are unchanged text) or self-falls-back to scr_refresh. */
         scr_update_after_move(sor_top);
         return;
     }
-    /* open_line leaves the cursor on the fresh empty line's start (a
-     * vrow start); scr_scroll_to_cursor just computed its row, which
-     * is at most the last text row (scr_rows - 2). */
-    if (ed.cur_vrow != ed.scr_rows - 2) {
-        ts_row = ed.cur_vrow;
-        term_shift_dn();
-    } else {
-        /* bottom row: nothing below to shift */
-        draw_row_at(ed.cur_vrow, ed.cur_pos);
-    }
-    scr_update_cursor();
+    /* The cursor sits on the fresh line's start (a vrow start), at
+     * most the last text row: exactly scr_ins_rows' contract with
+     * n = 1.  Its own scroll_to_cursor re-run is a no-op. */
+    sir_pos = ed.cur_pos;
+    sir_end = ed.cur_pos + 1;
+    sir_n   = 1;
+    scr_ins_rows();
 }
 
 /*
@@ -751,7 +747,7 @@ int sdr_pos, sdr_n;
 
 void scr_del_rows()
 {
-    static int sdr_top, sdr_row, sdr_i;
+    static int sdr_top, sdr_row;
 
     sdr_top = ed.top_pos;
     if (sdr_n != 0) {
@@ -769,17 +765,110 @@ void scr_del_rows()
             drw_row = drw_to - sdr_n;
             if (sdr_row < drw_row) {    /* shift stays above the bottom */
                 ts_row = sdr_row;
-                sdr_i  = sdr_n;
-                do { term_shift_up(); } while (--sdr_i != 0);
+                ts_n   = sdr_n;
+                term_shift_up();
                 /* Repaint only the rows exposed at the bottom. */
                 drw_pos = vwalk_n(ed.top_pos, drw_row);
                 draw_rows();
-                status_show();
                 scr_update_cursor();
                 return;
             }
         }
     }
     scr_after_edit();
+}
+
+/*
+ * Count the visual rows spanning [vcr_from, vcr_to) into vcr_n, capped
+ * at the text-area height (vcr_n = 0 at the cap: every caller treats 0
+ * as "fall back to the ordinary repaint").  Args/result in globals;
+ * shared by apply_op (emove.c), the undo gates (edit.c) and
+ * scr_ins_rows' no-wrap check.  next_vrow always advances.
+ */
+int vcr_from, vcr_to, vcr_n;
+
+void scr_count_rows()
+{
+    static int vcr_t, vcr_cap;
+    vcr_cap = ed.scr_rows - 1;
+    vcr_n = 0;
+    vcr_t = vcr_from;
+    while (vcr_t < vcr_to) {
+        if (vcr_n == vcr_cap) { vcr_n = 0; break; }
+        vcr_t = next_vrow(vcr_t);
+        vcr_n++;
+    }
+}
+
+/*
+ * An edit re-inserted whole lines: sir_n lines occupying
+ * [sir_pos, sir_end), where sir_pos is a line start, the text ends
+ * with '\n', and the cursor sits at sir_pos (callers ensure all
+ * three).  Hardware-shift the rows at and below sir_pos's row down by
+ * sir_n and paint only the inserted rows -- the mirror image of
+ * scr_del_rows.  Falls back when sir_n is 0 (caller gate failed), the
+ * viewport moved, an inserted line wraps (vrow count != sir_n), or
+ * the shift would reach the status row.  Serves undo of a linewise
+ * delete and the linewise p/P put (issue #11).
+ */
+int sir_pos, sir_n, sir_end;
+
+void scr_ins_rows()
+{
+    static int sir_top;
+    sir_top = ed.top_pos;
+    if (sir_n != 0) {
+        scr_scroll_to_cursor();
+        if (ed.top_pos == sir_top) {
+            vcr_from = sir_pos;
+            vcr_to   = sir_end;
+            scr_count_rows();
+            /* cursor at sir_pos, a vrow start: its row is cur_vrow */
+            if (vcr_n == sir_n && ed.cur_vrow + sir_n < ed.scr_rows - 1) {
+                ts_row = ed.cur_vrow;
+                ts_n   = sir_n;
+                term_shift_dn();
+                drw_row = ed.cur_vrow;
+                drw_to  = drw_row + sir_n;
+                drw_pos = sir_pos;
+                draw_rows();
+                /* no status here: o/CR arrive mid-insert with a stale
+                 * ed.status -- undo/put show it themselves */
+                scr_update_cursor();
+                return;
+            }
+        }
+    }
+    scr_after_edit();
+}
+
+/*
+ * Insert-mode BS deleted the newline before the cursor, joining the
+ * cursor's line onto the previous one.  sjr_ok, set by the caller
+ * BEFORE the delete, is non-zero when both lines occupied one vrow
+ * each; when the joined line still fits one row, the rows below shift
+ * up by exactly one: repaint the joined row, one hardware shift, and
+ * paint only the row exposed at the bottom (issue #11).
+ */
+int sjr_ok;
+
+void scr_join_row()
+{
+    static int sjr_top;
+    sjr_top = ed.top_pos;
+    scr_scroll_to_cursor();
+    if (sjr_ok && ed.top_pos == sjr_top && ed.cur_vrow < ed.scr_rows - 2
+        && scr_line_is_1row(ed.cur_pos)) {
+        /* sl1_bol: the joined line's start, from scr_line_is_1row.
+         * The vanished visual row now belongs to the next line: let
+         * scr_del_rows shift it away and repaint the exposed bottom
+         * (its re-run of the scroll/top checks is a no-op). */
+        draw_row_at(ed.cur_vrow, sl1_bol);
+        sdr_pos = find_eol(ed.cur_pos) + 1;
+        sdr_n   = 1;
+        scr_del_rows();
+        return;
+    }
+    scr_adj();
 }
 #endif /* TERM_HAS_SCROLL */

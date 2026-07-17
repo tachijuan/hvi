@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.9.1**
+**Version 2.10.0**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -524,6 +524,38 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.9.1 → 2.10.0
+
+The hardware insert/delete-line optimization of v2.9 now covers the
+insert-mode and undo/put paths, as suggested by
+[Douglas Miller (@durgadas311)](https://github.com/durgadas311)
+([#11](https://github.com/tachijuan/hvi/issues/11)):
+
+- **Enter in insert mode**: at the end of a line it behaves exactly like
+  `o` — one hardware shift-down, nothing repainted (wrapped lines
+  included). Splitting a one-row line uses the same shift, painting only
+  the tail's row and re-truncating the head. Enter on the bottom row
+  keeps the one-row smart scroll. A mid-screen Enter drops from ~600
+  transmitted bytes to ~30 at 4800 baud.
+- **Backspace joining two lines**: the joined row is repainted, the
+  vanished row is shifted away, and only the row exposed at the bottom
+  is drawn.
+- **Undo**: undoing a linewise delete (`dd`, `3dd`, ...) shifts the rows
+  back down and paints only the restored lines (~1800 bytes → ~30 for a
+  mid-screen `u`); undoing `o` or a linewise insert shifts up like a
+  `dd` would.
+- **Linewise put**: `p`/`P` of whole lines — the classic `dd`+`p`
+  move-line flow — shares the same shift-down path.
+- **Multi-row shifts are batched**: a `3dd` now costs one scroll-region
+  set/reset (ANSI) or one cursor round trip (insert/delete-line
+  families) instead of one per row (~78 bytes → ~38 on ANSI).
+
+Wrapped lines, ranges taller than the screen, viewport moves, and
+similar edge cases fall back to the ordinary repaint, and the no-scroll
+families (VT52, ADM3A, Osborne 1) compile the feature away, as in v2.9.
+The insert/delete-line codes for the Televideo, Wyse and Hazeltine
+builds remain unverified on real hardware.
 
 ### 2.9.0 → 2.9.1
 

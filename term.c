@@ -405,22 +405,22 @@ void term_region_t()
 }
 
 /*
- * Shift rows below ts_row (issue #8: o/O/dd fast path).  term_shift_up
- * removes the row at ts_row -- rows below slide up, a blank row appears
- * on the last text row.  term_shift_dn opens a blank row at ts_row --
- * rows below slide down, the last text row's content falls off.  The
- * status row is never touched.  Callers guarantee ts_row < scr_rows - 2
- * (DECSTBM needs a 2-row region; the bottom-row case has nothing below
- * to shift and is handled by a plain row repaint).  ts_row is preserved
- * so a multi-row shift sets it once.
+ * Shift the rows below ts_row by ts_n (issue #8/#11 fast path).
+ * term_shift_up removes ts_n rows at ts_row -- rows below slide up,
+ * blank rows appear at the bottom of the text area.  term_shift_dn
+ * opens ts_n blank rows at ts_row -- the bottom rows' content falls
+ * off.  The status row is never touched.  Callers set ts_row and ts_n
+ * (ts_n is consumed); they guarantee ts_row < scr_rows - 2 and that
+ * the shift stays inside the text area.  Batching the count costs one
+ * region set/reset per edit instead of one per row.
  */
-int ts_row;
+int ts_row, ts_n;
 
 void term_shift_up()
 {
     trt_top = ts_row; term_region_t();
     term_goto(ed.scr_rows - 2, 0);
-    raw_byte('\n');
+    do { raw_byte('\n'); } while (--ts_n != 0);
     term_scroll_region();               /* restore the full text region */
 }
 
@@ -428,7 +428,7 @@ void term_shift_dn()
 {
     trt_top = ts_row; term_region_t();
     term_goto(ts_row, 0);
-    raw_ri();
+    do { raw_ri(); } while (--ts_n != 0);
     term_scroll_region();
 }
 #else
@@ -462,35 +462,44 @@ static void term_ins_line()
 #endif
 }
 
-/* Shift rows below ts_row (issue #8: o/O/dd fast path) -- see the
- * REGION variant above for the contract.  Deleting at ts_row pulls the
- * status row up one; re-inserting on the last text row pushes it back
- * untouched (and vice versa for the down shift). */
-int ts_row;
+/* Shift the rows below ts_row by ts_n (issue #8/#11 fast path) -- see
+ * the REGION variant above for the contract.  Deleting ts_n rows at
+ * ts_row pulls the status row up; re-inserting them just above it
+ * pushes it back untouched (and vice versa for the down shift). */
+int ts_row, ts_n;
+static int ts_i;
 
 void term_shift_up()
 {
-    term_goto(ts_row, 0);          term_del_line();
-    term_goto(ed.scr_rows - 2, 0); term_ins_line();
+    ts_i = ts_n;
+    term_goto(ts_row, 0);
+    do { term_del_line(); } while (--ts_i != 0);
+    term_goto(ed.scr_rows - 1 - ts_n, 0);
+    do { term_ins_line(); } while (--ts_n != 0);
     s_trow = -1; s_tcol = -1;    /* IL/DL cursor placement varies -- re-address */
 }
 
 void term_shift_dn()
 {
-    term_goto(ed.scr_rows - 2, 0); term_del_line();
-    term_goto(ts_row, 0);          term_ins_line();
+    ts_i = ts_n;
+    term_goto(ed.scr_rows - 1 - ts_n, 0);
+    do { term_del_line(); } while (--ts_i != 0);
+    term_goto(ts_row, 0);
+    do { term_ins_line(); } while (--ts_n != 0);
     s_trow = -1; s_tcol = -1;
 }
 
 void term_scroll_up()
 {
     ts_row = 0;
+    ts_n   = 1;
     term_shift_up();
 }
 
 void term_scroll_dn()
 {
     ts_row = 0;
+    ts_n   = 1;
     term_shift_dn();
 }
 #endif /* region vs ILDL */
