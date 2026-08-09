@@ -540,7 +540,7 @@ int from, to;
         ed.cur_pos = sfs_save;
         scr_update_cursor();
     } else {
-        ed.cur_vrow = -1;   /* span may have crossed a row boundary */
+        vrow_stale();   /* span may have crossed a row boundary */
         scr_redraw_cur_line();
     }
 }
@@ -873,7 +873,7 @@ void scr_join_row()
          * scr_del_rows shift it away and repaint the exposed bottom
          * (its re-run of the scroll/top checks is a no-op). */
         draw_row_at(ed.cur_vrow, sl1_bol);
-        sdr_pos = find_eol(ed.cur_pos) + 1;
+        sdr_pos = eol_cur() + 1;
         sdr_n   = 1;
         scr_del_rows();
         return;

@@ -25,7 +25,7 @@ pip3 install --user pyte
 ```sh
 cd /tmp/hvi-test
 python3 build.py      # compiles + links the ANSI HVI.COM
-python3 hvitest.py    # 189 functional tests (movement, edit, ex, :s, shift, undo, marks, screen)
+python3 hvitest.py    # 230 functional tests (movement, edit, ex, :s, shift, undo, marks, screen)
 python3 bigtest.py    # 18 large-file sliding-window, paging and insert-recovery tests
 python3 genasm.py X   # dump OPTIM-stage assembly for module X (debugging)
 

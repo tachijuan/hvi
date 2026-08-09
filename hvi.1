@@ -4,7 +4,7 @@
 .\"
 .\" View with: man ./hvi.1
 .\"
-.TH HVI 1 "2026-07-17" "HVI 2.10.1" "CP/M User Commands"
+.TH HVI 1 "2026-08-08" "HVI 2.11" "CP/M User Commands"
 .\"
 .\" ----------------------------------------------------------------
 .SH NAME
@@ -363,18 +363,27 @@ Set the named mark at the cursor position.
 .BI ` { a-z }
 Jump to the named mark, restoring the exact line and column.
 .TP
+.BI ' { a-z }
+Jump to the first non-blank character of the line holding the named mark.
+.TP
 .B ``
 Jump back to the position before the last jump.
 A jump is
 .BR ` ,
+.BR ' ,
 .BR G ,
 .BR gg ,
 .BR :N ,
 .BR :$ ,
+.BR :' ,
 or a successful search.
 Pressing
 .B ``
 twice toggles between the two positions.
+.TP
+.B ''
+Jump back to the line of the position before the last jump, at its first
+non-blank character.
 .PP
 Marks follow the text as it is edited; a mark is cleared when the text it
 points to is deleted.
@@ -387,7 +396,7 @@ Marks are also motions for the
 .B c
 and
 .B y
-operators:
+operators, in both forms:
 .B d`a
 deletes the exclusive character range between the cursor and mark
 .I a
@@ -397,6 +406,18 @@ changes it,
 .B y`a
 yanks it, and
 .B d``
+uses the previous-jump position.
+The
+.B '
+form is linewise instead:
+.B d'a
+deletes every line from the cursor's through the mark's,
+.B c'a
+replaces their text with the typed text on one line (like
+.BR cc ),
+.B y'a
+yanks them as whole lines, and
+.B d''
 uses the previous-jump position.
 An unset mark reports
 .B "Mark not set"
@@ -496,6 +517,11 @@ Go to line number
 .B :$
 Go to the last line.
 .TP
+.BI :' { a-z }
+Go to the line holding the named mark; the
+.BI :` { a-z }
+form is equivalent.
+.TP
 .BI :[range]s/ old / new /[g]
 Substitute
 .I old
@@ -513,7 +539,10 @@ The range is one address or
 .B $
 (the last line), or
 .BI ' { a-z }
-(the mark's line); the default is the cursor's line.
+or
+.BI ` { a-z }
+(the mark's line \(em an address names a line, so both tick forms mean the
+same one); the default is the cursor's line.
 .B %
 is a shorthand for the whole buffer
 .RB ( 1,$ ).

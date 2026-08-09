@@ -1,6 +1,6 @@
 # HVI - VI Clone for CP/M
 
-**Version 2.10.1**
+**Version 2.11**
 
 A lightweight VI-compatible editor for CP/M 2.2 and CP/M 3.0, written in
 HI-TECH C. Uses a gap buffer for efficient editing. Ships as an ANSI/VT100
@@ -176,11 +176,13 @@ Unprefixed names use the drive and user area HVI was started from.
 | `d0` | Delete to beginning of line         |
 | `dG` | Delete to end of file               |
 | `` d`a `` | Delete to mark `a` (exclusive; `` d`` `` = to previous jump) |
+| `d'a` | Delete the lines from the cursor's through mark `a`'s (`d''` = to previous jump) |
 | `D`  | Delete to end of line (same as `d$`)|
 | `cc` | Change current line                 |
 | `cw` | Change word                         |
 | `c$` | Change to end of line               |
 | `` c`a `` | Change to mark `a` (exclusive)      |
+| `c'a` | Change the lines from the cursor's through mark `a`'s |
 | `>>` / `<<` | Shift line(s) one tab stop right / left (count and all motions work: `>j`, `>G`, `` >`a ``, ...) |
 | `C`  | Change to end of line (same as `c$`)|
 | `r`  | Replace single character            |
@@ -196,6 +198,7 @@ Unprefixed names use the drive and user area HVI was started from.
 | `yw` | Yank word                                     |
 | `y$` | Yank to end of line                           |
 | `` y`a `` | Yank to mark `a` (exclusive)             |
+| `y'a` | Yank the lines from the cursor's through mark `a`'s |
 | `p`  | Put (paste) after cursor / below current line |
 | `P`  | Put before cursor / above current line        |
 
@@ -220,12 +223,18 @@ the search genuinely wraps past the end (or beginning) of the file.
 |-----------|---------------------------------------------------------|
 | `m{a-z}`  | Set mark `{a-z}` at the cursor position                 |
 | `` `{a-z} `` | Jump to mark `{a-z}` (exact line **and** column)     |
+| `'{a-z}`  | Jump to the first non-blank of mark `{a-z}`'s line      |
 | `` `` ``  | Jump back to the position before the last jump          |
-| `` d`{a-z} `` | Delete from the cursor to the mark (also `c`, `y`, and `` `` ``) |
+| `''`      | Jump back to the line of the position before the last jump |
+| `` d`{a-z} `` | Delete from the cursor to the mark, charwise (also `c`, `y`, and `` `` ``) |
+| `d'{a-z}` | Delete the cursor's line through the mark's, linewise (also `c`, `y`, and `''`) |
 
-A jump — for the purpose of `` `` `` — is `` ` ``, `G`, `gg`, `:N`, `:$`, or a
-successful search (`/`, `?`, `n`, `N`). Pressing `` `` `` twice toggles between
-the two positions.
+The two tick characters differ exactly as they do in vi: `` ` `` means the
+mark's **exact position**, `'` means **its line**.
+
+A jump — for the purpose of `` `` `` and `''` — is `` ` ``, `'`, `G`, `gg`,
+`:N`, `:$`, `:'{a-z}`, or a successful search (`/`, `?`, `n`, `N`). Pressing
+`` `` `` twice toggles between the two positions.
 
 Marks follow the text as it is edited: inserting or deleting above a mark
 shifts it so it stays on the same character. A mark is cleared when the text
@@ -233,12 +242,14 @@ it points to is deleted, and all marks are cleared when a new file is loaded
 (`:e`) or, in a large file, when the sliding window moves to a different part
 of the file. Jumping to a cleared or never-set mark reports `Mark not set`.
 
-Marks also work as operator motions: `` d`a ``, `` c`a `` and `` y`a ``
-operate on the exclusive character range between the cursor and the mark
-(either side may come first), and `` d`` `` uses the previous-jump
-position. Operating toward a cleared or never-set mark reports
-`Mark not set` and leaves the buffer untouched. `.` repeats a `` d`x ``
-or `` c`x `` change against the mark's current (edit-adjusted) position.
+Marks also work as operator motions, in both forms. `` d`a ``, `` c`a `` and
+`` y`a `` operate on the exclusive character range between the cursor and the
+mark (either side may come first); `d'a`, `c'a` and `y'a` are linewise and
+cover every line from the cursor's through the mark's — `c'a` leaves one empty
+line to type on, exactly like `cc`. `` d`` `` and `d''` use the previous-jump
+position. Operating toward a cleared or never-set mark reports `Mark not set`
+and leaves the buffer untouched. `.` repeats a `` d`x ``, `d'x`, `` c`x `` or
+`c'x` change against the mark's current (edit-adjusted) position.
 
 ### Normal Mode — Character Search (current line)
 
@@ -290,13 +301,15 @@ Both repeat commands accept a count prefix (e.g. `3;` skips to the third next ma
 | `:r filename`| Read file and insert after current line     |
 | `:N`         | Go to line number N                         |
 | `:$`         | Go to last line                             |
+| `:'{a-z}`    | Go to the line holding mark `{a-z}` (`` :`{a-z} `` is the same) |
 | `:[range]s/old/new/[g]` | Substitute: plain text, case-sensitive; `g` = all occurrences in a line |
 | `:[range]>` / `:[range]<` | Shift the range's lines one tab stop right / left |
 
 `:s` matches plain text (no regular expressions), **case-sensitively**.
 Without `g` the first occurrence in each line is replaced. The range is
 one address or `addr1,addr2` (either order): a line number, `.` (the
-cursor's line), `$` (the last line), or `'{a-z}` (the mark's line);
+cursor's line), `$` (the last line), or `'{a-z}` / `` `{a-z} `` (the
+mark's line — an address names a line, so either tick works);
 `%` is shorthand for the whole buffer (`1,$`).
 The default is the cursor's line. The trailing `/` may be omitted, and
 an empty `new` deletes `old`. The cursor moves to the last substituted
@@ -524,6 +537,39 @@ keys never touch it, and repeated edits reuse the bar already on screen.
 ---
 
 ## Changes
+
+### 2.10.1 → 2.11
+
+Both vi tick characters are now supported everywhere marks are used.
+`` ` `` keeps its old meaning — the mark's exact line and column — and
+`'` is the new line form: `'a` jumps to the first non-blank of mark
+`a`'s line, and `d'a` / `c'a` / `y'a` are linewise over every line from
+the cursor's through the mark's (`` d`a `` and friends stay exclusive
+charwise). `''` mirrors `` `` `` for the previous-jump position, `.`
+replays either form, and `:'a` / `` :`a `` jump to the mark's line as ex
+commands — ex *ranges* already took `'a` and now also accept `` `a ``,
+since an address names a line either way.
+
+Consequence of making linewise `c` behave like `cc`: `cj` and `ck` now
+keep the range's trailing newline too, so they leave one empty line to
+type on instead of pulling the following line up.
+
+The feature initially grew the ANSI build by 265 bytes (231 records); a
+size pass claws it all back to **229 records (29282 bytes)** — the same
+record count as v2.10.1, with 9 bytes of net feature cost. The levers:
+mark resolution deduped into one `mark_pos()` shared by every consumer;
+the linewise-`c` newline trim moved into `apply_op` (one copy instead
+of two call-site copies); the `:N` and `:'x` handlers merged onto one
+address-parser block; and four new 3-byte-call helpers folding shapes
+the assembly dump showed repeated across modules — `bol_cur`/`eol_cur`
+(the 8-byte `find_bol/eol(ed.cur_pos)` load/push/call/pop at 17 sites),
+`vrow_stale` (the 6-byte `ed.cur_vrow = -1` store at 13 sites), and
+`gb_tailing`/`gb_winoff` (the 11-byte `long != 0L` or-chain on the
+large-file offsets at 20 sites, the biggest single win at ~120 bytes).
+
+The suite is up to 230 functional tests (23 new ones cover the `'`
+forms); the large-file and per-terminal checks pass unchanged, and all
+eight non-ANSI family binaries are rebuilt.
 
 ### 2.10.0 → 2.10.1
 

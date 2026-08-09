@@ -25,9 +25,10 @@ extern char s_full[];    /* "Buffer full"       (edit.c) */
 extern char s_nopat[];   /* "Pattern not found" (edit.c) */
 
 /* Mark resolution shared with the operators (emove.c): me_mkc holds
- * the mark char, motion_endpoint('`') validates and reports. */
+ * the mark char, mark_pos() validates and reports. */
 extern int me_mkc;
-int  motion_endpoint();
+int  mark_pos();
+void mk_prev();
 int  apply_shift();     /* emove.c: the >>/<< engine, shared by :> :< */
 extern int sh_op, sh_from, sh_to;   /* its arguments (globals) */
 
@@ -46,7 +47,7 @@ static int ejd_top;
 static int ex_jump_done()
 {
     ed.want_col = 0;
-    ed.cur_vrow = -1;   /* line jump: cached cursor row is stale */
+    vrow_stale();   /* line jump: cached cursor row is stale */
     ejd_top = ed.top_pos;
     scr_scroll_to_cursor();
     return ed.top_pos != ejd_top;
@@ -80,8 +81,9 @@ char *s;
 
 /*
  * Parse one range address at xs_p: a line number (clamped to the
- * buffer), '.' (the cursor's line), '$' (the last line), or '{a-z}
- * (the mark's line; slot = char - 0x60 as in motion_endpoint).
+ * buffer), '.' (the cursor's line), '$' (the last line), or '{a-z} /
+ * `{a-z} (the mark's line -- an ex address is a line, so both tick
+ * forms name the same one).
  * Returns the line-start position; -1 when xs_p holds no address
  * (xs_p unmoved); -2 on a bad or unset mark ("Mark not set" set).
  */
@@ -89,18 +91,17 @@ static int xs_addr()
 {
     if (*xs_p == '.') {
         xs_p++;
-        return find_bol(ed.cur_pos);
+        return bol_cur();
     }
     if (*xs_p == '$') {
         xs_p++;
         return scr_last_line_start();
     }
-    if (*xs_p == '\'') {
-        /* motion_endpoint('`') resolves and validates the mark -- the
-         * same code the operators use ("Mark not set" shown there;
-         * xs_t is a dummy linewise out-param). */
+    if (*xs_p == '\'' || *xs_p == '`') {
+        /* mark_pos resolves and validates the mark -- the same code the
+         * jumps and operators use ("Mark not set" shown there). */
         me_mkc = xs_p[1];
-        xs_n = motion_endpoint('`', 1, &xs_t);
+        xs_n = mark_pos();
         if (xs_n < 0) return -2;
         xs_p += 2;
         return find_bol(xs_n);
@@ -151,7 +152,7 @@ char *p;
             if (sb_p2 < 0) return -1;   /* "N,junk" is not a substitute */
         }
         if (sb_p1 < 0)
-            sb_p1 = sb_p2 = find_bol(ed.cur_pos);   /* default: this line */
+            sb_p1 = sb_p2 = bol_cur();   /* default: this line */
     }
     if (sb_p1 > sb_p2) { sb_t = sb_p1; sb_p1 = sb_p2; sb_p2 = sb_t; }
 
@@ -243,11 +244,15 @@ char *cmd;
     rc = ex_subst(p);
     if (rc >= 0) return rc;
 
-    /* :N  -- go to line N (xs_addr clamps and finds the line start) */
-    if (*p >= '0' && *p <= '9') {
+    /* :N / :'x / :`x -- go to a line address (xs_addr clamps line
+     * numbers and validates marks; a bad or unset mark returns -2 with
+     * "Mark not set" already shown) */
+    if ((*p >= '0' && *p <= '9') || *p == '\'' || *p == '`') {
         xs_p = p;
-        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
-        ed.cur_pos = xs_addr();
+        xs_n = xs_addr();
+        if (xs_n < 0) return 0;
+        mk_prev();   /* `` returns here */
+        ed.cur_pos = xs_n;
         /* return 0 when the viewport is unchanged: no text redraw needed */
         return ex_jump_done();
     }
@@ -255,14 +260,14 @@ char *cmd;
     /* :$ -- go to last line (loads entire tail for large files) */
     if (*p == '$') {
         static int clen;
-        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
-        while (ed.tail_offset != 0L) {
+        mk_prev();   /* `` returns here */
+        while (gb_tailing()) {
             clen = gb_content_len();
             if (clen > 0) ed.cur_pos = clen - 1;
             if (gb_load_more(LOAD_CHUNK) == 0) break;
         }
         ed.cur_pos = scr_last_line_start();
-        if (!ex_jump_done() && ed.win_start == 0L && ed.tail_offset == 0L)
+        if (!ex_jump_done() && !gb_winoff() && !gb_tailing())
             return 0;       /* viewport unchanged: no text redraw needed */
         return 1;
     }
@@ -291,7 +296,7 @@ char *cmd;
         hvi_fname_clean(fname);
 
         /* Find end of current line, insert after its newline */
-        ins_pos = find_eol(ed.cur_pos);
+        ins_pos = eol_cur();
         if (ins_pos < gb_content_len())
             ins_pos++;
 

@@ -12,7 +12,7 @@
 #ifndef HVI_H
 #define HVI_H
 
-#define HVI_VERSION "2.10.1"
+#define HVI_VERSION "2.11"
 
 /*
  * Enable debug I/O tracing: prints one line per BDOS 33 refill showing
@@ -51,9 +51,10 @@
 #define SEARCH_MAX  64
 
 /* Marks: slot 0 (MARK_PREV) holds the position before the last jump
- * (used by ``); slots 1-26 hold `a-`z.  The layout mirrors ASCII:
- * slot = mark char - '`' (0x60), so '`' and a-z resolve with a single
- * subtraction and one unsigned range test (motion_endpoint '`').
+ * (used by `` and ''); slots 1-26 hold marks a-z.  The layout mirrors
+ * ASCII: slot = mark char - '`' (0x60), so '`' and a-z resolve with a
+ * single subtraction and one unsigned range test (mark_pos(), which
+ * folds the other tick char onto '`' first).
  * A mark value of -1 means "not set". */
 #define NMARKS      27
 #define MARK_PREV   0
@@ -227,7 +228,7 @@ typedef struct {
      * can skip the O(text_rows) viewport scan on every j/k keypress. */
     int     cur_vrow;
 
-    /* Marks: buffer positions for m/` (a-z + MARK_PREV); -1 = not set.
+    /* Marks: buffer positions for m/`/' (a-z + MARK_PREV); -1 = not set.
      * Adjusted on every insert/delete; cleared when the large-file
      * window slides or a new file is loaded (positions become invalid). */
     int     marks[NMARKS];
@@ -245,6 +246,11 @@ int  gb_char_at(/* int pos */);  /* assembly, cstart.as: reads GapBuf
                                   * GapBuf must stay Editor's 1st member */
 int  find_bol(/* int pos */);
 int  find_eol(/* int pos */);
+int  bol_cur();         /* find_bol(ed.cur_pos) */
+int  eol_cur();         /* find_eol(ed.cur_pos) */
+void vrow_stale();      /* ed.cur_vrow = -1 */
+int  gb_tailing();      /* ed.tail_offset != 0L */
+int  gb_winoff();       /* ed.win_start != 0L */
 int  gb_find_ch(/* int pos, int c */);  /* find_eol for any byte */
 int  gb_insert(/* int pos, char *text, int len */);
 int  gb_delete(/* int pos, int len */);

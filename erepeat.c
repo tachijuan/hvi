@@ -73,12 +73,12 @@ int cmd;
         break;
     case 'o':
         sz = gb_content_len();
-        eol = find_eol(ed.cur_pos);
+        eol = eol_cur();
         if (eol < sz) eol++;
         ed.cur_pos = eol;
         break;
     case 'O':
-        ed.cur_pos = find_bol(ed.cur_pos);
+        ed.cur_pos = bol_cur();
         break;
     default: break;
     }
@@ -118,7 +118,7 @@ int n;
     static int light;
     linewise = 0;
     if (ed.dot_motion == 'c') {          /* cc / S: whole-line change */
-        from = find_bol(ed.cur_pos);
+        from = bol_cur();
         to = find_eol(from);
     } else {
         if (ed.dot_motion == 'w') me_cw = 1;
@@ -126,6 +126,9 @@ int n;
         if (endpoint < 0) return;
         from = (ed.cur_pos < endpoint) ? ed.cur_pos : endpoint;
         to   = (ed.cur_pos < endpoint) ? endpoint   : ed.cur_pos;
+        /* Linewise (c'a, cj, ck): keep the last newline, as cc does. */
+        if (linewise && to > from && gb_is_nl(to - 1))
+            to--;
     }
     /* One-row repaint when the whole change stays on a single-row line. */
     light = !linewise && scr_line_is_1row(from) &&
@@ -209,7 +212,7 @@ int count;
         k = (n != 1) ? n - 1 : 1;   /* n >= 1: cheap equality */
         while (k-- > 0) {
             sz = gb_content_len();
-            eol = find_eol(ed.cur_pos);
+            eol = eol_cur();
             if (eol >= sz) break;
             /* remove the newline plus the joined line's leading blanks */
             del = 1;

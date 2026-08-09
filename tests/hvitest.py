@@ -351,6 +351,10 @@ def main():
               "\ta\n\tb\n\tcd\n")
     file_test(sess, "shift > mark col0 excl", "a\nb\nc\n", "jjmagg>`a",
               "\ta\n\tb\nc\n")
+    # the ' form is linewise, so the mark's own line always shifts
+    file_test(sess, "shift > 'a", "a\nb\nc\n", "jjmagg>'a",
+              "\ta\n\tb\n\tc\n")
+    file_test(sess, "shift < 'a", "\ta\n\tb\n", "jmagg<'a", "a\nb\n")
     file_test(sess, "shift >> empty line skipped", "a\n\nb\n", ">G",
               "\ta\n\n\tb\n")
     file_test(sess, "shift dot repeat", "a\nb\n", ">>j.", "\ta\n\tb\n")
@@ -457,7 +461,7 @@ def main():
               "one\nthree\n")
     file_test(sess, "undo charwise p", "abcdef\n", "2ylpu", "abcdef\n")
 
-    # ---------- marks (m / `) ----------
+    # ---------- marks (m / ` / ') ----------
     # `a returns to the exact position (line AND column) of the mark
     file_test(sess, "mark jump exact", "alpha bravo\ndelta echo\ngolf hotel\n",
               "jllmagg`arX", "alpha bravo\ndeXta echo\ngolf hotel\n")
@@ -494,6 +498,55 @@ def main():
     file_test(sess, "del d`z unset", "abc\n", "d`z", "abc\n")
     # dot repeat re-resolves the mark at its adjusted position
     file_test(sess, "dot d`a.", "xxab\nxxcd\n", "llma0d`aj0.", "xxcd\n")
+
+    # --- ' (line marks): jump to the first non-blank of the mark's line ---
+    file_test(sess, "mark jump line", "alpha bravo\n  delta echo\ngolf\n",
+              "jllllmagg'arX", "alpha bravo\n  Xelta echo\ngolf\n")
+    # a mark set in column 0 of an indented line still lands on the text
+    file_test(sess, "mark ' skips indent", "one\n\t two\n",
+              "jmagg'arX", "one\n\t Xwo\n")
+    # '' returns to the line before the last jump (here: G)
+    file_test(sess, "mark '' return", BASIC, "G''rX",
+              BASIC.replace("alpha", "Xlpha"))
+    # ' after a search jumps to the line, not the matched column
+    file_test(sess, "mark ' after search", BASIC, "/hotel\r''rX",
+              BASIC.replace("alpha", "Xlpha"))
+    # operators accept ' motions: linewise, both endpoint lines included
+    file_test(sess, "del d'a forward", BASIC, "jjmaggd'a",
+              "juliet kilo lima\nmike november oscar\n")
+    file_test(sess, "del d'a backward", BASIC, "majjjd'a",
+              "mike november oscar\n")
+    # d'a on one line is dd; the mark's own line goes too
+    file_test(sess, "del d'a same line", "one\ntwo\n", "jmad'a", "one\n")
+    # c'a is linewise like cc: the lines' text goes, one empty line stays
+    file_test(sess, "chg c'a", "one\ntwo\nthree\n", "jmaggc'aX\x1b",
+              "X\nthree\n")
+    # cj is the same linewise change (c with any linewise motion)
+    file_test(sess, "chg cj", "one\ntwo\nthree\n", "cjX\x1b", "X\nthree\n")
+    # y'a yanks whole lines: p puts them below the cursor's line
+    file_test(sess, "yank y'a p", "one\ntwo\nthree\n", "jmaggy'aGp",
+              "one\ntwo\nthree\none\ntwo\n")
+    # d'' uses the previous-jump position, linewise (G recorded it on
+    # line 2, so lines 2-5 go)
+    file_test(sess, "del d'' prev jump", BASIC, "jGd''",
+              "alpha bravo charlie\n")
+    # unset mark aborts the operator; buffer untouched
+    file_test(sess, "del d'z unset", "abc\n", "d'z", "abc\n")
+    # the delete clears the mark it spanned, so '.' finds it unset and
+    # replays as a no-op instead of eating another two lines
+    file_test(sess, "dot d'a. mark cleared", "a\nb\nc\nd\n", "jmaggd'a.",
+              "c\nd\n")
+    # '.' of a linewise change keeps the trailing newline on the replay too
+    file_test(sess, "dot cj.", "a\nb\nc\nd\n", "cjX\x1bj.", "X\nX\n")
+    # ex addresses take either tick: both name the mark's line
+    file_test(sess, "ex jump 'a", BASIC, "jjma:1\r:'a\rrX",
+              BASIC.replace("golf", "Xolf"))
+    file_test(sess, "ex jump `a", BASIC, "jjllma:1\r:`a\rrX",
+              BASIC.replace("golf", "Xolf"))
+    file_test(sess, "ex range 'a subst", "aa\naa\naa\n",
+              "jjma:'a,$s/a/b/g\r", "aa\naa\nbb\n")
+    file_test(sess, "ex range `a subst", "aa\naa\naa\n",
+              "jjma:`a,$s/a/b/g\r", "aa\naa\nbb\n")
 
     # ---------- screen checks ----------
     rm_file("T.TXT"); put_file("T.TXT", BASIC)
@@ -789,6 +842,18 @@ def main():
     sess.keys("d`z")                       # operator + unset mark
     lines = sess.screen_lines()
     check("screen op mark unset", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys("'z")                        # the ' forms report it too
+    lines = sess.screen_lines()
+    check("screen ' mark unset", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys("d'z")
+    lines = sess.screen_lines()
+    check("screen op ' mark unset", "Mark not set" in (lines[23] or ""),
+          "row23=%r" % lines[23])
+    sess.keys(":'z\r")                     # and as an ex address
+    lines = sess.screen_lines()
+    check("screen ex ' mark unset", "Mark not set" in (lines[23] or ""),
           "row23=%r" % lines[23])
     sess.quit_expect_prompt(":q!\r")
 

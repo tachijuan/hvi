@@ -193,6 +193,7 @@ Key functions:
 - `gb_content_len()` — returns logical content length
 - `gb_char_at(pos)` — character at logical position (handles the gap transparently).  **Assembly** in cstart.as: it is the hottest function in the editor (every per-character scanner calls it), frameless, reading the GapBuf fields at fixed offsets from `ed` — GapBuf must stay the first member of `Editor`
 - `find_bol(pos)` / `find_eol(pos)` — line boundaries around pos, via backward/forward CPIR scans (`gb_memrchr`/`gb_memchr`, 21 T-states/byte) over the raw gap segments; these back every line motion
+- `bol_cur()` / `eol_cur()` / `vrow_stale()` / `gb_tailing()` / `gb_winoff()` — size-pass call folds (v2.11): `find_bol/eol(ed.cur_pos)`, `ed.cur_vrow = -1`, and the `ed.tail_offset/win_start != 0L` long tests as 3-byte calls; gap.c links before every caller
 - `gb_count_nl(pos, len)` / `gb_copy_out(dst, pos, len)` — newline count and bulk copy over a logical range; both split the range at the gap with a shared clamp helper (`gb_split`) and run the CPIR counter / LDIR mover per raw segment
 - `gb_insert(pos, text, len)` — insert text at logical position (also maintains the line/row caches and marks)
 - `gb_delete(pos, len)` — delete len bytes at logical position (expands gap)
@@ -366,24 +367,37 @@ backing file:
 ### 6.10 Marks
 
 `ed.marks[NMARKS]` holds 27 buffer positions: slot 0 (`MARK_PREV`) for
-`` ``` `` — the position before the last jump — and slots 1–26 for
-`` `a``–`` `z`` (set with `m{a-z}`).  The layout mirrors ASCII
-(`slot = mark char − 0x60`, `` ` `` = 0x60), so `motion_endpoint('`')`
-resolves any mark char with one subtraction and one unsigned range test.
+`` ``` ``/`''` — the position before the last jump — and slots 1–26 for
+marks `a`–`z` (set with `m{a-z}`).  The layout mirrors ASCII
+(`slot = mark char − 0x60`, `` ` `` = 0x60), so `mark_pos()` resolves any
+mark char with one subtraction and one unsigned range test; `'` (0x27) is
+folded onto `` ` `` first, so `''` and `` ``` `` both name `MARK_PREV`.
 −1 means "not set".  Every `gb_insert`/`gb_delete`
 runs `mk_adjust()` so marks keep pointing at the same characters; a mark
 inside a deleted range is cleared.  All marks are cleared when the
 large-file window slides or a new file is loaded (buffer positions no
-longer describe the same text).  `G`, `gg`, `:N`, `:$`, searches, and
-`` `x`` jumps record `MARK_PREV` first, so `` ``` `` returns to the origin.
+longer describe the same text).  `G`, `gg`, `:N`, `:$`, `:'x`, searches,
+and both tick jumps record `MARK_PREV` first, so `` ``` `` returns to the
+origin.
 
-Marks are also operator motions (v2.6): `` d`x ``, `` c`x `` and `` y`x ``
-apply the operator to the exclusive character range between the cursor and
-the mark (`apply_op` orders the endpoints), and `` d`` `` uses
-`MARK_PREV`.  Resolution and validation live in the `motion_endpoint()`
-'`' case, shared by the operators, the `.` replay (the mark char is
-recorded in `dot_arg` and re-resolved at repeat time via `me_mkc`), and
-the standalone `` `x`` jump in edit.c.
+The two tick characters carry the vi distinction (v2.11): `` ` `` means the
+mark's exact position, `'` means its line.  `` `x `` jumps to the stored
+line and column; `'x` jumps to the first non-blank of that line (`mv_bnb`
+after the jump).  As operator motions, `` d`x ``, `` c`x `` and `` y`x ``
+are exclusive charwise between the cursor and the mark (`apply_op` orders
+the endpoints), while `d'x`, `c'x` and `y'x` are linewise over every line
+from the cursor's through the mark's — the `motion_endpoint()` `'` case
+pulls `ed.cur_pos` back to the topmost line start and returns the position
+past the bottom line's newline, the same contract `j`/`k` use.  `` d`` ``
+and `d''` use `MARK_PREV`.  Resolution and validation live in `mark_pos()`
+(emove.c), shared by both jumps, both operator motions, the `.` replay (the
+mark char is recorded in `dot_arg` and re-resolved at repeat time via
+`me_mkc`) and the ex address parser.
+
+Linewise `c` (`c'x`, and consequently `cj`/`ck`) keeps the range's last
+newline, so the insert opens one empty line exactly as `cc` does — the
+trim lives next to the `apply_op` call in `normal_cmd` and in
+`dot_replay_c`.
 
 ### 6.11 Drive and User-Area File Access (v2.5)
 
@@ -784,8 +798,11 @@ All accept a count prefix (`3;` = skip to third match).
 |-----|--------|
 | `m{a-z}` | Set mark at the cursor position |
 | `` `{a-z} `` | Jump to mark (exact position); "Mark not set" if unset or invalidated |
-| `` `` `` | Jump to the position before the last jump (`G`, `gg`, `:N`, `:$`, search, or a mark jump) |
-| `` d`{a-z} `` / `` c`{a-z} `` / `` y`{a-z} `` | Operate on the exclusive range between cursor and mark (either order); `` d`` `` etc. use the previous-jump position; "Mark not set" aborts the operator |
+| `'{a-z}` | Jump to the first non-blank of the mark's line |
+| `` `` `` | Jump to the position before the last jump (`G`, `gg`, `:N`, `:$`, `:'x`, search, or either mark jump) |
+| `''` | Jump to the first non-blank of the previous-jump position's line |
+| `` d`{a-z} `` / `` c`{a-z} `` / `` y`{a-z} `` | Operate on the exclusive charwise range between cursor and mark (either order); `` d`` `` etc. use the previous-jump position; "Mark not set" aborts the operator |
+| `d'{a-z}` / `c'{a-z}` / `y'{a-z}` | Same, but linewise: every line from the cursor's through the mark's (`c` keeps the last newline, like `cc`); `d''` etc. use the previous-jump position |
 
 Marks track edits (§6.10) and are cleared when the large-file window slides
 or a new file is loaded.
@@ -811,7 +828,7 @@ The `.` command repeats the last **change** at the current cursor position:
 | `~` | Toggle case of same count of characters |
 | `J` | Join same count of lines |
 | `dd` / `dw` / `d$` etc. | Re-apply same delete motion |
-| `` d`x `` / `` c`x<text>ESC `` | Re-resolve mark `x` at its current position and re-apply (mark char kept in `dot_arg`) |
+| `` d`x `` / `` c`x<text>ESC `` / `d'x` / `c'x<text>ESC` | Re-resolve mark `x` at its current position and re-apply (mark char kept in `dot_arg`; the tick char is the stored motion) |
 | `>>` / `<<` / `>{motion}` | Re-apply the same shift |
 | `cw<text>ESC` / `cc<text>ESC` | Delete same motion range and re-insert same text |
 | `C<text>ESC` | Change to EOL and re-insert same text |
@@ -873,6 +890,7 @@ Insert mode optimises terminal output on slow (9600 baud) connections:
 | `:r filename` | Read file and insert after current line |
 | `:N` | Go to line number N (1-based) |
 | `:$` | Go to last line (loads entire tail for large files) |
+| `:'{a-z}` / `` :`{a-z} `` | Go to the line holding the mark (v2.11) |
 | `:[range]s/old/new/[g]` | Substitute (v2.7): plain-text, case-sensitive |
 | `:[range]>` / `:[range]<` | Shift the range's lines one tab stop right / left (v2.7) |
 
@@ -889,9 +907,10 @@ cannot appear in either text (no escape syntax).
 The range is one address or `addr1,addr2` (order-independent), or `%`
 (the whole buffer, an alias for `1,$`); the default is the cursor's
 line.  Addresses: a line number (clamped to the buffer), `.` (the
-cursor's line), `$` (the last line), or `'{a-z}` (the line containing
-the mark, resolved by the same `motion_endpoint('`')` code the
-operators use -- an unset mark reports "Mark not set").
+cursor's line), `$` (the last line), or `'{a-z}` / `` `{a-z} `` (the line
+containing the mark -- an address names a line, so both tick forms mean
+the same one -- resolved by the same `mark_pos()` code the jumps and
+operators use; an unset mark reports "Mark not set").
 
 Implementation (`ex_subst`, ex.c): the parser runs before the other ex
 commands (a range can start with digits) and returns "not mine" so `:N`
@@ -1034,11 +1053,11 @@ The `apply_op(op, from, to, linewise)` function applies an operator to a range:
 - `'c'`: saves undo, saves to yank buffer, deletes range, calls `undo_save_insert`, enters insert mode
 - `'y'`: saves to yank buffer only
 
-`motion_endpoint(ch, count, &linewise)` computes the endpoint position for a given motion character and count. Supported motions: `h`, `l`, `w`, `b`, `e`, `$`, `0`, `^`, `j`, `k`, `G`, and `` ` `` (mark; exclusive charwise).
+`motion_endpoint(ch, count, &linewise)` computes the endpoint position for a given motion character and count. Supported motions: `h`, `l`, `w`, `b`, `e`, `$`, `0`, `^`, `j`, `k`, `G`, `` ` `` (mark; exclusive charwise) and `'` (mark; linewise).
 
 The `>` and `<` operators (v2.7) ride the same model: `apply_op` routes them to `apply_shift` (arguments in the `sh_op`/`sh_from`/`sh_to` globals -- frameless, like `gb_insert_room`), which shifts every line touched by the range one `TAB_STOP` right (insert one tab; empty lines skipped; `room1`/`gb_insert_room` recovers a full gap) or left (remove up to `TAB_STOP` columns of leading blanks).  Always linewise regardless of the motion; an exclusive endpoint in column 0 leaves that line out (vim's rule).  Lines are processed bottom-up so the positions of the lines still to do are unaffected by the edits below them -- this also survives a window swap, since the loop is driven by a line count.  The cursor lands on the first non-blank of the topmost shifted line.  A single-line shift is undoable; multi-line shifts invalidate the undo record (scattered edits, like `:s`).  A shift that changes nothing (e.g. `<<` on an unindented line) does not set the modified flag.  `:[range]>` and `:[range]<` (ex.c) call the same engine through the shared range parser.
 
-For the `` ` `` motion the mark character is passed in the global `me_mkc` (edit.c reads it from the keyboard; erepeat.c replays `ed.dot_arg`): an invalid character returns −1 silently, an unset/invalidated mark shows "Mark not set" and returns −1.  The "Unknown motion: %c" message for an unrecognised `ch` is also shown inside `motion_endpoint()` (default case), so callers only test for a negative return.
+For the `` ` `` and `'` motions the mark character is passed in the global `me_mkc` (edit.c reads it from the keyboard; erepeat.c replays `ed.dot_arg`) and resolved by `mark_pos()`: an invalid character returns −1 silently, an unset/invalidated mark shows "Mark not set" and returns −1.  The `'` case also sets `*linewise` and pulls `ed.cur_pos` back to the topmost line start, so its result is the `[ed.cur_pos, endpoint)` line span `j`/`k` return.  The "Unknown motion: %c" message for an unrecognised `ch` is also shown inside `motion_endpoint()` (default case), so callers only test for a negative return.
 
 ---
 

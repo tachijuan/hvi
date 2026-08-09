@@ -121,6 +121,18 @@ int gb_content_len()
     return ed.gb.size - (ed.gb.gend - ed.gb.gstart);
 }
 
+/* Large-file window state tests.  Each inlined `long != 0L` costs an
+ * 11-byte or-chain; these fold the 20 sites into 3-byte calls. */
+int gb_tailing()        /* unloaded tail follows the window */
+{
+    return ed.tail_offset != 0L;
+}
+
+int gb_winoff()         /* window no longer starts at byte 0 */
+{
+    return ed.win_start != 0L;
+}
+
 /*
  * gb_char_at(pos) -- the character at logical position pos, or -1 out
  * of range -- lives in cstart.as: it is the hottest function in the
@@ -198,7 +210,7 @@ int   len0;
     }
 
     if (pos != ed.cur_pos || gbi_nl_added > 0) {
-        ed.cur_vrow = -1;
+        vrow_stale();
     }
 
     mk_adjust(pos, len, 0);
@@ -310,7 +322,7 @@ int len0;
     }
 
     if (pos != ed.cur_pos || gbd_nl_del > 0) {
-        ed.cur_vrow = -1;
+        vrow_stale();
     }
 
     mk_adjust(pos, len, 1);
@@ -483,7 +495,7 @@ int gb_load_more(n)
 int n;
 {
     glm_n = n;             /* cache before any BDOS call */
-    if (ed.tail_offset == 0L || !ed.tail_file[0]) return 0;
+    if (!gb_tailing() || !ed.tail_file[0]) return 0;
 
     /* Make room: if content + n would exceed capacity, discard from head */
     glm_need = gb_content_len() - (ed.gb.size - GAP_MIN - glm_n);
@@ -521,9 +533,9 @@ int n;
     }
     if (glm_loaded > 0) {
         if (ed.line_cnt_cached > 0) ed.line_cnt_cached += glm_nl;
-        ed.cur_vrow = -1;
+        vrow_stale();
     }
-    if (ed.tail_offset != 0L)
+    if (gb_tailing())
         ed.tail_offset = hvi_ftell(glm_f);
 
     hvi_fclose(glm_f);
@@ -722,13 +734,13 @@ char *filename;
     gsv_fn = filename;     /* cache before any BDOS call */
     /* vi convention: a text file ends with a newline.  Append one to the
      * buffer when the buffer holds the end of the file and lacks it. */
-    if (ed.tail_offset == 0L) {
+    if (!gb_tailing()) {
         gsv_len = gb_content_len();
         if (gsv_len > 0 && !gb_is_nl(gsv_len - 1))
             gb_insert(gsv_len, gsv_nl, 1);
     }
     gsv_using_tmp = 0;
-    if (ed.tail_file[0] && (ed.win_start != 0L || ed.tail_offset != 0L) &&
+    if (ed.tail_file[0] && (gb_winoff() || gb_tailing()) &&
         hvi_strcmp(gsv_fn, ed.tail_file) == 0) {
         gsv_mk_tmp();
         gsv_f = hvi_fopen(gsv_tmp, s_wb);
@@ -740,7 +752,7 @@ char *filename;
 
     gb_copy_file(gsv_f, 0L, ed.win_start);       /* head before window */
     gsv_new_tail = gb_write_buf(gsv_f);
-    if (ed.tail_offset != 0L)                     /* unloaded tail      */
+    if (gb_tailing())                     /* unloaded tail      */
         gb_copy_file(gsv_f, ed.tail_offset, 0x7FFFFFFFL);
     hvi_fputc(0x1A, gsv_f);
     hvi_fclose(gsv_f);
@@ -750,7 +762,7 @@ char *filename;
         hvi_rename(gsv_tmp, gsv_fn);
     }
 
-    if (ed.tail_file[0] && (ed.win_start != 0L || ed.tail_offset != 0L)) {
+    if (ed.tail_file[0] && (gb_winoff() || gb_tailing())) {
         hvi_strncpy(ed.tail_file, gsv_fn, PATH_MAX - 1);
         ed.tail_file[PATH_MAX - 1] = '\0';
         ed.tail_offset = gsv_new_tail;
@@ -962,7 +974,7 @@ int n;
     gg_buf_lines = scr_line_count();
 
     /* Fast path: buffer starts at file byte 0 and the target line is loaded. */
-    if (ed.win_start == 0L && (!ed.tail_file[0] || n - 1 < gg_buf_lines)) {
+    if (!gb_winoff() && (!ed.tail_file[0] || n - 1 < gg_buf_lines)) {
         gg_local_line = n - 1;
         if (gg_local_line >= gg_buf_lines) gg_local_line = gg_buf_lines - 1;
         if (gg_local_line < 0) gg_local_line = 0;
@@ -1063,4 +1075,25 @@ int find_eol(pos)
 int pos;
 {
     return gb_find_ch(pos, '\n');
+}
+
+/* The cursor's line ends -- a 3-byte call replaces the 8-byte
+ * load/push/call/pop shape repeated at every bol_cur() /
+ * eol_cur() site (9 + 8 of them across the editor). */
+int bol_cur()
+{
+    return find_bol(ed.cur_pos);
+}
+
+int eol_cur()
+{
+    return find_eol(ed.cur_pos);
+}
+
+/* Invalidate the cached cursor visual row (same 3-vs-6-byte trade,
+ * 13 sites).  Anything that may move the cursor across a visual-row
+ * boundary without maintaining cur_vrow must call this. */
+void vrow_stale()
+{
+    ed.cur_vrow = -1;
 }

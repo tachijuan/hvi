@@ -97,7 +97,7 @@ static void begin_hmove()
 static void end_hmove()
 {
     if (h_vstart >= 0 && vrow_start_of(ed.cur_pos) != h_vstart)
-        ed.cur_vrow = -1;
+        vrow_stale();
 }
 
 /* Place cursor at column wantcol on line starting at lstart. */
@@ -123,7 +123,7 @@ int lstart, wantcol;
 void mv_bol()
 {
     begin_hmove();
-    ed.cur_pos = find_bol(ed.cur_pos);
+    ed.cur_pos = bol_cur();
     end_hmove();
 }
 
@@ -158,7 +158,7 @@ void mv_eol()
     /* find_eol lands on the '\n' (or buffer end); the cursor sits on
      * the last character before it.  p == cur_pos when the line is
      * empty or the cursor is already on its '\n'. */
-    p = find_eol(ed.cur_pos);
+    p = eol_cur();
     if (p > ed.cur_pos) ed.cur_pos = p - 1;
     end_hmove();
 }
@@ -210,7 +210,7 @@ int n;
 {
     static int pos, target;
     while (n-- > 0) {
-        pos = find_bol(ed.cur_pos);
+        pos = bol_cur();
         if (pos == 0) break;
         pos--;
         target = pos_at_col(find_bol(pos), ed.want_col);
@@ -228,7 +228,7 @@ int n;
     static int pos, size, target;
     size = gb_content_len();
     while (n-- > 0) {
-        pos = find_eol(ed.cur_pos);
+        pos = eol_cur();
         if (pos >= size) break;
         pos++;
         target = pos_at_col(pos, ed.want_col);
@@ -301,8 +301,8 @@ int ch, dir, count;
  * changes the word only, while dw deletes through the following spaces. */
 int me_cw;
 
-/* Mark char for the '`' motion.  The caller sets it before invoking
- * motion_endpoint('`', ...): edit.c stores the char it read from the
+/* Mark char for the '`' and '\'' motions.  The caller sets it before
+ * invoking motion_endpoint: edit.c stores the char it read from the
  * keyboard, erepeat.c replays ed.dot_arg. */
 int me_mkc;
 
@@ -328,6 +328,39 @@ int pos;
 static int me_mk_n;
 
 static char s_nomark[] = "Mark not set";
+
+/* Record the cursor as the previous-jump position (`` / '' return
+ * here).  Every jump calls this: 3-byte call vs the 6-byte load/store
+ * pair at each of the six sites (edit.c, ex.c). */
+void mk_prev()
+{
+    ed.marks[MARK_PREV] = ed.cur_pos;
+}
+
+/*
+ * Resolve the mark named by me_mkc to a buffer position.  Both tick
+ * chars name the previous-jump slot (`` and '' both return there), so
+ * '\'' folds onto '`' before the slot arithmetic (slot = char - 0x60).
+ * Returns -1 for a char that is not a mark name (silent: the caller
+ * treats it as an aborted command) or for an unset/invalidated mark
+ * ("Mark not set" reported here, as every caller just tests for < 0).
+ * Shared by the ` and ' jumps (edit.c), their operator motions, the
+ * '.' replay and the ex '{addr} form (ex.c).
+ */
+int mark_pos()
+{
+    /* '`' -> MARK_PREV (0), a-z -> 1-26 */
+    me_mk_n = ((me_mkc == '\'') ? '`' : me_mkc) - '`';
+    if ((unsigned)me_mk_n >= NMARKS)
+        return -1;              /* not a mark char: abort silently */
+    me_mk_n = ed.marks[me_mk_n];
+    /* unsigned test: catches unset (-1) and past-the-end in one */
+    if ((unsigned)me_mk_n > (unsigned)gb_content_len()) {
+        status_msg(s_nomark);
+        return -1;
+    }
+    return me_mk_n;
+}
 
 int motion_endpoint(ch, count, linewise)
 int  ch, count;
@@ -449,21 +482,24 @@ int *linewise;
         ed.cur_pos = find_bol(pos);
         return size;
 
-    /* `{a-z} / ``: exclusive charwise motion to a mark (vi: d`a deletes
-     * from the cursor up to, not including, the mark).  Serves both the
-     * d/c/y operators and the standalone jump in edit.c.  A bad char
-     * aborts silently; an unset mark reports "Mark not set". */
+    /* `{a-z} / ``: exclusive charwise motion to the mark's exact
+     * position (vi: d`a deletes from the cursor up to, not including,
+     * the mark).  '{a-z} / '': linewise to the mark's line (vi: d'a
+     * deletes every line between the cursor's and the mark's, both
+     * included) -- like 'j'/'k', the span comes back as
+     * [ed.cur_pos, endpoint) with ed.cur_pos pulled back to the start
+     * of the topmost line.  mark_pos reports a bad or unset mark. */
     case '`':
-        me_mk_n = me_mkc - '`'; /* '`' -> MARK_PREV (0), a-z -> 1-26 */
-        if ((unsigned)me_mk_n >= NMARKS)
-            return -1;          /* not a mark char: abort silently */
-        me_mk_n = ed.marks[me_mk_n];
-        /* unsigned test: catches unset (-1) and past-the-end in one */
-        if ((unsigned)me_mk_n > (unsigned)size) {
-            status_msg(s_nomark);
-            return -1;
-        }
-        return me_mk_n;
+    case '\'':
+        n = mark_pos();
+        if (n < 0 || ch == '`')
+            return n;
+        *linewise = 1;
+        if (n < pos) { ed.cur_pos = find_bol(n); n = pos; }
+        else           ed.cur_pos = find_bol(pos);
+        n = find_eol(n);
+        if (n < size) n++;      /* include the newline */
+        return n;
 
     default:
         /* Message shown here so every caller can just test for < 0. */
@@ -490,7 +526,7 @@ int line_span(count)
 int count;
 {
     lsp_size = gb_content_len();
-    ls_from  = find_bol(ed.cur_pos);
+    ls_from  = bol_cur();
     lsp_to   = ls_from;
     for (lsp_k = count; lsp_k > 0; lsp_k--) {
         lsp_to = find_eol(lsp_to);
@@ -589,7 +625,7 @@ int apply_shift()
     if (sh_nl != 1 || gb_roomed)    /* sh_nl >= 1: != 1 means > 1 */
         ed.undo.type = UNDO_NONE;   /* scattered edits: not undoable */
     ed.cur_pos  = bnb_of(sh_ls);    /* topmost line, first non-blank */
-    ed.cur_vrow = -1;
+    vrow_stale();
     set_wcol();
     if (sh_did) ed.modified = 1;
     return sh_nl == 1;
@@ -614,6 +650,10 @@ int op0, from0, to0, linewise;
     }
 
     if (from > to) { t = from; from = to; to = t; }
+    /* Linewise 'c' (cc, c'a, cj, ck) replaces the lines' text but keeps
+     * the last newline: the insert then opens an empty line. */
+    if (op == 'c' && linewise && to != from && gb_is_nl(to - 1))
+        to--;
     len = to - from;
     if (len == 0 && op != 'c') return;  /* len >= 0 after the swap */
 
@@ -640,7 +680,7 @@ int op0, from0, to0, linewise;
     if (op == 'y') {
         save = yank_range(from, len, linewise);
         ed.cur_pos  = from;
-        ed.cur_vrow = -1;
+        vrow_stale();
         status_fmt("%d char%s yanked",
                     save, (int)(save == 1 ? "" : "s"));
         status_show();
@@ -907,7 +947,7 @@ int start_pos;
     dsf_buf_wrapped = ed.search_wrapped;
 
     /* No unloaded sections -- return buffer result as-is */
-    if (!ed.tail_file[0] || (ed.win_start == 0L && ed.tail_offset == 0L))
+    if (!ed.tail_file[0] || (!gb_winoff() && !gb_tailing()))
         return dsf_buf_result;
 
     /* Found in buffer without wrap: that is the nearest match in file order */
@@ -923,22 +963,22 @@ int start_pos;
 
     if (ed.search_dir == SEARCH_FWD) {
         /* First: unloaded tail (after the buffer) — not a wrap */
-        if (ed.tail_offset != 0L)
+        if (gb_tailing())
             dsf_file_match =
                 scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_FWD);
         /* Second: unloaded head (before the buffer) — IS a wrap */
-        if (dsf_file_match < 0L && ed.win_start != 0L) {
+        if (dsf_file_match < 0L && gb_winoff()) {
             dsf_file_match =
                 scan_file_for_match(0L, ed.win_start, SEARCH_FWD);
             if (dsf_file_match >= 0L) dsf_file_wrapped = 1;
         }
     } else {
         /* First: unloaded head (before the buffer) — not a wrap */
-        if (ed.win_start != 0L)
+        if (gb_winoff())
             dsf_file_match =
                 scan_file_for_match(0L, ed.win_start, SEARCH_BWD);
         /* Second: unloaded tail (after the buffer) — IS a wrap */
-        if (dsf_file_match < 0L && ed.tail_offset != 0L) {
+        if (dsf_file_match < 0L && gb_tailing()) {
             dsf_file_match =
                 scan_file_for_match(ed.tail_offset, 0x7FFFFFFFL, SEARCH_BWD);
             if (dsf_file_match >= 0L) dsf_file_wrapped = 1;

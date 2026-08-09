@@ -71,6 +71,8 @@ void mv_down();
 void mv_word();
 void mv_find();
 int  motion_endpoint();
+int  mark_pos();
+void mk_prev();
 extern int me_cw;
 extern int me_mkc;
 void apply_op();
@@ -207,7 +209,7 @@ int c0;
             /* Insert mode kept the row current -- status update only. */
             status_show();
         } else {
-            ed.cur_vrow = -1;   /* row cache unreliable after wrap ops */
+            vrow_stale();   /* row cache unreliable after wrap ops */
             scr_redraw_cur_line();
             status_show();
         }
@@ -302,7 +304,7 @@ int c0;
 
     if (c == KEY_CTRL_U) {
         chk_multi();
-        sol = find_bol(ed.cur_pos);
+        sol = bol_cur();
         if (sol < ed.cur_pos) {
             del = ed.cur_pos - sol;
             gb_delete(sol, del);
@@ -372,7 +374,7 @@ int c0;
 
     if (new_col > ed.scr_cols) {
         g_ins_multi = 1;        /* line wraps now */
-        ed.cur_vrow = -1;       /* cursor crossed onto the next vrow */
+        vrow_stale();       /* cursor crossed onto the next vrow */
         scr_redraw_cur_line();
     } else {
         sz = gb_content_len();
@@ -479,9 +481,9 @@ static void do_search_move()
     sm_win = ed.win_start;
     sm_pos = do_search_full(ed.cur_pos);
     if (sm_pos >= 0) {
-        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
+        mk_prev();   /* `` returns here */
         ed.cur_pos  = sm_pos;
-        ed.cur_vrow = -1;
+        vrow_stale();
         /* A buffer reload changes win_start; need a full screen redraw
          * (scr_refresh scrolls to the cursor itself). */
         if (ed.win_start != sm_win) {
@@ -567,7 +569,7 @@ int after;
      * through, so one py_end check at the bottom covers every insert. */
     if (ed.yank_line) {
         if (after) {
-            gir_pos = find_eol(ed.cur_pos);
+            gir_pos = eol_cur();
             if (gir_pos < py_sz) {
                 gir_pos++;          /* past the newline */
             } else if (gir_pos > 0 && !gb_is_nl(gir_pos - 1)) {
@@ -581,7 +583,7 @@ int after;
                 py_total++;
             }
         } else {
-            gir_pos = find_bol(ed.cur_pos);
+            gir_pos = bol_cur();
         }
     } else {
         py_light = scr_cur_1row() && !yank_has_nl();
@@ -652,16 +654,19 @@ static void normal_misc_cmd()
             ed.marks[mk_c - '`'] = ed.cur_pos;  /* slot = char - 0x60 */
         break;
 
+    /* `{a-z} jumps to the mark's exact line and column, '{a-z} to the
+     * first non-blank of its line (`` and '' use MARK_PREV).  mark_pos
+     * (emove.c) resolves and validates -- the same code the d/c/y
+     * operators use. */
     case '`':
-        /* motion_endpoint('`') resolves and validates the mark -- the
-         * same code the d/c/y operators use (mk_c is a dummy linewise
-         * out-param). */
+    case '\'':
         me_mkc = term_getch();
-        mk_pos = motion_endpoint('`', 1, &mk_c);
+        mk_pos = mark_pos();
         if (mk_pos < 0) break;
-        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
+        mk_prev();   /* `` / '' return here */
         ed.cur_pos  = mk_pos;
-        ed.cur_vrow = -1;
+        if (dsp_c == '\'') mv_bnb();        /* line mark: first non-blank */
+        vrow_stale();
         set_wcol();
         move_upd(ed.top_pos);
         break;
@@ -860,7 +865,7 @@ int cmd;
         mv_bol();
         gir_pos = ed.cur_pos;
     } else {
-        gir_pos = find_eol(ed.cur_pos);
+        gir_pos = eol_cur();
         sz = gb_content_len();
         if (gir_pos < sz) {
             gir_pos++;
@@ -925,7 +930,7 @@ static void normal_edit_cmd()
  */
 static void nav_refresh()
 {
-    ed.cur_vrow = -1;
+    vrow_stale();
     mv_bnb();
     ed.want_col = 0;
     scr_refresh();
@@ -959,11 +964,11 @@ static void normal_page_cmd()
     switch (c) {
 
     case 'G':
-        ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
+        mk_prev();   /* `` returns here */
         if (dsp_had) {
             /* nG: navigate to line n, scanning the file if needed. */
             gb_goto_line(count);
-        } else if (ed.tail_offset != 0L && ed.tail_file[0]) {
+        } else if (gb_tailing() && ed.tail_file[0]) {
             gb_load_last();   /* large file: jump to the last window */
         } else {
             ed.cur_pos = scr_last_line_start();
@@ -982,7 +987,7 @@ static void normal_page_cmd()
             /* Load when new screen bottom would exceed buffer: need a full
              * screen of lines above new_top plus text_rows more for the new
              * viewport. */
-            if (ed.tail_offset != 0L && top_line + n + text_rows > total) {
+            if (gb_tailing() && top_line + n + text_rows > total) {
                 gb_load_more(LOAD_CHUNK);
                 /* Recompute: gb_discard_head in gb_load_more shifts top_pos. */
                 top_line = gb_count_nl(0, ed.top_pos);
@@ -991,7 +996,7 @@ static void normal_page_cmd()
             new_top = top_line + n;
             if (new_top >= total) new_top = total - 1;
             if (new_top <= top_line) break;
-        } else if (ed.top_pos == 0 && ed.win_start != 0L) {
+        } else if (ed.top_pos == 0 && gb_winoff()) {
             gb_load_prev();
             total   = scr_line_count();
             new_top = total - 1 - n;
@@ -1008,7 +1013,7 @@ static void normal_page_cmd()
     case KEY_CTRL_D:
     case KEY_CTRL_U:
         n = (ed.scr_rows - 1) >> 1;  /* >> 1 replaces / 2 */
-        if (c == KEY_CTRL_D && ed.tail_offset != 0L &&
+        if (c == KEY_CTRL_D && gb_tailing() &&
             ed.cur_pos >= gb_content_len() - n * ed.scr_cols)
             gb_load_more(LOAD_CHUNK);
         if (c == KEY_CTRL_D) mv_down(n * count);
@@ -1054,11 +1059,9 @@ int c0;
         /* doubled operator (dd, cc, yy) = operate on count lines.
          * line_span (emove.c) walks with find_bol/find_eol -- O(range). */
         if (c == op) {
+            /* cc/S keep the line's newline: apply_op trims it */
             nc_to   = line_span(count);
             nc_from = ls_from;
-            /* cc/S replace the line's text but keep its newline */
-            if (op == 'c' && nc_to > nc_from && gb_is_nl(nc_to - 1))
-                nc_to--;
             if (op != 'y')
                 set_dot(op, op, count, 0);
             apply_op(op, nc_from, nc_to, 1);
@@ -1068,7 +1071,7 @@ int c0;
         /* motion character */
         linewise = 0;
         if (op == 'c' && c == 'w') me_cw = 1;
-        me_mkc = (c == '`') ? term_getch() : 0;
+        me_mkc = (c == '`' || c == '\'') ? term_getch() : 0;
         endpoint = motion_endpoint(c, count, &linewise);
         if (endpoint < 0)       /* motion_endpoint showed any message */
             return;
@@ -1083,7 +1086,7 @@ int c0;
         g_g = 0;
         if (c == 'g') {
             gg_line = (g_g_count > 0) ? g_g_count : 1;
-            ed.marks[MARK_PREV] = ed.cur_pos;   /* `` returns here */
+            mk_prev();   /* `` returns here */
             gb_goto_line(gg_line);
             nav_refresh();
         }
@@ -1113,7 +1116,7 @@ int c0;
         break;
 
     case 'j':
-        if (ed.tail_offset != 0L &&
+        if (gb_tailing() &&
             ed.cur_pos >= gb_content_len() - ed.scr_cols) {
             gb_load_more(LOAD_CHUNK);
             mv_down(count); scr_scroll_to_cursor();
@@ -1126,7 +1129,7 @@ int c0;
     case 'k':
         old_top = ed.top_pos;
         mv_up(count); scr_scroll_to_cursor();
-        if (ed.cur_pos == 0 && ed.win_start != 0L) {
+        if (ed.cur_pos == 0 && gb_winoff()) {
             gb_load_prev();
             ed.cur_pos = scr_last_line_start();
             nav_refresh();
